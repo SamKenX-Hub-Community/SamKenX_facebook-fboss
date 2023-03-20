@@ -69,21 +69,6 @@ bool RoutePrefix<AddrT>::operator>(const RoutePrefix& p2) const {
 }
 
 template <typename AddrT>
-folly::dynamic RoutePrefix<AddrT>::toFollyDynamicLegacy() const {
-  folly::dynamic pfx = folly::dynamic::object;
-  pfx[kAddress] = network().str();
-  pfx[kMask] = mask();
-  return pfx;
-}
-
-template <typename AddrT>
-RoutePrefix<AddrT> RoutePrefix<AddrT>::fromFollyDynamicLegacy(
-    const folly::dynamic& pfxJson) {
-  return RoutePrefix(
-      AddrT(pfxJson[kAddress].stringPiece()), pfxJson[kMask].asInt());
-}
-
-template <typename AddrT>
 RoutePrefix<AddrT> RoutePrefix<AddrT>::fromString(std::string str) {
   std::vector<std::string> vec;
 
@@ -114,12 +99,6 @@ std::ostream& operator<<(std::ostream& os, const RouteForwardAction& action) {
   return os;
 }
 
-folly::dynamic Label::toFollyDynamicLegacy() const {
-  folly::dynamic pfx = folly::dynamic::object;
-  pfx[kLabel] = static_cast<int32_t>(value());
-  return pfx;
-}
-
 template <typename AddrT>
 state::RoutePrefix RoutePrefix<AddrT>::toThrift() const {
   return this->data();
@@ -129,49 +108,6 @@ template <typename AddrT>
 RoutePrefix<AddrT> RoutePrefix<AddrT>::fromThrift(
     const state::RoutePrefix& thriftPrefix) {
   return RoutePrefix<AddrT>(thriftPrefix);
-}
-
-template <typename AddrT>
-folly::dynamic RoutePrefix<AddrT>::migrateToThrifty(folly::dynamic const& dyn) {
-  folly::dynamic newDyn = dyn;
-  auto addr = ThriftyUtils::toThriftBinaryAddress(dyn[kAddress]);
-  // byte is represented as signed char in thrift
-  signed char mask = static_cast<signed char>(dyn[kMask].asInt());
-  newDyn["prefix"] = ThriftyUtils::toFollyDynamic(addr);
-  if constexpr (std::is_same_v<AddrT, folly::IPAddress>) {
-    newDyn["v6"] = network::toIPAddress(addr).isV6();
-  } else {
-    newDyn["v6"] = std::is_same_v<AddrT, folly::IPAddressV6>;
-  }
-  newDyn["mask"] = mask;
-  return newDyn;
-}
-template <typename AddrT>
-void RoutePrefix<AddrT>::migrateFromThrifty(folly::dynamic& dyn) {
-  auto ip = ThriftyUtils::toFollyIPAddress(dyn["prefix"]);
-  dyn[kAddress] = ThriftyUtils::toFollyDynamic(ip);
-  // convert signed char / byte to unsigned int
-  uint8_t mask = static_cast<signed char>(dyn[kMask].asInt());
-  dyn[kMask] = mask;
-  dyn.erase("prefix");
-  dyn.erase("v6");
-}
-
-Label Label::fromFollyDynamicLegacy(const folly::dynamic& prefixJson) {
-  return Label(
-      getLabelThrift(static_cast<uint32_t>(prefixJson[kLabel].asInt())));
-}
-
-folly::dynamic Label::migrateToThrifty(folly::dynamic const& dyn) {
-  folly::dynamic newDyn = folly::dynamic::object;
-  newDyn["value"] = dyn[kLabel].asInt();
-  return newDyn;
-}
-
-void Label::migrateFromThrifty(folly::dynamic& dyn) {
-  auto label = dyn["value"].asInt();
-  dyn.erase("value");
-  dyn[kLabel] = label;
 }
 
 template struct RoutePrefix<folly::IPAddress>;

@@ -26,6 +26,7 @@ enum FecMode {
   RS528 = 528,
   RS544 = 544,
   RS544_2N = 11,
+  RS545 = 545,
 }
 
 struct VCOFrequencyFactor {
@@ -57,6 +58,8 @@ enum InterfaceMode {
   // Optics
   SR = 20,
   SR4 = 21,
+  SR2 = 22,
+  SR8 = 23,
   // CAUI
   CAUI = 30,
   CAUI4 = 31,
@@ -72,6 +75,7 @@ enum InterfaceMode {
 }
 
 enum InterfaceType {
+  NONE = 0,
   // Backplane
   KR = 1,
   KR2 = 2,
@@ -84,6 +88,8 @@ enum InterfaceType {
   // Optics
   SR = 20,
   SR4 = 21,
+  SR2 = 22,
+  SR8 = 23,
   // CAUI
   CAUI = 30,
   CAUI4 = 31,
@@ -116,6 +122,18 @@ struct TxSettings {
   5: i16 post2 = 0;
   6: i16 post3 = 0;
   8: optional i16 driveCurrent;
+  9: optional i32 diffEncoderEn;
+  10: optional i32 digGain;
+  11: optional i32 ffeCoeff0;
+  12: optional i32 ffeCoeff1;
+  13: optional i32 ffeCoeff2;
+  14: optional i32 ffeCoeff3;
+  15: optional i32 ffeCoeff4;
+  16: optional i32 parityEncoderEn;
+  17: optional i32 thpEn;
+  18: optional i32 setPrecode;
+  19: optional i32 pre3;
+  20: optional i32 driverSwing;
 }
 
 struct RxSettings {
@@ -123,6 +141,17 @@ struct RxSettings {
   2: optional i16 dspMode;
   3: optional i16 afeTrim;
   4: optional i16 acCouplingBypass;
+  5: optional i32 channelReach;
+  6: optional i32 diffEncoderEn;
+  7: optional i32 fbfCoefInitVal;
+  8: optional i32 fbfLmsEnable;
+  9: optional i32 instgScanOptimize;
+  10: optional i32 instgTableEndRow;
+  11: optional i32 instgTableStartRow;
+  12: optional i32 parityEncoderEn;
+  13: optional i32 thpEn;
+  14: optional i32 dcTermEn;
+  15: optional i32 setPrecode;
 }
 
 struct LaneMap {
@@ -252,7 +281,7 @@ struct PortPrbsState {
   2: i32 polynominal;
 }
 
-enum PrbsComponent {
+enum PortComponent {
   ASIC = 0,
   GB_SYSTEM = 1,
   GB_LINE = 2,
@@ -272,23 +301,32 @@ struct PrbsLaneStats {
 
 struct PrbsStats {
   1: i32 portId;
-  2: PrbsComponent component;
+  2: PortComponent component;
   3: list<PrbsLaneStats> laneStats;
   4: i32 timeCollected;
 }
 
 // structs for Phy(both IPHY and XPHY) diagnostic info
 struct PhyInfo {
-  1: DataPlanePhyChip phyChip;
-  2: optional PhyFwVersion fwVersion;
-  3: switch_config.PortSpeed speed;
-  4: string name; // port name
-  5: optional bool linkState;
-  6: optional i64 linkFlapCount;
-  10: optional PhySideInfo system;
-  11: PhySideInfo line;
-  12: i32 timeCollected; // Time the diagnostic info was collected at
-  13: optional i32 switchID;
+  1: DataPlanePhyChip phyChip (deprecated = "Moved to state/stats");
+  2: optional PhyFwVersion fwVersion (deprecated = "Moved to state/stats");
+  3: switch_config.PortSpeed speed (deprecated = "Moved to state/stats");
+  4: string name (deprecated = "Moved to state/stats"); // port name
+  5: optional bool linkState (deprecated = "Moved to state/stats");
+  6: optional i64 linkFlapCount (deprecated = "Moved to state/stats");
+  10: optional PhySideInfo system (deprecated = "Moved to state/stats");
+  11: PhySideInfo line (deprecated = "Moved to state/stats");
+  12: i32 timeCollected (deprecated = "Moved to state/stats"); // Time the diagnostic info was collected at
+  13: optional i32 switchID (deprecated = "Moved to state/stats");
+  // During the transition, the new state and states will be optional.
+  // Both new and old fields will be filled in by QSFP service. Users
+  // should checked the new fields and use it if available but fall back
+  // to old fields if it's not. Once all users can understand the new
+  // fields, we can then remove the old fields and make the new fields
+  // non-optional. If making changes during this transition, please
+  // make sure to change both the new and the old structs.
+  14: optional PhyState state;
+  15: optional PhyStats stats;
 }
 
 struct PhySideInfo {
@@ -300,10 +338,45 @@ struct PhySideInfo {
   6: transceiver.TransmitterTechnology medium;
 }
 
+struct PhySideState {
+  1: Side side;
+  2: optional PcsState pcs;
+  3: PmdState pmd;
+  4: optional RsInfo rs; // Reconciliation sub-layer
+  5: optional InterfaceType interfaceType;
+  6: transceiver.TransmitterTechnology medium;
+}
+
+struct PhySideStats {
+  1: Side side;
+  2: optional PcsStats pcs;
+  3: PmdStats pmd;
+}
+
 struct PcsInfo {
   1: optional bool pcsRxStatusLive;
   2: optional bool pcsRxStatusLatched;
   20: optional RsFecInfo rsFec;
+}
+
+struct PcsState {
+  1: optional bool pcsRxStatusLive;
+  2: optional bool pcsRxStatusLatched;
+  3: optional RsFecState rsFecState;
+}
+
+struct RsFecState {
+  1: map<i16, RsFecLaneState> lanes;
+}
+
+struct RsFecLaneState {
+  1: i16 lane;
+  2: optional bool fecAlignmentLockLive;
+  3: optional bool fecAlignmentLockChanged;
+}
+
+struct PcsStats {
+  1: optional RsFecInfo rsFec;
 }
 
 struct RsFecInfo {
@@ -320,6 +393,14 @@ struct PmdInfo {
   1: map<i16, LaneInfo> lanes;
 }
 
+struct PmdState {
+  1: map<i16, LaneState> lanes;
+}
+
+struct PmdStats {
+  1: map<i16, LaneStats> lanes;
+}
+
 struct EyeInfo {
   1: optional i32 width;
   2: optional i32 height;
@@ -334,6 +415,27 @@ struct LaneInfo {
   7: TxSettings txSettings;
   8: optional list<EyeInfo> eyes;
   9: optional float snr;
+  10: optional i16 rxFrequencyPPM;
+  11: optional i32 signalDetectChangedCount;
+  12: optional i32 cdrLockChangedCount;
+}
+
+struct LaneState {
+  1: i16 lane;
+  2: optional bool signalDetectLive;
+  3: optional bool signalDetectChanged;
+  4: optional bool cdrLockLive;
+  5: optional bool cdrLockChanged;
+  6: TxSettings txSettings;
+  7: optional i16 rxFrequencyPPM;
+}
+
+struct LaneStats {
+  1: i16 lane;
+  2: optional list<EyeInfo> eyes;
+  3: optional float snr;
+  4: optional i32 signalDetectChangedCount;
+  5: optional i32 cdrLockChangedCount;
 }
 
 struct LinkFaultStatus {
@@ -343,6 +445,25 @@ struct LinkFaultStatus {
 
 struct RsInfo {
   1: LinkFaultStatus faultStatus;
+}
+
+struct PhyState {
+  1: DataPlanePhyChip phyChip;
+  2: optional PhyFwVersion fwVersion;
+  3: switch_config.PortSpeed speed;
+  4: string name; // port name
+  5: optional bool linkState;
+  6: optional PhySideState system;
+  7: PhySideState line;
+  8: optional i32 switchID;
+  9: i32 timeCollected;
+}
+
+struct PhyStats {
+  1: optional PhySideStats system;
+  2: PhySideStats line;
+  3: optional i64 linkFlapCount;
+  10: i32 timeCollected;
 }
 
 union LinkSnapshot {
@@ -369,7 +490,7 @@ service FbossCommonPhyCtrl extends fb303.FacebookService {
    */
   list<prbs.PrbsPolynomial> getSupportedPrbsPolynomials(
     1: string portName,
-    2: PrbsComponent component,
+    2: PortComponent component,
   ) throws (1: fboss.FbossBaseError error);
 
   /*
@@ -377,7 +498,7 @@ service FbossCommonPhyCtrl extends fb303.FacebookService {
    */
   prbs.InterfacePrbsState getInterfacePrbsState(
     1: string portName,
-    2: PrbsComponent component,
+    2: PortComponent component,
   ) throws (1: fboss.FbossBaseError error);
 
   /*
@@ -386,7 +507,7 @@ service FbossCommonPhyCtrl extends fb303.FacebookService {
    */
   void setInterfacePrbs(
     1: string portName,
-    2: PrbsComponent component,
+    2: PortComponent component,
     3: prbs.InterfacePrbsState state,
   ) throws (1: fboss.FbossBaseError error);
 
@@ -395,7 +516,7 @@ service FbossCommonPhyCtrl extends fb303.FacebookService {
    */
   PrbsStats getInterfacePrbsStats(
     1: string portName,
-    2: PrbsComponent component,
+    2: PortComponent component,
   ) throws (1: fboss.FbossBaseError error);
 
   /*
@@ -409,6 +530,6 @@ service FbossCommonPhyCtrl extends fb303.FacebookService {
    */
   void clearInterfacePrbsStats(
     1: string portName,
-    2: PrbsComponent component,
+    2: PortComponent component,
   ) throws (1: fboss.FbossBaseError error);
 }

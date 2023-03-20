@@ -34,8 +34,10 @@ class HwQueuePerHostTest : public HwLinkStateDependentTest {
         getProgrammedState(), RouterID(0));
   }
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::onePortPerVlanConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC);
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode());
     return cfg;
   }
 
@@ -140,6 +142,7 @@ class HwQueuePerHostTest : public HwLinkStateDependentTest {
             neighborMac,
             PortDescriptor(masterLogicalPortIds()[0]),
             kIntfID,
+            NeighborState::REACHABLE,
             classID);
 
       } else {
@@ -147,7 +150,8 @@ class HwQueuePerHostTest : public HwLinkStateDependentTest {
             ip,
             neighborMac,
             PortDescriptor(masterLogicalPortIds()[0]),
-            kIntfID);
+            kIntfID,
+            NeighborState::REACHABLE);
       }
     }
 
@@ -224,7 +228,7 @@ class HwQueuePerHostTest : public HwLinkStateDependentTest {
      */
     for (auto [qid, beforePkts] : beforeQueueOutPkts) {
       auto pktsOnQueue = afterQueueOutPkts[qid] - beforePkts;
-      XLOG(INFO) << " Pkts on queue : " << qid << " pkts: " << pktsOnQueue;
+      XLOG(DBG2) << " Pkts on queue : " << qid << " pkts: " << pktsOnQueue;
 
       if (blockNeighbor) {
         // if the neighbor is blocked, all pkts are dropped
@@ -360,7 +364,7 @@ class HwQueuePerHostTest : public HwLinkStateDependentTest {
           ttlAclName,
           ttlCounterName);
 
-      XLOG(INFO) << "\n"
+      XLOG(DBG2) << "\n"
                  << "ttlAclPacketCounter: " << std::to_string(packetsBefore)
                  << " -> " << std::to_string(packetsAfter) << "\n"
                  << "ttlAclBytesCounter: " << std::to_string(bytesBefore)

@@ -86,6 +86,10 @@ bool isAclTableEnabled(
   return (enable == 1);
 }
 
+bool verifyAclEnabled(const HwSwitch* hwSwitch) {
+  return isAclTableEnabled(hwSwitch);
+}
+
 template bool isQualifierPresent<cfg::IpFragMatch>(
     const HwSwitch* hwSwitch,
     const std::shared_ptr<SwitchState>& state,
@@ -164,7 +168,7 @@ void checkAclStat(
     ASSERT_NE(
         nullptr,
         bcmSwitch->getStatUpdater()->getAclStatCounterIf(
-            hwStat->getHandle(), type));
+            hwStat->getHandle(), type, hwStat->getActionIndex()));
   }
 }
 
@@ -227,9 +231,11 @@ uint64_t getAclCounterStats(
   uint64_t value;
   if (hw->getPlatform()->getAsic()->isSupported(
           HwAsic::Feature::INGRESS_FIELD_PROCESSOR_FLEX_COUNTER)) {
+    auto actionIndex =
+        bcmSwitch->getAclTable()->getAclStat(statName)->getActionIndex();
     const auto& stats =
         BcmIngressFieldProcessorFlexCounter::getAclTrafficFlexCounterStats(
-            bcmSwitch->getUnit(), statHandle, kGenericCounter);
+            bcmSwitch->getUnit(), statHandle, actionIndex, kGenericCounter);
     value = stats.at(counterType);
   } else {
     bcm_field_stat_t type = bcmFieldType;

@@ -62,6 +62,10 @@ const HwAsic* HwTest::getAsic() const {
   return getPlatform()->getAsic();
 }
 
+cfg::AsicType HwTest::getAsicType() const {
+  return getAsic()->getAsicType();
+}
+
 bool HwTest::isSupported(HwAsic::Feature feature) const {
   return getAsic()->isSupported(feature);
 }
@@ -70,26 +74,46 @@ std::shared_ptr<SwitchState> HwTest::getProgrammedState() const {
   return hwSwitchEnsemble_->getProgrammedState();
 }
 
-std::vector<PortID> HwTest::masterLogicalPortIds() const {
-  return hwSwitchEnsemble_->masterLogicalPortIds();
+std::vector<PortID> HwTest::masterLogicalPortIds(
+    const std::set<cfg::PortType>& filter) const {
+  return hwSwitchEnsemble_->masterLogicalPortIds(filter);
+}
+
+std::vector<PortID> HwTest::masterLogicalInterfacePortIds() const {
+  return hwSwitchEnsemble_->masterLogicalPortIds(
+      {cfg::PortType::INTERFACE_PORT});
+}
+
+std::vector<PortID> HwTest::masterLogicalFabricPortIds() const {
+  return hwSwitchEnsemble_->masterLogicalPortIds({cfg::PortType::FABRIC_PORT});
 }
 
 std::vector<PortID> HwTest::getAllPortsInGroup(PortID portID) const {
   return hwSwitchEnsemble_->getAllPortsInGroup(portID);
 }
 
+bool HwTest::hideFabricPorts() const {
+  // Due to the speedup in test run time (6m->21s on meru400biu)
+  // we want to skip over fabric ports in a overwhelming
+  // majority of test cases. Make this the default HwTest mode
+  return true;
+}
+
 void HwTest::SetUp() {
+  FLAGS_hide_fabric_ports = hideFabricPorts();
   // Reset any global state being tracked in singletons
   // Each test then sets up its own state as needed.
   folly::SingletonVault::singleton()->destroyInstances();
   folly::SingletonVault::singleton()->reenableInstances();
   HwSwitchEnsemble::HwSwitchEnsembleInitInfo initInfo;
   initInfo.overrideTransceiverInfo = overrideTransceiverInfo();
-  std::tie(initInfo.switchId, initInfo.switchType) = getSwitchIdAndType();
   // Set watermark stats update interval to 0 so we always refresh BST stats
   // in each updateStats call
   FLAGS_update_watermark_stats_interval_s = 0;
-  hwSwitchEnsemble_ = createHwEnsemble(featuresDesired(), initInfo);
+  hwSwitchEnsemble_ = createHwEnsemble(featuresDesired());
+  initInfo.overrideDsfNodes =
+      overrideDsfNodes(hwSwitchEnsemble_->dsfNodesFromInputConfig());
+  hwSwitchEnsemble_->init(initInfo);
   hwSwitchEnsemble_->addHwEventObserver(this);
   if (getHwSwitch()->getBootType() == BootType::WARM_BOOT) {
     // For warm boots, in wedge_agent at this point we would
@@ -109,15 +133,15 @@ void HwTest::TearDown() {
    * during atexit. TODO: figure out why extra time
    * is spent in at exit cleanups
    */
-  XLOG(INFO) << " Destroy singleton instances ";
+  XLOG(DBG2) << " Destroy singleton instances ";
   folly::SingletonVault::singleton()->destroyInstances();
-  XLOG(INFO) << " Done destroying singleton instances";
+  XLOG(DBG2) << " Done destroying singleton instances";
 }
 
 void HwTest::logStage(folly::StringPiece msg) {
-  XLOG(INFO);
-  XLOG(INFO) << kStageLogPrefix << msg;
-  XLOG(INFO);
+  XLOG(DBG2);
+  XLOG(DBG2) << kStageLogPrefix << msg;
+  XLOG(DBG2);
 }
 
 void HwTest::tearDownSwitchEnsemble(bool doWarmboot) {
@@ -171,6 +195,14 @@ std::map<PortID, HwPortStats> HwTest::getLatestPortStats(
     const std::vector<PortID>& ports) {
   return hwSwitchEnsemble_->getLatestPortStats(ports);
 }
+HwSysPortStats HwTest::getLatestSysPortStats(SystemPortID port) {
+  return getLatestSysPortStats(std::vector<SystemPortID>{port})[port];
+}
+
+std::map<SystemPortID, HwSysPortStats> HwTest::getLatestSysPortStats(
+    const std::vector<SystemPortID>& ports) {
+  return hwSwitchEnsemble_->getLatestSysPortStats(ports);
+}
 
 HwTrunkStats HwTest::getLatestAggregatePortStats(AggregatePortID aggPort) {
   return getLatestAggregatePortStats(
@@ -186,7 +218,7 @@ std::unique_ptr<HwSwitchEnsembleRouteUpdateWrapper> HwTest::getRouteUpdater() {
       getHwSwitchEnsemble()->getRouteUpdater());
 }
 
-std::vector<HwAsic::AsicType> HwTest::getOtherAsicTypes() const {
+std::vector<cfg::AsicType> HwTest::getOtherAsicTypes() const {
   auto asicList = HwAsic::getAllHwAsicList();
   auto myAsic = hwSwitchEnsemble_->getPlatform()->getAsic()->getAsicType();
 

@@ -14,8 +14,8 @@
 #include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/Platform.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
-#include "fboss/agent/hw/test/HwSwitchEnsemble.h"
 #include "fboss/agent/state/Port.h"
+#include "fboss/agent/test/TestEnsembleIf.h"
 
 #include <boost/container/flat_map.hpp>
 #include <folly/gen/Base.h>
@@ -61,11 +61,15 @@ void HwLinkStateToggler::portStateChangeImpl(
     newPort->setLoopbackMode(desiredLoopbackMode);
     hwEnsemble_->applyNewState(newState);
     invokeLinkScanIfNeeded(port, up);
+    XLOG(DBG2) << " Wait for port " << (up ? "up" : "down")
+               << " event on : " << port;
     std::unique_lock<std::mutex> lock{linkEventMutex_};
     linkEventCV_.wait(lock, [this] { return desiredPortEventOccurred_; });
+    XLOG(DBG2) << " Got port " << (up ? "up" : "down")
+               << " event on : " << port;
 
     /* toggle the oper state */
-    newState = newState->clone();
+    newState = hwEnsemble_->getProgrammedState();
     newPort = newState->getPorts()->getPort(port)->modify(&newState);
     newPort->setOperState(up);
     hwEnsemble_->applyNewState(newState);
@@ -94,6 +98,9 @@ HwLinkStateToggler::applyInitialConfigWithPortsDown(
   auto cfg = initCfg;
   boost::container::flat_map<int, cfg::PortState> portId2DesiredState;
   for (auto& port : *cfg.ports()) {
+    if (port.portType() == cfg::PortType::RECYCLE_PORT) {
+      continue;
+    }
     portId2DesiredState[*port.logicalID()] = *port.state();
     // Keep ports down by disabling them and setting loopback mode to NONE
     *port.state() = cfg::PortState::DISABLED;
@@ -108,9 +115,24 @@ HwLinkStateToggler::applyInitialConfigWithPortsDown(
   // application). iii) Start tests.
   hwEnsemble_->applyNewConfig(cfg);
   for (auto& port : *cfg.ports()) {
+    if (portId2DesiredState.find(*port.logicalID()) ==
+        portId2DesiredState.end()) {
+      continue;
+    }
     // Set all port preemphasis values to 0 so that we can bring ports up and
     // down by setting their loopback mode to PHY and NONE respectively.
     // TODO: use sw port's pinConfigs to set this
+
+    // Some ASICs require disabling Link Training before we can disable
+    // preemphasis.
+    if (hwEnsemble_->getHwSwitch()->getPlatform()->getAsic()->isSupported(
+            HwAsic::Feature::LINK_TRAINING)) {
+      setLinkTraining(
+          hwEnsemble_->getProgrammedState()->getPorts()->getPort(
+              PortID(*port.logicalID())),
+          false /* disable link training */);
+    }
+
     setPortPreemphasis(
         hwEnsemble_->getProgrammedState()->getPorts()->getPort(
             PortID(*port.logicalID())),
@@ -127,7 +149,8 @@ void HwLinkStateToggler::bringUpPorts(
     const cfg::SwitchConfig& initCfg) {
   std::vector<PortID> portsToBringUp;
   folly::gen::from(*initCfg.ports()) | folly::gen::filter([](const auto& port) {
-    return *port.state() == cfg::PortState::ENABLED;
+    return *port.state() == cfg::PortState::ENABLED &&
+        *port.portType() != cfg::PortType::RECYCLE_PORT;
   }) | folly::gen::map([](const auto& port) {
     return PortID(*port.logicalID());
   }) | folly::gen::appendTo(portsToBringUp);

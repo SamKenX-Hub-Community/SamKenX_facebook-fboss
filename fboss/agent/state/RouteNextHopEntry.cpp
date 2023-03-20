@@ -99,27 +99,20 @@ RouteNextHopEntry::RouteNextHopEntry(
     NextHopSet nhopSet,
     AdminDistance distance,
     std::optional<RouteCounterID> counterID,
-    std::optional<AclLookupClass> classID)
-    : RouteNextHopEntry(getRouteNextHopEntryThrift(
-          Action::NEXTHOPS,
-          distance,
-          nhopSet,
-          counterID,
-          classID)) {
+    std::optional<AclLookupClass> classID) {
   if (nhopSet.size() == 0) {
     throw FbossError("Empty nexthop set is passed to the RouteNextHopEntry");
   }
-}
-
-RouteNextHopEntry::RouteNextHopEntry(const state::RouteNextHopEntry& entry) {
-  writableData() = entry;
+  auto data = getRouteNextHopEntryThrift(
+      Action::NEXTHOPS, distance, nhopSet, counterID, classID);
+  this->fromThrift(std::move(data));
 }
 
 NextHopWeight RouteNextHopEntry::getTotalWeight() const {
   return totalWeight(getNextHopSet());
 }
 
-std::string RouteNextHopEntry::str() const {
+std::string RouteNextHopEntry::str_DEPRACATED() const {
   std::string result;
   switch (getAction()) {
     case Action::DROP:
@@ -147,6 +140,12 @@ std::string RouteNextHopEntry::str() const {
           ? apache::thrift::util::enumNameSafe(AclLookupClass(*classID))
           : "none");
   return result;
+}
+
+std::string RouteNextHopEntry::str() const {
+  std::string jsonStr;
+  apache::thrift::SimpleJSONSerializer::serialize(this->toThrift(), &jsonStr);
+  return jsonStr;
 }
 
 bool operator==(const RouteNextHopEntry& a, const RouteNextHopEntry& b) {
@@ -199,62 +198,19 @@ NextHopWeight totalWeight(const RouteNextHopEntry::NextHopSet& nhops) {
   return result;
 }
 
-folly::dynamic RouteNextHopEntry::toFollyDynamicLegacy() const {
-  folly::dynamic entry = folly::dynamic::object;
-  entry[kAction] = forwardActionStr(getAction());
-  folly::dynamic nhops = folly::dynamic::array;
-  auto nextHopSet = getNextHopSet();
-  for (const auto& nhop : nextHopSet) {
-    nhops.push_back(nhop.toFollyDynamic());
-  }
-  entry[kNexthops] = std::move(nhops);
-  entry[kAdminDistance] = static_cast<int32_t>(getAdminDistance());
-  auto counterID = getCounterID();
-  if (counterID.has_value()) {
-    entry[kCounterID] = counterID.value();
-  }
-  auto classID = getClassID();
-  if (classID.has_value()) {
-    entry[kClassID] = static_cast<int32_t>(classID.value());
-  }
-  return entry;
-}
-
-RouteNextHopEntry RouteNextHopEntry::fromFollyDynamicLegacy(
-    const folly::dynamic& entryJson) {
-  Action action = str2ForwardAction(entryJson[kAction].asString());
-  auto it = entryJson.find(kAdminDistance);
-  AdminDistance adminDistance = (it == entryJson.items().end())
-      ? AdminDistance::MAX_ADMIN_DISTANCE
-      : AdminDistance(entryJson[kAdminDistance].asInt());
-  RouteNextHopEntry entry(Action::DROP, adminDistance);
-  RouteNextHopSet nhopSet;
-  for (const auto& nhop : entryJson[kNexthops]) {
-    nhopSet.insert(util::nextHopFromFollyDynamic(nhop));
-  }
-  std::optional<RouteCounterID> counterID;
-  if (entryJson.find(kCounterID) != entryJson.items().end()) {
-    counterID = RouteCounterID(entryJson[kCounterID].asString());
-  }
-  std::optional<AclLookupClass> classID;
-  if (entryJson.find(kClassID) != entryJson.items().end()) {
-    classID = AclLookupClass(entryJson[kClassID].asInt());
-  }
-  return RouteNextHopEntry(RouteNextHopEntry::getRouteNextHopEntryThrift(
-      action, adminDistance, nhopSet, counterID, classID));
-}
-
 bool RouteNextHopEntry::isValid(bool forMplsRoute) const {
   bool valid = true;
   if (!forMplsRoute) {
     /* for ip2mpls routes, next hop label forwarding action must be push */
     auto nhops = getNextHopSet();
-    for (const auto& nexthop : *data().nexthops()) {
+    for (const auto& nexthop : *safe_cref<switch_state_tags::nexthops>()) {
       if (getAction() != Action::NEXTHOPS) {
         continue;
       }
-      if (nexthop.mplsAction().has_value() &&
-          *(nexthop.mplsAction()->action()) !=
+
+      if (nexthop->safe_cref<common_if_tags::mplsAction>() &&
+          *(nexthop->safe_cref<common_if_tags::mplsAction>()
+                ->safe_cref<mpls_tags::strings::action>()) !=
               LabelForwardingAction::LabelForwardingType::PUSH) {
         return !valid;
       }
@@ -708,60 +664,6 @@ void RouteNextHopEntry::normalizeNextHopWeightsToMaxPaths(
   }
 }
 
-state::RouteNextHopEntry RouteNextHopEntry::toThrift() const {
-  return data();
-}
-
-RouteNextHopEntry RouteNextHopEntry::fromThrift(
-    const state::RouteNextHopEntry& entry) {
-  return RouteNextHopEntry(entry);
-}
-
-folly::dynamic RouteNextHopEntry::migrateToThrifty(folly::dynamic const& dyn) {
-  folly::dynamic newDyn = dyn;
-  auto action = dyn[kAction].asString();
-  newDyn[kAction] = folly::to<int>(str2ForwardAction(action));
-  RouteNextHopSet nhops{};
-  std::vector<NextHop> nexthops{};
-  for (auto& nhop : dyn[kNexthops]) {
-    nexthops.emplace_back(util::nextHopFromFollyDynamic(nhop));
-  }
-  nhops.insert(std::begin(nexthops), std::end(nexthops));
-  folly::dynamic nhopsDynamic = folly::dynamic::array;
-  auto nhopsThrift = util::fromRouteNextHopSet(nhops);
-  for (auto& nhop : nhopsThrift) {
-    std::string jsonStr;
-    apache::thrift::SimpleJSONSerializer::serialize(nhop, &jsonStr);
-    nhopsDynamic.push_back(folly::parseJson(jsonStr));
-  }
-  newDyn[kNexthops] = nhopsDynamic;
-  return newDyn;
-}
-
-void RouteNextHopEntry::migrateFromThrifty(folly::dynamic& dyn) {
-  auto action = static_cast<RouteForwardAction>(dyn[kAction].asInt());
-  dyn[kAction] = forwardActionStr(action);
-  folly::dynamic nhopsDynamic = folly::dynamic::array;
-  if (dyn.find(kNexthops) != dyn.items().end()) {
-    std::vector<NextHopThrift> nhopsThrift{};
-
-    for (auto& nhop : dyn[kNexthops]) {
-      auto jsonStr = folly::toJson(nhop);
-      auto inBuf =
-          folly::IOBuf::wrapBufferAsValue(jsonStr.data(), jsonStr.size());
-      auto nhopThrift =
-          apache::thrift::SimpleJSONSerializer::deserialize<NextHopThrift>(
-              folly::io::Cursor{&inBuf});
-      nhopsThrift.push_back(nhopThrift);
-    }
-    auto nhops = util::toRouteNextHopSet(nhopsThrift, true);
-    for (auto& nhop : nhops) {
-      nhopsDynamic.push_back(nhop.toFollyDynamic());
-    }
-  }
-  dyn[kNexthops] = nhopsDynamic;
-}
-
 state::RouteNextHopEntry RouteNextHopEntry::getRouteNextHopEntryThrift(
     Action action,
     AdminDistance distance,
@@ -783,8 +685,10 @@ state::RouteNextHopEntry RouteNextHopEntry::getRouteNextHopEntryThrift(
   return entry;
 }
 
+// THRIFT_COPY
 RouteNextHopSet RouteNextHopEntry::getNextHopSet() const {
-  return util::toRouteNextHopSet(*data().nexthops(), true);
+  return util::toRouteNextHopSet(
+      safe_cref<switch_state_tags::nexthops>()->toThrift(), true);
 }
 
 } // namespace facebook::fboss

@@ -9,13 +9,11 @@
  */
 #include "fboss/agent/state/VlanMapDelta.h"
 
-#include "fboss/agent/state/NodeMapDelta-defs.h"
-
 namespace facebook::fboss {
 
-template class NodeMapDelta<ArpTable>;
-template class NodeMapDelta<NdpTable>;
-template class NodeMapDelta<MacTable>;
-template class NodeMapDelta<VlanMap, VlanDelta>;
+template class thrift_cow::ThriftMapDelta<ArpTable>;
+template class thrift_cow::ThriftMapDelta<NdpTable>;
+template class thrift_cow::ThriftMapDelta<MacTable>;
+template class thrift_cow::ThriftMapDelta<VlanMap>;
 
 } // namespace facebook::fboss

@@ -15,6 +15,7 @@
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 #include "fboss/agent/hw/sai/api/SaiApiTable.h"
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
+#include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiRxPacket.h"
 #include "fboss/agent/platforms/sai/SaiPlatform.h"
 #include "folly/MacAddress.h"
@@ -33,6 +34,7 @@ namespace facebook::fboss {
 
 struct ConcurrentIndices;
 class SaiStore;
+class FabricReachabilityManager;
 
 /*
  * This is equivalent to sai_fdb_event_notification_data_t. Copy only the
@@ -73,13 +75,16 @@ class SaiSwitch : public HwSwitch {
 
   void unregisterCallbacks() noexcept override;
   /*
-   * SaiSwitch requires L2/FDB entries to be created for resolved
-   * neighbors to be able to compute egress ports for nhops. A join
+   * SaiSwitch in NPU mode requires L2/FDB entries to be created for
+   * resolved neighbors to be able to compute egress ports for nhops. A join
    * b/w the FDB (mac, port), neighbor (ip, mac) is done to figure
-   * out the nhop ip-> mac, egress port information
+   * out the nhop ip-> mac, egress port information.
+   * In non NPU mode, we use port based RIFs, where a each port is
+   * associated with a RIF. There just the neighbor (ip, mac) and associated
+   * port RIF is enough to get the egress port.
    */
   bool needL2EntryForNeighbor() const override {
-    return true;
+    return switchType_ == cfg::SwitchType::NPU;
   }
 
   std::shared_ptr<SwitchState> stateChanged(const StateDelta& delta) override;
@@ -103,6 +108,7 @@ class SaiSwitch : public HwSwitch {
       std::optional<uint8_t> queueId) noexcept override;
 
   folly::F14FastMap<std::string, HwPortStats> getPortStats() const override;
+  std::map<std::string, HwSysPortStats> getSysPortStats() const override;
 
   uint64_t getDeviceWatermarkBytes() const override;
 
@@ -162,7 +168,7 @@ class SaiSwitch : public HwSwitch {
       uint32_t attr_count,
       const sai_attribute_t* attr_list);
 
-  SwitchSaiId getSwitchId() const {
+  SwitchSaiId getSaiSwitchId() const {
     return switchId_;
   }
   SaiPlatform* getPlatform() const override {
@@ -196,9 +202,12 @@ class SaiSwitch : public HwSwitch {
       folly::MacAddress mac) const override;
 
   phy::FecMode getPortFECMode(PortID port) const override;
+  std::map<PortID, FabricEndpoint> getFabricReachability() const override;
 
  private:
-  void gracefulExitImpl(folly::dynamic& switchState) override;
+  void gracefulExitImpl(
+      folly::dynamic& switchState,
+      state::WarmbootState& thriftSwitchState) override;
 
   template <typename LockPolicyT>
   std::shared_ptr<SwitchState> stateChangedImpl(
@@ -260,9 +269,12 @@ class SaiSwitch : public HwSwitch {
       const std::lock_guard<std::mutex>& lock,
       std::vector<L2EntryThrift>* l2Table) const;
 
+  std::map<PortID, FabricEndpoint> getFabricReachabilityLocked() const;
+
   void gracefulExitLocked(
       const std::lock_guard<std::mutex>& lock,
-      folly::dynamic& switchState);
+      folly::dynamic& follySwitchState,
+      state::WarmbootState& thriftSwitchState);
 
   folly::dynamic toFollyDynamicLocked(
       const std::lock_guard<std::mutex>& lock) const;
@@ -301,7 +313,34 @@ class SaiSwitch : public HwSwitch {
   folly::F14FastMap<std::string, HwPortStats> getPortStatsLocked(
       const std::lock_guard<std::mutex>& lock) const;
 
+  std::map<std::string, HwSysPortStats> getSysPortStatsLocked(
+      const std::lock_guard<std::mutex>& lock) const;
   std::map<PortID, phy::PhyInfo> updateAllPhyInfoLocked();
+
+  void updatePmdInfo(
+      phy::PhySideInfo& sideInfo,
+      phy::PhySideState& sideState,
+      phy::PhySideStats& sideStats,
+      std::shared_ptr<SaiPort> port,
+      phy::PmdInfo& lastPmdInfo,
+      phy::PmdState& lastPmdState,
+      phy::PmdStats& lastPmdStats);
+
+  void updatePcsInfo(
+      phy::PhySideInfo& sideInfo,
+      phy::PhySideState& sideState,
+      phy::PhySideStats& sideStats,
+      PortID swPort,
+      phy::Side side,
+      phy::PhyInfo& lastPhyInfo,
+      const HwPortFb303Stats* fb303PortStat,
+      cfg::PortSpeed speed,
+      std::shared_ptr<SaiPort> port);
+
+  void updateRsInfo(
+      phy::PhySideInfo& sideInfo,
+      phy::PhySideState& sideState,
+      std::shared_ptr<SaiPort> port);
 
   void linkStateChangedCallbackBottomHalf(
       std::vector<sai_port_oper_status_notification_t> data);
@@ -313,10 +352,9 @@ class SaiSwitch : public HwSwitch {
       const std::lock_guard<std::mutex>& lock,
       const StateDelta& delta);
 
-  template <typename ManagerT, typename LockPolicyT>
+  template <typename LockPolicyT>
   void processDefaultDataPlanePolicyDelta(
       const StateDelta& delta,
-      ManagerT& mgr,
       const LockPolicyT& lk);
 
   template <typename LockPolicyT>
@@ -419,6 +457,12 @@ class SaiSwitch : public HwSwitch {
 
   bool isMissingSrcPortAllowed(HostifTrapSaiId hostifTrapSaiId);
 
+  phy::InterfaceType getInterfaceType(
+      PortID portID,
+      phy::DataPlanePhyChipType chipType) const;
+
+  void checkAndSetSdkDowngradeVersion() const;
+
   /*
    * SaiSwitch must support a few varieties of concurrent access:
    * 1. state updates on the SwSwitch update thread calling stateChanged
@@ -464,10 +508,11 @@ class SaiSwitch : public HwSwitch {
   std::atomic<SwitchRunState> runState_{SwitchRunState::UNINITIALIZED};
 
   int64_t watermarkStatsUpdateTime_{0};
-  HwAsic::AsicType asicType_;
+  cfg::AsicType asicType_;
   cfg::SwitchType switchType_{cfg::SwitchType::NPU};
 
   std::map<PortID, phy::PhyInfo> lastPhyInfos_;
+  std::unique_ptr<FabricReachabilityManager> fabricReachabilityManager_;
 };
 
 } // namespace facebook::fboss

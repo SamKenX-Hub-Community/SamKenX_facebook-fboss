@@ -183,6 +183,10 @@ class CmdGlobalOptions {
         return std::make_shared<FilterOpGte>();
       case hash("!="):
         return std::make_shared<FilterOpNeq>();
+      case hash("=^"):
+        return std::make_shared<FilterOpStartsWith>();
+      case hash("=~"):
+        return std::make_shared<FilterOpRegex>();
       default:
         throw std::invalid_argument("Invalid filter argument passed");
     }
@@ -374,6 +378,10 @@ class CmdGlobalOptions {
     return detail_;
   }
 
+  bool tag2name() const {
+    return tag2name_;
+  }
+
   std::string getLogUsage() const {
     return logUsage_;
   }
@@ -405,6 +413,7 @@ class CmdGlobalOptions {
   int getMkaThriftPort() const {
     return mkaThriftPort_;
   }
+
   int getCoopThriftPort() const {
     return coopThriftPort_;
   }
@@ -415,6 +424,10 @@ class CmdGlobalOptions {
 
   int getSensorServiceThriftPort() const {
     return sensorServiceThriftPort_;
+  }
+
+  int getTeAgentThriftPort() const {
+    return teAgentThriftPort_;
   }
 
   int getDataCorralServiceThriftPort() const {
@@ -466,6 +479,10 @@ class CmdGlobalOptions {
     fsdbThriftPort_ = port;
   }
 
+  void setTeAgentThriftPort(int port) {
+    teAgentThriftPort_ = port;
+  }
+
   void setFilterInput(std::string& filter) {
     filter_ = filter;
   }
@@ -492,6 +509,7 @@ class CmdGlobalOptions {
   SSLPolicy sslPolicy_{"plaintext"};
   OutputFormat fmt_;
   bool detail_{false};
+  bool tag2name_{false};
   std::string logUsage_{"scuba"};
   int fsdbThriftPort_{5908};
   int agentThriftPort_{5909};
@@ -504,6 +522,7 @@ class CmdGlobalOptions {
   int bmcHttpPort_{8443};
   int rackmonThriftPort_{5973};
   int sensorServiceThriftPort_{5970};
+  int teAgentThriftPort_{2022};
   int dataCorralServiceThriftPort_{5971};
   int vipInjectorThriftPort_{3333};
   std::string color_{"yes"};

@@ -20,7 +20,7 @@ class HwTrunkTest : public HwLinkStateDependentTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
   }
 
   void applyConfigAndEnableTrunks(const cfg::SwitchConfig& switchCfg) {
@@ -100,11 +100,11 @@ TEST_F(HwTrunkTest, TrunkMemberPortDownMinLinksViolated) {
 
 TEST_F(HwTrunkTest, TrunkPortStatsWithMplsPush) {
   if (getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_FAKE ||
+          cfg::AsicType::ASIC_TYPE_FAKE ||
       getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_MOCK ||
+          cfg::AsicType::ASIC_TYPE_MOCK ||
       getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD) {
+          cfg::AsicType::ASIC_TYPE_ELBERT_8DD) {
 #if defined(GTEST_SKIP)
     GTEST_SKIP();
 #endif
@@ -160,11 +160,11 @@ TEST_F(HwTrunkTest, TrunkPortStatsWithMplsPush) {
 
 TEST_F(HwTrunkTest, TrunkPortStats) {
   if (getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_FAKE ||
+          cfg::AsicType::ASIC_TYPE_FAKE ||
       getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_MOCK ||
+          cfg::AsicType::ASIC_TYPE_MOCK ||
       getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD) {
+          cfg::AsicType::ASIC_TYPE_ELBERT_8DD) {
 #if defined(GTEST_SKIP)
     GTEST_SKIP();
 #endif

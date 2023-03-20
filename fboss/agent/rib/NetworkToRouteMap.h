@@ -22,6 +22,17 @@
 namespace facebook::fboss {
 
 template <typename AddressT>
+struct NetworkToRouteMapThriftType {
+  using KeyType = std::
+      conditional_t<std::is_same_v<AddressT, LabelID>, int32_t, std::string>;
+  using ValueType = std::conditional_t<
+      std::is_same_v<AddressT, LabelID>,
+      state::LabelForwardingEntryFields,
+      state::RouteFields>;
+  using type = std::map<KeyType, ValueType>;
+};
+
+template <typename AddressT>
 class NetworkToRouteMap
     : public std::conditional_t<
           std::is_same_v<LabelID, AddressT>,
@@ -45,6 +56,9 @@ class NetworkToRouteMap
       std::unordered_map<LabelID, std::shared_ptr<Route<LabelID>>>::iterator,
       typename facebook::network::
           RadixTree<AddressT, std::shared_ptr<Route<AddressT>>>::Iterator>;
+  using ThriftType = typename NetworkToRouteMapThriftType<AddressT>::type;
+  using RouteFilter =
+      std::function<bool(const std::shared_ptr<Route<AddressT>>&)>;
 
   folly::dynamic toFollyDynamic() const {
     return toFollyDynamic([](const std::shared_ptr<RouteT>&) { return true; });
@@ -74,7 +88,8 @@ class NetworkToRouteMap
     auto routesJson = routes[kRoutes];
     for (const auto& routeJson : routesJson) {
       auto route = Route<AddressT>::fromFollyDynamic(routeJson);
-      networkToRouteMap.insert(route->getID(), std::move(route));
+      auto prefix = route->prefix();
+      networkToRouteMap.insert(prefix, std::move(route));
     }
 
     return networkToRouteMap;
@@ -100,6 +115,44 @@ class NetworkToRouteMap
   }
   void publishAll() {
     forAll([](auto& ritr) { ritr.value()->publish(); });
+  }
+
+  ThriftType toThrift() const {
+    return toFilteredThrift([](const auto&) { return true; });
+  }
+
+  ThriftType toFilteredThrift(RouteFilter&& filter) const {
+    auto obj = ThriftType{};
+    for (const auto& routeNode : *this) {
+      std::shared_ptr<Route<AddressT>> route{};
+      if constexpr (std::is_same_v<LabelID, AddressT>) {
+        route = routeNode.second;
+      } else {
+        route = routeNode.value();
+      }
+      if (!filter(route)) {
+        continue;
+      }
+      obj.emplace(route->getID(), route->toThrift());
+    }
+    return obj;
+  }
+
+  ThriftType warmBootState() const {
+    // warm boot cares only for unresolved routes, resolved routes come from
+    // fibs.
+    return toFilteredThrift(
+        [](const auto& route) { return !route->isResolved(); });
+  }
+
+  static NetworkToRouteMap<AddressT> fromThrift(const ThriftType& routes) {
+    NetworkToRouteMap<AddressT> networkToRouteMap;
+    for (auto& obj : routes) {
+      auto route = std::make_shared<Route<AddressT>>(obj.second);
+      auto key = route->prefix();
+      networkToRouteMap.insert(key, route);
+    }
+    return networkToRouteMap;
   }
 };
 

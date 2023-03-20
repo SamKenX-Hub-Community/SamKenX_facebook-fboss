@@ -40,44 +40,49 @@ class BcmLabelSwitchActionTest : public BcmTest {
   }
 
   void setupTestLabelForwardingEntries() {
-    entries_.push_back(std::make_shared<LabelForwardingEntry>(
-        5001,
-        ClientID::OPENR,
-        util::getSwapLabelNextHopEntry(
-            AdminDistance::DIRECTLY_CONNECTED,
-            InterfaceID(utility::kBaseVlanId),
-            {folly::IPAddress("1.1.1.1")})));
-    entries_.push_back(std::make_shared<LabelForwardingEntry>(
-        5002,
-        ClientID::OPENR,
-        util::getPhpLabelNextHopEntry(
-            AdminDistance::DIRECTLY_CONNECTED,
-            InterfaceID(utility::kBaseVlanId),
-            {folly::IPAddress("1.1.1.1")})));
-    entries_.push_back(std::make_shared<LabelForwardingEntry>(
-        5003,
-        ClientID::OPENR,
-        util::getPopLabelNextHopEntry(
-            AdminDistance::DIRECTLY_CONNECTED,
-            InterfaceID(utility::kBaseVlanId),
-            {folly::IPAddress("1.1.1.1")})));
-    entries_.push_back(std::make_shared<LabelForwardingEntry>(
-        5004,
-        ClientID::OPENR,
-        util::getPushLabelNextHopEntry(
-            AdminDistance::DIRECTLY_CONNECTED,
-            InterfaceID(utility::kBaseVlanId),
-            {folly::IPAddress("1.1.1.1")})));
-    entries_.push_back(std::make_shared<LabelForwardingEntry>(
-        5005,
-        ClientID::OPENR,
-        util::getPushLabelNextHopEntry(
-            AdminDistance::DIRECTLY_CONNECTED,
-            InterfaceID(utility::kBaseVlanId))));
+    entries_.push_back(
+        std::make_shared<LabelForwardingEntry>(LabelForwardingEntry::makeThrift(
+            5001,
+            ClientID::OPENR,
+            util::getSwapLabelNextHopEntry(
+                AdminDistance::DIRECTLY_CONNECTED,
+                InterfaceID(utility::kBaseVlanId),
+                {folly::IPAddress("1.1.1.1")}))));
+    entries_.push_back(
+        std::make_shared<LabelForwardingEntry>(LabelForwardingEntry::makeThrift(
+            5002,
+            ClientID::OPENR,
+            util::getPhpLabelNextHopEntry(
+                AdminDistance::DIRECTLY_CONNECTED,
+                InterfaceID(utility::kBaseVlanId),
+                {folly::IPAddress("1.1.1.1")}))));
+    entries_.push_back(
+        std::make_shared<LabelForwardingEntry>(LabelForwardingEntry::makeThrift(
+            5003,
+            ClientID::OPENR,
+            util::getPopLabelNextHopEntry(
+                AdminDistance::DIRECTLY_CONNECTED,
+                InterfaceID(utility::kBaseVlanId),
+                {folly::IPAddress("1.1.1.1")}))));
+    entries_.push_back(
+        std::make_shared<LabelForwardingEntry>(LabelForwardingEntry::makeThrift(
+            5004,
+            ClientID::OPENR,
+            util::getPushLabelNextHopEntry(
+                AdminDistance::DIRECTLY_CONNECTED,
+                InterfaceID(utility::kBaseVlanId),
+                {folly::IPAddress("1.1.1.1")}))));
+    entries_.push_back(
+        std::make_shared<LabelForwardingEntry>(LabelForwardingEntry::makeThrift(
+            5005,
+            ClientID::OPENR,
+            util::getPushLabelNextHopEntry(
+                AdminDistance::DIRECTLY_CONNECTED,
+                InterfaceID(utility::kBaseVlanId)))));
     LabelNextHopEntry nexthop{
         LabelNextHopEntry::Action::TO_CPU, AdminDistance::MAX_ADMIN_DISTANCE};
-    entries_.push_back(
-        std::make_shared<LabelForwardingEntry>(5006, ClientID::OPENR, nexthop));
+    entries_.push_back(std::make_shared<LabelForwardingEntry>(
+        LabelForwardingEntry::makeThrift(5006, ClientID::OPENR, nexthop)));
   }
 
   void addAllTestLabelForwardingEntries() {
@@ -105,7 +110,7 @@ class BcmLabelSwitchActionTest : public BcmTest {
             mplsEntry->getID());
     bcm_mpls_tunnel_switch_t info;
     bcm_mpls_tunnel_switch_t_init(&info);
-    info.label = entry->getID().value();
+    info.label = entry->getID();
     info.port = BCM_GPORT_INVALID;
     auto rv = bcm_mpls_tunnel_switch_get(getHwSwitch()->getUnit(), &info);
     LabelForwardingAction::LabelForwardingType labelForwardingType{
@@ -120,7 +125,7 @@ class BcmLabelSwitchActionTest : public BcmTest {
                                 ->type();
     }
     ASSERT_EQ(rv, BCM_E_NONE);
-    EXPECT_EQ(info.label, static_cast<int32_t>(entry->getID().value()));
+    EXPECT_EQ(info.label, static_cast<int32_t>(entry->getID()));
     EXPECT_EQ(
         info.action,
         utility::getLabelSwitchAction(
@@ -159,7 +164,7 @@ class BcmLabelSwitchActionTest : public BcmTest {
       const std::shared_ptr<LabelForwardingEntry>& entry) {
     bcm_mpls_tunnel_switch_t info;
     bcm_mpls_tunnel_switch_t_init(&info);
-    info.label = entry->getID().value();
+    info.label = entry->getID();
     info.port = BCM_GPORT_INVALID;
     auto rv = bcm_mpls_tunnel_switch_get(getHwSwitch()->getUnit(), &info);
     ASSERT_EQ(rv, BCM_E_NOT_FOUND);
@@ -212,7 +217,7 @@ class BcmLabelSwitchActionTest : public BcmTest {
     LabelForwardingInformationBase::resolve(entry);
     auto updater = getHwSwitchEnsemble()->getRouteUpdater();
     MplsRoute route;
-    route.topLabel() = entry->getID().value();
+    route.topLabel() = entry->getID();
     route.nextHops() =
         util::fromRouteNextHopSet(entry->getForwardInfo().getNextHopSet());
     updater.addRoute(entry->getBestEntry().first, route);
@@ -221,7 +226,7 @@ class BcmLabelSwitchActionTest : public BcmTest {
 
   void removeMplsRoute(std::shared_ptr<LabelForwardingEntry> entry) {
     auto updater = getHwSwitchEnsemble()->getRouteUpdater();
-    updater.delRoute(entry->getID().value(), ClientID(786));
+    updater.delRoute(entry->getID(), ClientID(786));
     updater.program();
   }
   std::vector<std::shared_ptr<LabelForwardingEntry>> entries_;

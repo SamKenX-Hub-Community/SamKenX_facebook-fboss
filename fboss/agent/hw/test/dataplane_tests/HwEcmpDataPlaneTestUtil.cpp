@@ -175,14 +175,36 @@ void HwIpEcmpDataPlaneTestUtil<AddrT>::pumpTrafficThroughPort(
     std::optional<PortID> port) {
   auto* ensemble = BaseT::getEnsemble();
   auto programmedState = ensemble->getProgrammedState();
-  auto firstVlan = *(programmedState->getVlans()->begin());
-  auto mac = utility::getInterfaceMac(programmedState, firstVlan->getID());
+  auto vlanId = utility::firstVlanID(programmedState);
+  auto intfMac = utility::getFirstInterfaceMac(programmedState);
 
   utility::pumpTraffic(
       std::is_same_v<AddrT, folly::IPAddressV6>,
       ensemble->getHwSwitch(),
-      mac,
-      firstVlan->getID(),
+      intfMac,
+      vlanId,
+      port);
+}
+
+template <typename AddrT>
+HwIpRoCEEcmpDataPlaneTestUtil<AddrT>::HwIpRoCEEcmpDataPlaneTestUtil(
+    HwSwitchEnsemble* ensemble,
+    RouterID vrf)
+    : BaseT(ensemble, vrf) {}
+
+template <typename AddrT>
+void HwIpRoCEEcmpDataPlaneTestUtil<AddrT>::pumpTrafficThroughPort(
+    std::optional<PortID> port) {
+  auto* ensemble = BaseT::getEnsemble();
+  auto programmedState = ensemble->getProgrammedState();
+  auto vlanId = utility::firstVlanID(programmedState);
+  auto intfMac = utility::getFirstInterfaceMac(programmedState);
+
+  utility::pumpRoCETraffic(
+      std::is_same_v<AddrT, folly::IPAddressV6>,
+      ensemble->getHwSwitch(),
+      intfMac,
+      vlanId,
       port);
 }
 
@@ -219,7 +241,7 @@ void HwMplsEcmpDataPlaneTestUtil<AddrT>::pumpTrafficThroughPort(
   /* pump MPLS traffic */
   auto* ensemble = BaseT::getEnsemble();
   auto programmedState = ensemble->getProgrammedState();
-  auto firstVlan = *(programmedState->getVlans()->begin());
+  auto firstVlan = programmedState->getVlans()->cbegin()->second;
   auto mac = utility::getInterfaceMac(programmedState, firstVlan->getID());
   pumpMplsTraffic(
       std::is_same_v<AddrT, folly::IPAddressV6>,
@@ -240,5 +262,7 @@ template class HwIpEcmpDataPlaneTestUtil<folly::IPAddressV4>;
 template class HwIpEcmpDataPlaneTestUtil<folly::IPAddressV6>;
 template class HwMplsEcmpDataPlaneTestUtil<folly::IPAddressV4>;
 template class HwMplsEcmpDataPlaneTestUtil<folly::IPAddressV6>;
+template class HwIpRoCEEcmpDataPlaneTestUtil<folly::IPAddressV6>;
+template class HwIpRoCEEcmpDataPlaneTestUtil<folly::IPAddressV4>;
 
 } // namespace facebook::fboss::utility

@@ -3,28 +3,22 @@
 #pragma once
 
 #include "fboss/agent/FbossError.h"
-#include "fboss/agent/hw/switch_asics/BroadcomAsic.h"
+#include "fboss/agent/hw/switch_asics/BroadcomXgsAsic.h"
 
 namespace facebook::fboss {
 
-class TomahawkAsic : public BroadcomAsic {
+class TomahawkAsic : public BroadcomXgsAsic {
  public:
+  using BroadcomXgsAsic::BroadcomXgsAsic;
   bool isSupported(Feature) const override;
-  AsicType getAsicType() const override {
-    return AsicType::ASIC_TYPE_TOMAHAWK;
+  cfg::AsicType getAsicType() const override {
+    return cfg::AsicType::ASIC_TYPE_TOMAHAWK;
   }
   phy::DataPlanePhyChipType getDataPlanePhyChipType() const override {
     return phy::DataPlanePhyChipType::IPHY;
   }
   cfg::PortSpeed getMaxPortSpeed() const override {
     return cfg::PortSpeed::HUNDREDG;
-  }
-  std::set<cfg::StreamType> getQueueStreamTypes(bool cpu) const override {
-    if (cpu) {
-      return {cfg::StreamType::MULTICAST};
-    } else {
-      return {cfg::StreamType::UNICAST};
-    }
   }
   int getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
       const override;
@@ -75,6 +69,9 @@ class TomahawkAsic : public BroadcomAsic {
   }
   uint32_t getStaticQueueLimitBytes() const override {
     return getMMUSizeBytes();
+  }
+  uint32_t getNumMemoryBuffers() const override {
+    return 4;
   }
 };
 

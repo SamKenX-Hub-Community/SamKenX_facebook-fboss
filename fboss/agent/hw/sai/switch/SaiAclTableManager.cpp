@@ -84,6 +84,14 @@ sai_uint32_t SaiAclTableManager::getMetaDataMask(
   return metaDataMax - 1;
 }
 
+std::vector<std::string> SaiAclTableManager::getAllHandleNames() const {
+  std::vector<std::string> handleNames;
+  for (const auto& [name, handle] : handles_) {
+    handleNames.push_back(name);
+  }
+  return handleNames;
+}
+
 AclTableSaiId SaiAclTableManager::addAclTable(
     const std::shared_ptr<AclTable>& addedAclTable,
     cfg::AclStage aclStage) {
@@ -203,33 +211,6 @@ SaiAclTableHandle* FOLLY_NULLABLE SaiAclTableManager::getAclTableHandleImpl(
   return itr->second.get();
 }
 
-sai_uint32_t SaiAclTableManager::swPriorityToSaiPriority(int priority) const {
-  /*
-   * TODO(skhare)
-   * When adding HwAclPriorityTests, add a test to verify that SAI
-   * implementation treats larger value of priority as higher priority.
-   * SwitchState: smaller ACL ID means higher priority.
-   * BCM API: larger priority means higher priority.
-   * BCM SAI: larger priority means higher priority.
-   * Tajo SAI: larger priority means higher priority.
-   * SAI spec: does not define?
-   * But larger priority means higher priority is documented here:
-   * https://github.com/opencomputeproject/SAI/blob/master/doc/SAI-Proposal-ACL-1.md
-   */
-  sai_uint32_t saiPriority = aclEntryMaximumPriority_ - priority;
-  if (saiPriority < aclEntryMinimumPriority_) {
-    throw FbossError(
-        "Acl Entry priority out of range. Supported: [",
-        aclEntryMinimumPriority_,
-        ", ",
-        aclEntryMaximumPriority_,
-        "], specified: ",
-        saiPriority);
-  }
-
-  return saiPriority;
-}
-
 sai_acl_ip_frag_t SaiAclTableManager::cfgIpFragToSaiIpFrag(
     cfg::IpFragMatch cfgType) const {
   switch (cfgType) {
@@ -302,7 +283,7 @@ std::pair<sai_uint32_t, sai_uint32_t>
 SaiAclTableManager::cfgLookupClassToSaiFdbMetaDataAndMask(
     cfg::AclLookupClass lookupClass) const {
   if (platform_->getAsic()->getAsicType() ==
-      HwAsic::AsicType::ASIC_TYPE_TRIDENT2) {
+      cfg::AsicType::ASIC_TYPE_TRIDENT2) {
     /*
      * lookupClassL2 is not configured on Trident2 or else the ASIC runs out
      * of resources. lookupClassL2 is needed for MH-NIC queue-per-host
@@ -663,7 +644,7 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
       std::nullopt};
   if (addedAclEntry->getIcmpType()) {
     if (addedAclEntry->getProto()) {
-      if (addedAclEntry->getProto().value() == AclEntryFields::kProtoIcmp) {
+      if (addedAclEntry->getProto().value() == AclEntry::kProtoIcmp) {
         fieldIcmpV4Type = SaiAclEntryTraits::Attributes::FieldIcmpV4Type{
             AclEntryFieldU8(std::make_pair(
                 addedAclEntry->getIcmpType().value(), kIcmpTypeMask))};
@@ -672,8 +653,7 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
               AclEntryFieldU8(std::make_pair(
                   addedAclEntry->getIcmpCode().value(), kIcmpCodeMask))};
         }
-      } else if (
-          addedAclEntry->getProto().value() == AclEntryFields::kProtoIcmpv6) {
+      } else if (addedAclEntry->getProto().value() == AclEntry::kProtoIcmpv6) {
         fieldIcmpV6Type = SaiAclEntryTraits::Attributes::FieldIcmpV6Type{
             AclEntryFieldU8(std::make_pair(
                 addedAclEntry->getIcmpType().value(), kIcmpTypeMask))};
@@ -796,18 +776,20 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
 
   auto action = addedAclEntry->getAclAction();
   if (action) {
-    if (action.value().getTrafficCounter()) {
+    // THRIFT_COPY
+    auto matchAction = MatchAction::fromThrift(action->toThrift());
+    if (matchAction.getTrafficCounter()) {
       std::tie(saiAclCounter, aclCounterTypeAndName) = addAclCounter(
           aclTableHandle,
-          action.value().getTrafficCounter().value(),
+          matchAction.getTrafficCounter().value(),
           adapterHostKey);
       aclActionCounter = SaiAclEntryTraits::Attributes::ActionCounter{
           AclEntryActionSaiObjectIdT(
               AclCounterSaiId{saiAclCounter->adapterKey()})};
     }
 
-    if (action.value().getSendToQueue()) {
-      auto sendToQueue = action.value().getSendToQueue().value();
+    if (matchAction.getSendToQueue()) {
+      auto sendToQueue = matchAction.getSendToQueue().value();
       bool sendToCpu = sendToQueue.second;
       if (!sendToCpu) {
         auto queueId = static_cast<sai_uint8_t>(*sendToQueue.first.queueId());
@@ -838,8 +820,8 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
               AclEntryActionU8(queueId)};
         };
 
-        if (action.value().getToCpuAction()) {
-          switch (action.value().getToCpuAction().value()) {
+        if (matchAction.getToCpuAction()) {
+          switch (matchAction.getToCpuAction().value()) {
             case cfg::ToCpuAction::COPY:
               if (!platform_->getAsic()->isSupported(
                       HwAsic::Feature::ACL_COPY_TO_CPU)) {
@@ -856,40 +838,40 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
       }
     }
 
-    if (action.value().getIngressMirror().has_value()) {
+    if (matchAction.getIngressMirror().has_value()) {
       std::vector<sai_object_id_t> aclEntryMirrorIngressOidList;
       auto mirrorHandle = managerTable_->mirrorManager().getMirrorHandle(
-          action.value().getIngressMirror().value());
+          matchAction.getIngressMirror().value());
       if (mirrorHandle) {
         aclEntryMirrorIngressOidList.push_back(mirrorHandle->adapterKey());
       }
-      ingressMirror = action.value().getIngressMirror().value();
+      ingressMirror = matchAction.getIngressMirror().value();
       aclActionMirrorIngress =
           SaiAclEntryTraits::Attributes::ActionMirrorIngress{
               AclEntryActionSaiObjectIdList(aclEntryMirrorIngressOidList)};
     }
 
-    if (action.value().getEgressMirror().has_value()) {
+    if (matchAction.getEgressMirror().has_value()) {
       std::vector<sai_object_id_t> aclEntryMirrorEgressOidList;
       auto mirrorHandle = managerTable_->mirrorManager().getMirrorHandle(
-          action.value().getEgressMirror().value());
+          matchAction.getEgressMirror().value());
       if (mirrorHandle) {
         aclEntryMirrorEgressOidList.push_back(mirrorHandle->adapterKey());
       }
-      egressMirror = action.value().getEgressMirror().value();
+      egressMirror = matchAction.getEgressMirror().value();
       aclActionMirrorEgress = SaiAclEntryTraits::Attributes::ActionMirrorEgress{
           AclEntryActionSaiObjectIdList(aclEntryMirrorEgressOidList)};
     }
 
-    if (action.value().getSetDscp()) {
-      const int dscpValue = *action.value().getSetDscp().value().dscpValue();
+    if (matchAction.getSetDscp()) {
+      const int dscpValue = *matchAction.getSetDscp().value().dscpValue();
 
       aclActionSetDSCP = SaiAclEntryTraits::Attributes::ActionSetDSCP{
           AclEntryActionU8(dscpValue)};
     }
 
-    if (action.value().getMacsecFlow()) {
-      auto macsecFlowAction = action.value().getMacsecFlow().value();
+    if (matchAction.getMacsecFlow()) {
+      auto macsecFlowAction = matchAction.getMacsecFlow().value();
       if (*macsecFlowAction.action() ==
           cfg::MacsecFlowPacketAction::MACSEC_FLOW) {
         sai_object_id_t flowId =
@@ -934,8 +916,12 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
        fieldNeighborDstUserMeta.has_value() ||
        platform_->getAsic()->isSupported(HwAsic::Feature::EMPTY_ACL_MATCHER));
   if (fieldSrcPort.has_value()) {
-    matcherIsValid &= platform_->getAsic()->isSupported(
+    auto srcPortQualifierSupported = platform_->getAsic()->isSupported(
         HwAsic::Feature::SAI_ACL_ENTRY_SRC_PORT_QUALIFIER);
+#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+    srcPortQualifierSupported = false;
+#endif
+    matcherIsValid &= srcPortQualifierSupported;
   }
   auto actionIsValid =
       (aclActionPacketAction.has_value() || aclActionCounter.has_value() ||
@@ -999,7 +985,7 @@ AclEntrySaiId SaiAclTableManager::addAclEntry(
       addedAclEntry->getPriority(), std::move(entryHandle));
   CHECK(inserted);
 
-  XLOG(INFO) << "added acl entry " << addedAclEntry->getID() << " priority "
+  XLOG(DBG2) << "added acl entry " << addedAclEntry->getID() << " priority "
              << addedAclEntry->getPriority();
 
   auto enabled = SaiApiTable::getInstance()->aclApi().getAttribute(
@@ -1034,10 +1020,12 @@ void SaiAclTableManager::removeAclEntry(
   aclTableHandle->aclTableMembers.erase(itr);
 
   auto action = removedAclEntry->getAclAction();
-  if (action && action.value().getTrafficCounter()) {
-    removeAclCounter(action.value().getTrafficCounter().value());
+  if (action && action->cref<switch_state_tags::trafficCounter>()) {
+    // THRIFT_COPY
+    removeAclCounter(
+        action->cref<switch_state_tags::trafficCounter>()->toThrift());
   }
-  XLOG(INFO) << "removed acl  entry " << removedAclEntry->getID()
+  XLOG(DBG2) << "removed acl  entry " << removedAclEntry->getID()
              << " priority " << removedAclEntry->getPriority();
 }
 
@@ -1058,7 +1046,7 @@ void SaiAclTableManager::changedAclEntry(
    * ASIC/SAI implementation typically does not allow modifying an ACL entry.
    * Thus, remove and re-add.
    */
-  XLOG(INFO) << "changing acl entry " << oldAclEntry->getID();
+  XLOG(DBG2) << "changing acl entry " << oldAclEntry->getID();
   removeAclEntry(oldAclEntry, aclTableName);
   addAclEntry(newAclEntry, aclTableName);
 }
@@ -1159,76 +1147,120 @@ void SaiAclTableManager::updateStats() {
 std::set<cfg::AclTableQualifier> SaiAclTableManager::getSupportedQualifierSet()
     const {
   /*
-   * Tajo does not support following qualifier or enabling those
-   * overflows max key width. Thus, disable those on Tajo for now.
+   * Not all the qualifiers are supported by every ASIC.
+   * Moreover, different ASICs have different max key widths.
+   * Thus, enabling all the supported qualifiers in the same ACL Table could
+   * overflow the max key width.
+   *
+   * Thus, only enable a susbet of supported qualifiers based on the ASIC
+   * capability.
    */
   bool isTajo = platform_->getAsic()->getAsicVendor() ==
       HwAsic::AsicVendor::ASIC_VENDOR_TAJO;
-  bool isTrident2 = platform_->getAsic()->getAsicType() ==
-      HwAsic::AsicType::ASIC_TYPE_TRIDENT2;
-  std::set<cfg::AclTableQualifier> tajoQualifiers = {
-      cfg::AclTableQualifier::SRC_IPV6,
-      cfg::AclTableQualifier::DST_IPV6,
-      cfg::AclTableQualifier::SRC_IPV4,
-      cfg::AclTableQualifier::DST_IPV4,
-      cfg::AclTableQualifier::IP_PROTOCOL,
-      cfg::AclTableQualifier::DSCP,
-      cfg::AclTableQualifier::IP_TYPE,
-      cfg::AclTableQualifier::TTL,
-      cfg::AclTableQualifier::LOOKUP_CLASS_L2,
-      cfg::AclTableQualifier::LOOKUP_CLASS_NEIGHBOR,
-      cfg::AclTableQualifier::LOOKUP_CLASS_ROUTE};
+  bool isTrident2 =
+      platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_TRIDENT2;
+  bool isJericho2 =
+      platform_->getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_JERICHO2;
 
   if (isTajo) {
+    std::set<cfg::AclTableQualifier> tajoQualifiers = {
+        cfg::AclTableQualifier::SRC_IPV6,
+        cfg::AclTableQualifier::DST_IPV6,
+        cfg::AclTableQualifier::SRC_IPV4,
+        cfg::AclTableQualifier::DST_IPV4,
+        cfg::AclTableQualifier::IP_PROTOCOL,
+        cfg::AclTableQualifier::DSCP,
+        cfg::AclTableQualifier::IP_TYPE,
+        cfg::AclTableQualifier::TTL,
+        cfg::AclTableQualifier::LOOKUP_CLASS_L2,
+        cfg::AclTableQualifier::LOOKUP_CLASS_NEIGHBOR,
+        cfg::AclTableQualifier::LOOKUP_CLASS_ROUTE};
+
+#if defined(TAJO_SDK_VERSION_1_58_0) || defined(TAJO_SDK_VERSION_1_62_0)
+    tajoQualifiers.insert(cfg::AclTableQualifier::SRC_PORT);
+#endif
+
+#if defined(TAJO_SDK_VERSION_1_62_0)
+    std::vector<cfg::AclTableQualifier> tajoExtraQualifierList = {
+        cfg::AclTableQualifier::L4_SRC_PORT,
+        cfg::AclTableQualifier::L4_DST_PORT,
+        cfg::AclTableQualifier::TCP_FLAGS,
+        cfg::AclTableQualifier::IP_FRAG,
+        cfg::AclTableQualifier::ICMPV4_TYPE,
+        cfg::AclTableQualifier::ICMPV4_CODE,
+        cfg::AclTableQualifier::ICMPV6_TYPE,
+        cfg::AclTableQualifier::ICMPV6_CODE,
+        cfg::AclTableQualifier::DST_MAC,
+    };
+    for (const auto& qualifier : tajoExtraQualifierList) {
+      tajoQualifiers.insert(qualifier);
+    }
+#endif
     return tajoQualifiers;
+  } else if (isJericho2) {
+    // TODO(skhare)
+    // Extend this list once the SAI implementation supports more qualifiers
+    std::set<cfg::AclTableQualifier> indusQualifiers = {
+        cfg::AclTableQualifier::SRC_IPV6,
+        cfg::AclTableQualifier::DST_IPV6,
+        cfg::AclTableQualifier::SRC_PORT,
+        cfg::AclTableQualifier::DSCP,
+        cfg::AclTableQualifier::IP_PROTOCOL,
+        cfg::AclTableQualifier::IP_TYPE,
+        cfg::AclTableQualifier::TTL,
+    };
+
+    return indusQualifiers;
+  } else {
+    std::set<cfg::AclTableQualifier> bcmQualifiers = {
+        cfg::AclTableQualifier::SRC_IPV6,
+        cfg::AclTableQualifier::DST_IPV6,
+        cfg::AclTableQualifier::SRC_IPV4,
+        cfg::AclTableQualifier::DST_IPV4,
+        cfg::AclTableQualifier::L4_SRC_PORT,
+        cfg::AclTableQualifier::L4_DST_PORT,
+        cfg::AclTableQualifier::IP_PROTOCOL,
+        cfg::AclTableQualifier::TCP_FLAGS,
+        cfg::AclTableQualifier::SRC_PORT,
+        cfg::AclTableQualifier::OUT_PORT,
+        cfg::AclTableQualifier::IP_FRAG,
+        cfg::AclTableQualifier::ICMPV4_TYPE,
+        cfg::AclTableQualifier::ICMPV4_CODE,
+        cfg::AclTableQualifier::ICMPV6_TYPE,
+        cfg::AclTableQualifier::ICMPV6_CODE,
+        cfg::AclTableQualifier::DSCP,
+        cfg::AclTableQualifier::DST_MAC,
+        cfg::AclTableQualifier::IP_TYPE,
+        cfg::AclTableQualifier::TTL,
+        cfg::AclTableQualifier::LOOKUP_CLASS_L2,
+        cfg::AclTableQualifier::LOOKUP_CLASS_NEIGHBOR,
+        cfg::AclTableQualifier::LOOKUP_CLASS_ROUTE};
+
+    /*
+     * FdbDstUserMetaData is required only for MH-NIC queue-per-host solution.
+     * However, the solution is not applicable for Trident2 as FBOSS does not
+     * implement queues on Trident2.
+     * Furthermore, Trident2 supports fewer ACL qualifiers than other
+     * hardwares. Thus, avoid programming unncessary qualifiers (or else we
+     * run out resources).
+     */
+    if (isTrident2) {
+      bcmQualifiers.erase(cfg::AclTableQualifier::LOOKUP_CLASS_L2);
+    }
+
+    return bcmQualifiers;
   }
-
-  std::set<cfg::AclTableQualifier> bcmQualifiers = {
-      cfg::AclTableQualifier::SRC_IPV6,
-      cfg::AclTableQualifier::DST_IPV6,
-      cfg::AclTableQualifier::SRC_IPV4,
-      cfg::AclTableQualifier::DST_IPV4,
-      cfg::AclTableQualifier::L4_SRC_PORT,
-      cfg::AclTableQualifier::L4_DST_PORT,
-      cfg::AclTableQualifier::IP_PROTOCOL,
-      cfg::AclTableQualifier::TCP_FLAGS,
-      cfg::AclTableQualifier::SRC_PORT,
-      cfg::AclTableQualifier::OUT_PORT,
-      cfg::AclTableQualifier::IP_FRAG,
-      cfg::AclTableQualifier::ICMPV4_TYPE,
-      cfg::AclTableQualifier::ICMPV4_CODE,
-      cfg::AclTableQualifier::ICMPV6_TYPE,
-      cfg::AclTableQualifier::ICMPV6_CODE,
-      cfg::AclTableQualifier::DSCP,
-      cfg::AclTableQualifier::DST_MAC,
-      cfg::AclTableQualifier::IP_TYPE,
-      cfg::AclTableQualifier::TTL,
-      cfg::AclTableQualifier::LOOKUP_CLASS_L2,
-      cfg::AclTableQualifier::LOOKUP_CLASS_NEIGHBOR,
-      cfg::AclTableQualifier::LOOKUP_CLASS_ROUTE};
-
-  /*
-   * FdbDstUserMetaData is required only for MH-NIC queue-per-host solution.
-   * However, the solution is not applicable for Trident2 as FBOSS does not
-   * implement queues on Trident2.
-   * Furthermore, Trident2 supports fewer ACL qualifiers than other
-   * hardwares. Thus, avoid programming unncessary qualifiers (or else we
-   * run out resources).
-   */
-  if (isTrident2) {
-    bcmQualifiers.erase(cfg::AclTableQualifier::LOOKUP_CLASS_L2);
-  }
-
-  return bcmQualifiers;
 }
 
 void SaiAclTableManager::addDefaultAclTable() {
   if (handles_.find(kAclTable1) != handles_.end()) {
     throw FbossError("default acl table already exists.");
   }
-  auto table1 = std::make_shared<AclTable>(
-      0,
-      kAclTable1); // TODO(saranicholas): set appropriate table priority
+  // TODO(saranicholas): set appropriate table priority
+  state::AclTableFields aclTableFields{};
+  aclTableFields.priority() = 0;
+  aclTableFields.id() = kAclTable1;
+  auto table1 = std::make_shared<AclTable>(std::move(aclTableFields));
   addAclTable(table1, cfg::AclStage::INGRESS);
 }
 
@@ -1392,12 +1424,16 @@ bool SaiAclTableManager::areQualifiersSupportedInDefaultAclTable(
 void SaiAclTableManager::recreateAclTable(
     std::shared_ptr<SaiAclTable>& aclTable,
     const SaiAclTableTraits::CreateAttributes& newAttributes) {
-  if (!platform_->getAsic()->isSupported(
-          HwAsic::Feature::SAI_ACL_TABLE_UPDATE)) {
+  bool aclTableUpdateSupport =
+      platform_->getAsic()->isSupported(HwAsic::Feature::SAI_ACL_TABLE_UPDATE);
+#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+  aclTableUpdateSupport = false;
+#endif
+  if (!aclTableUpdateSupport) {
     XLOG(WARNING) << "feature to update acl table is not supported";
     return;
   }
-  XLOG(INFO) << "refreshing acl table schema";
+  XLOG(DBG2) << "refreshing acl table schema";
   auto adapterHostKey = aclTable->adapterHostKey();
   auto& aclEntryStore = saiStore_->get<SaiAclEntryTraits>();
 

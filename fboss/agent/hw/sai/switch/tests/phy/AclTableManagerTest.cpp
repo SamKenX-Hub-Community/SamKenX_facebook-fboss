@@ -18,7 +18,7 @@
 using namespace facebook::fboss;
 
 namespace {
-constexpr auto kAclTable2 = "AclTable2";
+const std::string kAclTable2 = "AclTable2";
 }
 
 class AclTableManagerTest : public ManagerTestBase {
@@ -90,7 +90,10 @@ TEST_F(AclTableManagerTest, addTwoAclTable) {
 }
 
 TEST_F(AclTableManagerTest, addDupAclTable) {
-  auto table1 = std::make_shared<AclTable>(0, kAclTable1);
+  state::AclTableFields fields{};
+  fields.priority() = 0;
+  fields.id() = kAclTable1;
+  auto table1 = std::make_shared<AclTable>(std::move(fields));
   EXPECT_THROW(
       saiManagerTable->aclTableManager().addAclTable(
           table1, cfg::AclStage::INGRESS),
@@ -117,7 +120,8 @@ TEST_F(AclTableManagerTest, addAclEntryDscp) {
                         .getAclTableHandle(kAclTable1)
                         ->aclTable->adapterKey();
 
-  auto aclEntry = std::make_shared<AclEntry>(kPriority(), "AclEntry1");
+  auto aclEntry =
+      std::make_shared<AclEntry>(kPriority(), std::string("AclEntry1"));
   aclEntry->setDscp(kDscp());
   aclEntry->setActionType(kActionType());
 
@@ -132,7 +136,8 @@ TEST_F(AclTableManagerTest, addAclEntryDstMac) {
                         .getAclTableHandle(kAclTable1)
                         ->aclTable->adapterKey();
 
-  auto aclEntry = std::make_shared<AclEntry>(kPriority(), "AclEntry1");
+  auto aclEntry =
+      std::make_shared<AclEntry>(kPriority(), std::string("AclEntry1"));
   aclEntry->setDstMac(kMac());
   aclEntry->setActionType(kActionType());
 
@@ -154,7 +159,8 @@ TEST_F(AclTableManagerTest, addAclEntryWithCounter) {
   MatchAction action = MatchAction();
   action.setTrafficCounter(counter);
 
-  auto aclEntry = std::make_shared<AclEntry>(kPriority(), "AclEntry1");
+  auto aclEntry =
+      std::make_shared<AclEntry>(kPriority(), std::string("AclEntry1"));
   aclEntry->setDstMac(kMac());
   aclEntry->setAclAction(action);
 
@@ -182,7 +188,8 @@ TEST_F(AclTableManagerTest, addTwoAclEntry) {
                         .getAclTableHandle(kAclTable1)
                         ->aclTable->adapterKey();
 
-  auto aclEntry = std::make_shared<AclEntry>(kPriority(), "AclEntry1");
+  auto aclEntry =
+      std::make_shared<AclEntry>(kPriority(), std::string("AclEntry1"));
   aclEntry->setDstMac(kMac());
   aclEntry->setActionType(kActionType());
 
@@ -193,7 +200,8 @@ TEST_F(AclTableManagerTest, addTwoAclEntry) {
       aclEntryId, SaiAclEntryTraits::Attributes::TableId());
   EXPECT_EQ(tableIdGot, aclTableId);
 
-  auto aclEntry2 = std::make_shared<AclEntry>(kPriority2(), "AclEntry2");
+  auto aclEntry2 =
+      std::make_shared<AclEntry>(kPriority2(), std::string("AclEntry2"));
   aclEntry->setDstMac(kMac2());
   aclEntry2->setActionType(kActionType());
 
@@ -206,13 +214,15 @@ TEST_F(AclTableManagerTest, addTwoAclEntry) {
 }
 
 TEST_F(AclTableManagerTest, addDupAclEntry) {
-  auto aclEntry = std::make_shared<AclEntry>(kPriority(), "AclEntry1");
+  auto aclEntry =
+      std::make_shared<AclEntry>(kPriority(), std::string("AclEntry1"));
   aclEntry->setDstMac(kMac());
   aclEntry->setActionType(kActionType());
 
   saiManagerTable->aclTableManager().addAclEntry(aclEntry, kAclTable1);
 
-  auto dupAclEntry = std::make_shared<AclEntry>(kPriority(), "AclEntry1");
+  auto dupAclEntry =
+      std::make_shared<AclEntry>(kPriority(), std::string("AclEntry1"));
   dupAclEntry->setDstMac(kMac2());
   dupAclEntry->setActionType(cfg::AclActionType::DENY);
 
@@ -222,7 +232,8 @@ TEST_F(AclTableManagerTest, addDupAclEntry) {
 }
 
 TEST_F(AclTableManagerTest, getAclEntry) {
-  auto aclEntry = std::make_shared<AclEntry>(kPriority(), "AclEntry1");
+  auto aclEntry =
+      std::make_shared<AclEntry>(kPriority(), std::string("AclEntry1"));
   aclEntry->setDstMac(kMac());
   aclEntry->setActionType(kActionType());
 

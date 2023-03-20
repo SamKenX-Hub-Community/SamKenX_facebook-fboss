@@ -15,6 +15,7 @@
 #include "fboss/agent/SwSwitchRouteUpdateWrapper.h"
 #include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
+#include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/rib/RoutingInformationBase.h"
 #include "fboss/agent/state/StateUpdate.h"
@@ -77,6 +78,7 @@ class Route;
 class Interface;
 class FsdbSyncer;
 class TeFlowNexthopHandler;
+class DsfSubscriber;
 
 enum class SwitchFlags : int {
   DEFAULT = 0,
@@ -152,9 +154,7 @@ class SwSwitch : public HwSwitch::Callback {
    * For example, Broadcom HW will overwrite this value based on its egress
    * programming.
    */
-  VlanID getCPUVlan() const {
-    return VlanID(4095);
-  }
+  std::optional<VlanID> getCPUVlan() const;
 
   /*
    * Initialize the switch.
@@ -184,6 +184,14 @@ class SwSwitch : public HwSwitch::Callback {
       std::unique_ptr<TunManager> tunMgr,
       SwitchFlags flags = SwitchFlags::DEFAULT);
 
+  // can be used in the tests, where a test orchestrating ensemble can be
+  // injected between HwSwitch and SwSwitch an ensemble must dispatch events to
+  // SwSwitch as soon as it receives.
+  void init(
+      HwSwitch::Callback* callback,
+      std::unique_ptr<TunManager> tunMgr,
+      SwitchFlags flags = SwitchFlags::DEFAULT);
+
   bool isFullyInitialized() const;
 
   bool isInitialized() const;
@@ -198,7 +206,7 @@ class SwSwitch : public HwSwitch::Callback {
 
   void updateStats();
 
-  folly::dynamic gracefulExitState() const;
+  std::tuple<folly::dynamic, state::WarmbootState> gracefulExitState() const;
 
   /*
    * Get a pointer to the current switch state.
@@ -479,6 +487,8 @@ class SwSwitch : public HwSwitch::Callback {
       L2EntryUpdateType l2EntryUpdateType) override;
   void exitFatal() const noexcept override;
 
+  uint32_t getEthernetHeaderSize() const;
+
   /*
    * Allocate a new TxPacket.
    */
@@ -647,12 +657,15 @@ class SwSwitch : public HwSwitch::Callback {
    * through the well defined RouteUpdateWrapper
    * abstraction
    */
-  const RoutingInformationBase* getRib() const {
+  RoutingInformationBase* getRib() const {
     return rib_.get();
   }
 
   SwSwitchRouteUpdateWrapper getRouteUpdater() {
     return SwSwitchRouteUpdateWrapper(this, rib_.get());
+  }
+  const DsfSubscriber* getDsfSubscriber() const {
+    return dsfSubscriber_.get();
   }
 
   /*
@@ -762,6 +775,14 @@ class SwSwitch : public HwSwitch::Callback {
       std::shared_ptr<SwitchState> state,
       const folly::IPAddressV6& target);
 
+  TeFlowStats getTeFlowStats();
+
+  HwBufferPoolStats getBufferPoolStats() const;
+
+  VlanID getVlanIDHelper(std::optional<VlanID> vlanID) const;
+
+  InterfaceID getInterfaceIDForPort(PortID portID) const;
+
  private:
   void updateStateBlockingImpl(
       folly::StringPiece name,
@@ -794,6 +815,7 @@ class SwSwitch : public HwSwitch::Callback {
   void publishInitTimes(std::string name, const float& time);
   void updatePortInfo();
   void updateRouteStats();
+  void updateTeFlowStats();
   void publishSwitchInfo(const HwInitResult& hwInitRet);
   void setSwitchRunState(SwitchRunState desiredState);
   SwitchStats* createSwitchStats();
@@ -852,6 +874,7 @@ class SwSwitch : public HwSwitch::Callback {
   // The HwSwitch object.  This object is owned by the Platform.
   HwSwitch* hw_;
   std::unique_ptr<Platform> platform_;
+  const std::unique_ptr<PlatformProductInfo> platformProductInfo_;
   std::atomic<SwitchRunState> runState_{SwitchRunState::UNINITIALIZED};
   folly::ThreadLocalPtr<SwitchStats, SwSwitch> stats_;
   /**
@@ -977,12 +1000,17 @@ class SwSwitch : public HwSwitch::Callback {
 #endif
 
   static constexpr auto kIphySnapshotIntervalSeconds = 1;
+  // Collecting phy Info is currently inefficient on some platforms. Instead of
+  // collecting them every second, tune down the frequency to only collect once
+  // every update_phy_info_interval_s seconds (default to be 10).
+  int phyInfoUpdateTime_{0};
 
   std::unique_ptr<PhySnapshotManager<kIphySnapshotIntervalSeconds>>
       phySnapshotManager_;
   std::unique_ptr<AclNexthopHandler> aclNexthopHandler_;
   std::unique_ptr<FsdbSyncer> fsdbSyncer_;
   std::unique_ptr<TeFlowNexthopHandler> teFlowNextHopHandler_;
+  std::unique_ptr<DsfSubscriber> dsfSubscriber_;
 
   folly::Synchronized<ConfigAppliedInfo> configAppliedInfo_;
   std::optional<std::chrono::time_point<std::chrono::steady_clock>>

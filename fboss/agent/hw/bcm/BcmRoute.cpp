@@ -376,7 +376,8 @@ void BcmRoute::program(
   }
   nextHopHostReference_ = std::move(nexthopReference);
   egressId_ = egressId;
-  fwd_ = fwd;
+  // THRIFT_COPY
+  fwd_.fromThrift(fwd.toThrift());
   classID_ = classID;
   counterIDReference_ = std::move(counterIDReference);
 
@@ -533,12 +534,17 @@ void BcmRouteTable::addRoute(bcm_vrf_t vrf, const RouteT* route) {
         route->getClassID()));
   }
   CHECK(route->isResolved());
-  RouteNextHopEntry fwd(route->getForwardInfo());
+  const auto& fwd = route->getForwardInfo();
   if (fwd.getAction() == RouteForwardAction::NEXTHOPS) {
-    fwd = RouteNextHopEntry(
-        fwd.normalizedNextHops(), fwd.getAdminDistance(), fwd.getCounterID());
+    ret.first->second->program(
+        RouteNextHopEntry(
+            fwd.normalizedNextHops(),
+            fwd.getAdminDistance(),
+            fwd.getCounterID()),
+        route->getClassID());
+  } else {
+    ret.first->second->program(fwd, route->getClassID());
   }
-  ret.first->second->program(fwd, route->getClassID());
 }
 
 template <typename RouteT>

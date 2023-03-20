@@ -11,6 +11,7 @@
 
 #include <fboss/agent/state/Thrifty.h>
 #include <folly/MacAddress.h>
+#include <memory>
 #include <optional>
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NeighborResponseEntry.h"
@@ -30,24 +31,18 @@ struct NeighborResponseTableTraits {
   }
 };
 
-template <typename IPADDR, typename ENTRY>
-struct NeighborResponseTableThriftTraits
-    : public ThriftyNodeMapTraits<
-          std::string,
-          state::NeighborResponseEntryFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "ipAddress";
-    return _key;
-  }
+using NbrResponseTableTypeClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::string,
+    apache::thrift::type_class::structure>;
+using NbrResponseTableThriftType =
+    std::map<std::string, state::NeighborResponseEntryFields>;
 
-  static const KeyType convertKey(const IPADDR& key) {
-    return key.str();
-  }
-
-  static const KeyType parseKey(const folly::dynamic& key) {
-    return key.asString();
-  }
-};
+template <typename SUBCLASS, typename NODE>
+struct NbrResponseTableTraits : ThriftMapNodeTraits<
+                                    SUBCLASS,
+                                    NbrResponseTableTypeClass,
+                                    NbrResponseTableThriftType,
+                                    NODE> {};
 
 /*
  * A mapping of IPv4 --> MAC address, indicating how we should respond to ARP
@@ -58,55 +53,14 @@ struct NeighborResponseTableThriftTraits
  */
 template <typename IPADDR, typename ENTRY, typename SUBCLASS>
 class NeighborResponseTable
-    : public ThriftyNodeMapT<
-          SUBCLASS,
-          NeighborResponseTableTraits<IPADDR, ENTRY>,
-          NeighborResponseTableThriftTraits<IPADDR, ENTRY>> {
+    : public ThriftMapNode<SUBCLASS, NbrResponseTableTraits<SUBCLASS, ENTRY>> {
  public:
   typedef IPADDR AddressType;
 
   NeighborResponseTable() {}
 
-  static folly::dynamic migrateToThrifty(const folly::dynamic& dyn) {
-    folly::dynamic newItems = folly::dynamic::object;
-    for (auto item : dyn.items()) {
-      // inject key into node for ThriftyNodeMapT to find
-      item.second[NeighborResponseTableThriftTraits<IPADDR, ENTRY>::
-                      getThriftKeyName()] = item.first;
-      newItems[item.first] = item.second;
-    }
-    return newItems;
-  }
-
-  static void migrateFromThrifty(folly::dynamic& /* dyn */) {}
-
-  folly::dynamic toFollyDynamicLegacy() const {
-    folly::dynamic entries = folly::dynamic::object;
-    for (const auto& [ip, entry] : this->getAllNodes()) {
-      entries[ip.str()] = entry->toFollyDynamicLegacy();
-    }
-    return entries;
-  }
-
-  static std::shared_ptr<SUBCLASS> fromFollyDynamicLegacy(
-      const folly::dynamic& entries) {
-    auto nbrTable = std::make_shared<SUBCLASS>();
-    for (const auto& entry : entries.items()) {
-      auto node = ENTRY::fromFollyDynamicLegacy(entry.second);
-      // have to manually set IP because old dynamic struct did not include ip
-      node->setIP(IPADDR(entry.first.stringPiece()));
-      nbrTable->addNode(node);
-    }
-    return nbrTable;
-  }
-
   std::shared_ptr<ENTRY> getEntry(AddressType ip) const {
-    return this->getNodeIf(ip);
-  }
-
-  const typename NeighborResponseTableTraits<IPADDR, ENTRY>::NodeContainer&
-  getTable() const {
-    return this->getAllNodes();
+    return this->getNodeIf(ip.str());
   }
 
   /*
@@ -117,25 +71,22 @@ class NeighborResponseTable
    * exist.
    */
   void setEntry(AddressType ip, folly::MacAddress mac, InterfaceID intfID) {
-    auto& nodes = this->writableNodes();
-    auto it = nodes.find(ip);
-    if (it == nodes.end()) {
+    auto entry = this->getEntry(ip);
+    if (!entry) {
       this->addNode(std::make_shared<ENTRY>(ip, mac, intfID));
-    } else {
-      auto entry = it->second->clone();
-      entry->setIP(ip);
-      entry->setMac(mac);
-      entry->setInterfaceID(intfID);
-      it->second = entry;
+      return;
     }
+    entry = entry->clone();
+    entry->setIP(ip);
+    entry->setMac(mac);
+    entry->setInterfaceID(intfID);
+    this->updateNode(entry);
   }
 
  private:
   // Inherit the constructors required for clone()
-  using Parent = ThriftyNodeMapT<
-      SUBCLASS,
-      NeighborResponseTableTraits<IPADDR, ENTRY>,
-      NeighborResponseTableThriftTraits<IPADDR, ENTRY>>;
+  using Parent =
+      ThriftMapNode<SUBCLASS, NbrResponseTableTraits<SUBCLASS, ENTRY>>;
   using Parent::Parent;
   friend class CloneAllocator;
 };

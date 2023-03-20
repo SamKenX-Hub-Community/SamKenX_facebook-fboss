@@ -305,6 +305,77 @@ int __real_bcm_cosq_bst_stat_get(
     uint32 options,
     uint64* value);
 
+int __real_bcm_cosq_bst_stat_extended_get(
+    int unit,
+    bcm_cosq_object_id_t* id,
+    bcm_bst_stat_id_t bid,
+    uint32 options,
+    uint64* value);
+
+int __real_bcm_udf_hash_config_add(
+    int unit,
+    uint32 options,
+    bcm_udf_hash_config_t* config);
+
+int __real_bcm_udf_hash_config_delete(int unit, bcm_udf_hash_config_t* config);
+
+int __real_bcm_udf_create(
+    int unit,
+    bcm_udf_alloc_hints_t* hints,
+    bcm_udf_t* udf_info,
+    bcm_udf_id_t* udf_id);
+
+int __real_bcm_udf_destroy(int unit, bcm_udf_id_t udf_id);
+
+int __real_bcm_udf_pkt_format_create(
+    int unit,
+    bcm_udf_pkt_format_options_t options,
+    bcm_udf_pkt_format_info_t* pkt_format,
+    bcm_udf_pkt_format_id_t* pkt_format_id);
+
+int __real_bcm_udf_pkt_format_add(
+    int unit,
+    bcm_udf_id_t udf_id,
+    bcm_udf_pkt_format_id_t pkt_format_id);
+
+int __real_bcm_port_pause_addr_set(int unit, bcm_port_t port, bcm_mac_t mac);
+
+int __real_bcm_udf_pkt_format_destroy(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id);
+
+int __real_bcm_udf_pkt_format_delete(
+    int unit,
+    bcm_udf_id_t udf_id,
+    bcm_udf_pkt_format_id_t pkt_format_id);
+
+int __real_bcm_udf_pkt_format_get(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id,
+    int max,
+    bcm_udf_id_t* udf_id_list,
+    int* actual);
+
+int __real_bcm_udf_hash_config_get(int unit, bcm_udf_hash_config_t* config);
+
+int __real_bcm_udf_pkt_format_info_get(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id,
+    bcm_udf_pkt_format_info_t* pkt_format);
+
+void __real_bcm_udf_pkt_format_info_t_init(
+    bcm_udf_pkt_format_info_t* pkt_format);
+
+void __real_bcm_udf_alloc_hints_t_init(bcm_udf_alloc_hints_t* udf_hints);
+
+void __real_bcm_udf_t_init(bcm_udf_t* udf_info);
+
+void __real_bcm_udf_hash_config_t_init(bcm_udf_hash_config_t* config);
+
+int __real_bcm_udf_init(int unit);
+
+int __real_bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info);
+
 int __real_bcm_l3_egress_ecmp_get(
     int unit,
     bcm_l3_egress_ecmp_t* ecmp,
@@ -460,6 +531,11 @@ int __real_bcm_field_action_add(
     bcm_field_action_t action,
     uint32 param0,
     uint32 param1);
+
+int __real_bcm_field_action_remove(
+    int unit,
+    bcm_field_entry_t entry,
+    bcm_field_action_t action);
 
 int __real_bcm_field_action_delete(
     int unit,
@@ -748,6 +824,29 @@ int __real_bcm_vlan_destroy_all(int unit);
 
 int __real_bcm_vlan_list_destroy(int unit, bcm_vlan_data_t* list, int count);
 
+int __real_bcm_l3_egress_ecmp_ethertype_set(
+    int unit,
+    uint32 flags,
+    int ethertype_count,
+    int* ethertype_array);
+
+int __real_bcm_l3_egress_ecmp_ethertype_get(
+    int unit,
+    uint32* flags,
+    int ethertype_max,
+    int* ethertype_array,
+    int* ethertype_count);
+
+int __real_bcm_l3_egress_ecmp_member_status_set(
+    int unit,
+    bcm_if_t intf,
+    int status);
+
+int __real_bcm_l3_egress_ecmp_member_status_get(
+    int unit,
+    bcm_if_t intf,
+    int* status);
+
 int __real_bcm_port_untagged_vlan_set(
     int unit,
     bcm_port_t port,
@@ -901,6 +1000,77 @@ int __real_bcm_cosq_bst_stat_get(
     uint32 options,
     uint64* value);
 
+int __real_bcm_port_pause_addr_set(int unit, bcm_port_t port, bcm_mac_t mac);
+
+int __real_bcm_cosq_bst_stat_extended_get(
+    int unit,
+    bcm_cosq_object_id_t* id,
+    bcm_bst_stat_id_t bid,
+    uint32 options,
+    uint64* value);
+
+int __real_bcm_udf_hash_config_add(
+    int unit,
+    uint32 options,
+    bcm_udf_hash_config_t* config);
+
+int __real_bcm_udf_hash_config_delete(int unit, bcm_udf_hash_config_t* config);
+
+int __real_bcm_udf_create(
+    int unit,
+    bcm_udf_alloc_hints_t* hints,
+    bcm_udf_t* udf_info,
+    bcm_udf_id_t* udf_id);
+
+int __real_bcm_udf_destroy(int unit, bcm_udf_id_t udf_id);
+
+int __real_bcm_udf_pkt_format_create(
+    int unit,
+    bcm_udf_pkt_format_options_t options,
+    bcm_udf_pkt_format_info_t* pkt_format,
+    bcm_udf_pkt_format_id_t* pkt_format_id);
+
+int __real_bcm_udf_pkt_format_add(
+    int unit,
+    bcm_udf_id_t udf_id,
+    bcm_udf_pkt_format_id_t pkt_format_id);
+
+int __real_bcm_udf_pkt_format_destroy(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id);
+
+int __real_bcm_udf_pkt_format_delete(
+    int unit,
+    bcm_udf_id_t udf_id,
+    bcm_udf_pkt_format_id_t pkt_format_id);
+
+int __real_bcm_udf_pkt_format_get(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id,
+    int max,
+    bcm_udf_id_t* udf_id_list,
+    int* actual);
+
+int __real_bcm_udf_hash_config_get(int unit, bcm_udf_hash_config_t* config);
+
+int __real_bcm_udf_pkt_format_info_get(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id,
+    bcm_udf_pkt_format_info_t* pkt_format);
+
+void __real_bcm_udf_pkt_format_info_t_init(
+    bcm_udf_pkt_format_info_t* pkt_format);
+
+void __real_bcm_udf_alloc_hints_t_init(bcm_udf_alloc_hints_t* udf_hints);
+
+void __real_bcm_udf_hash_config_t_init(bcm_udf_hash_config_t* config);
+
+void __real_bcm_udf_t_init(bcm_udf_t* udf_info);
+
+int __real_bcm_udf_init(int unit);
+
+int __real_bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info);
+
 int __real_bcm_l3_route_get(int unit, bcm_l3_route_t* info);
 
 int __real_bcm_l3_egress_multipath_traverse(
@@ -993,6 +1163,13 @@ int __real_bcm_stat_get(
     bcm_port_t port,
     bcm_stat_val_t type,
     uint64* value);
+
+int __real_bcm_stat_sync_multi_get(
+    int unit,
+    bcm_port_t port,
+    int nstat,
+    bcm_stat_val_t* stat_arr,
+    uint64* value_arr);
 
 int __real_bcm_stk_my_modid_get(int unit, int* my_modid);
 
@@ -1278,6 +1455,19 @@ int __real_bcm_l3_egress_ecmp_create(
     bcm_l3_egress_ecmp_t* ecmp,
     int intf_count,
     bcm_if_t* intf_array);
+
+void __real_bcm_l3_ecmp_dlb_port_quality_attr_t_init(
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr);
+
+int __real_bcm_l3_ecmp_dlb_port_quality_attr_set(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr);
+
+int __real_bcm_l3_ecmp_dlb_port_quality_attr_get(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr);
 
 int __real_bcm_attach_max(int* max_units);
 
@@ -2008,6 +2198,10 @@ int __wrap_bcm_switch_object_count_get(
   CALL_WRAPPERS_RV(bcm_switch_object_count_get(unit, object, entries));
 }
 
+int __wrap_bcm_port_pause_addr_set(int unit, bcm_port_t port, bcm_mac_t mac) {
+  CALL_WRAPPERS_RV(bcm_port_pause_addr_set(unit, port, mac));
+}
+
 #if (BCM_SDK_VERSION >= BCM_VERSION(6, 5, 19))
 int __wrap_bcm_l3_alpm_resource_get(
     int unit,
@@ -2036,6 +2230,115 @@ int __wrap_bcm_cosq_bst_stat_get(
     uint64* value) {
   CALL_WRAPPERS_RV(
       bcm_cosq_bst_stat_get(unit, gport, cosq, bid, options, value));
+}
+
+int __wrap_bcm_cosq_bst_stat_extended_get(
+    int unit,
+    bcm_cosq_object_id_t* id,
+    bcm_bst_stat_id_t bid,
+    uint32 options,
+    uint64* value) {
+  CALL_WRAPPERS_RV(
+      bcm_cosq_bst_stat_extended_get(unit, id, bid, options, value));
+}
+
+int __wrap_bcm_udf_hash_config_add(
+    int unit,
+    uint32 options,
+    bcm_udf_hash_config_t* config) {
+  CALL_WRAPPERS_RV(bcm_udf_hash_config_add(unit, options, config));
+}
+
+int __wrap_bcm_udf_hash_config_delete(int unit, bcm_udf_hash_config_t* config) {
+  CALL_WRAPPERS_RV(bcm_udf_hash_config_delete(unit, config));
+}
+
+int __wrap_bcm_udf_create(
+    int unit,
+    bcm_udf_alloc_hints_t* hints,
+    bcm_udf_t* udf_info,
+    bcm_udf_id_t* udf_id) {
+  CALL_WRAPPERS_RV(bcm_udf_create(unit, hints, udf_info, udf_id));
+}
+
+int __wrap_bcm_udf_destroy(int unit, bcm_udf_id_t udf_id) {
+  CALL_WRAPPERS_RV(bcm_udf_destroy(unit, udf_id));
+}
+
+int __wrap_bcm_udf_pkt_format_create(
+    int unit,
+    bcm_udf_pkt_format_options_t options,
+    bcm_udf_pkt_format_info_t* pkt_format,
+    bcm_udf_pkt_format_id_t* pkt_format_id) {
+  CALL_WRAPPERS_RV(
+      bcm_udf_pkt_format_create(unit, options, pkt_format, pkt_format_id));
+}
+
+int __wrap_bcm_udf_pkt_format_destroy(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id) {
+  CALL_WRAPPERS_RV(bcm_udf_pkt_format_destroy(unit, pkt_format_id));
+}
+
+int __wrap_bcm_udf_pkt_format_add(
+    int unit,
+    bcm_udf_id_t udf_id,
+    bcm_udf_pkt_format_id_t pkt_format_id) {
+  CALL_WRAPPERS_RV(bcm_udf_pkt_format_add(unit, udf_id, pkt_format_id));
+}
+
+int __wrap_bcm_udf_pkt_format_delete(
+    int unit,
+    bcm_udf_id_t udf_id,
+    bcm_udf_pkt_format_id_t pkt_format_id) {
+  CALL_WRAPPERS_RV(bcm_udf_pkt_format_delete(unit, udf_id, pkt_format_id));
+}
+
+int __wrap_bcm_udf_pkt_format_get(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id,
+    int max,
+    bcm_udf_id_t* udf_id_list,
+    int* actual) {
+  CALL_WRAPPERS_RV(
+      bcm_udf_pkt_format_get(unit, pkt_format_id, max, udf_id_list, actual));
+}
+
+int __wrap_bcm_udf_hash_config_get(int unit, bcm_udf_hash_config_t* config) {
+  CALL_WRAPPERS_RV(bcm_udf_hash_config_get(unit, config));
+}
+
+int __wrap_bcm_udf_pkt_format_info_get(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id,
+    bcm_udf_pkt_format_info_t* pkt_format) {
+  CALL_WRAPPERS_RV(
+      bcm_udf_pkt_format_info_get(unit, pkt_format_id, pkt_format));
+}
+
+void __wrap_bcm_udf_pkt_format_info_t_init(
+    bcm_udf_pkt_format_info_t* pkt_format) {
+  CALL_WRAPPERS_NO_RV(bcm_udf_pkt_format_info_t_init(pkt_format));
+}
+
+void __wrap_bcm_udf_alloc_hints_t_init(bcm_udf_alloc_hints_t* udf_hints) {
+  CALL_WRAPPERS_NO_RV(bcm_udf_alloc_hints_t_init(udf_hints));
+}
+
+void __wrap_bcm_udf_t_init(bcm_udf_t* udf_info) {
+  CALL_WRAPPERS_NO_RV(bcm_udf_t_init(udf_info));
+}
+
+int __wrap_bcm_udf_init(int unit) {
+  CALL_WRAPPERS_RV(bcm_udf_init(unit));
+}
+
+int __wrap_bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info) {
+  CALL_WRAPPERS_RV(bcm_udf_get(unit, udf_id, udf_info));
+}
+
+void __wrap_bcm_udf_hash_config_t_init(bcm_udf_hash_config_t* config) {
+  CALL_WRAPPERS_NO_RV(bcm_udf_hash_config_t_init(config));
 }
 
 int __wrap_bcm_stat_custom_add(
@@ -2520,6 +2823,13 @@ int __wrap_bcm_field_action_add(
   CALL_WRAPPERS_RV(bcm_field_action_add(unit, entry, action, param0, param1));
 }
 
+int __wrap_bcm_field_action_remove(
+    int unit,
+    bcm_field_entry_t entry,
+    bcm_field_action_t action) {
+  CALL_WRAPPERS_RV(bcm_field_action_remove(unit, entry, action));
+}
+
 int __wrap_bcm_field_action_delete(
     int unit,
     bcm_field_entry_t entry,
@@ -2846,6 +3156,15 @@ int __wrap_bcm_stat_get(
   CALL_WRAPPERS_RV(bcm_stat_get(unit, port, type, value));
 }
 
+int __wrap_bcm_stat_sync_multi_get(
+    int unit,
+    bcm_port_t port,
+    int nstat,
+    bcm_stat_val_t* types,
+    uint64* values) {
+  CALL_WRAPPERS_RV(bcm_stat_sync_multi_get(unit, port, nstat, types, values));
+}
+
 int __wrap_bcm_linkscan_register(int unit, bcm_linkscan_handler_t f) {
   CALL_WRAPPERS_RV(bcm_linkscan_register(unit, f));
 }
@@ -2968,7 +3287,7 @@ int __wrap_soc_shutdown(int unit) {
   if (!facebook::fboss::BcmCinter::getInstance()) {
   }
 // TODO investigate why DNX builds don't include definition for soc_shutdown
-#if BCM_VER_RELEASE != 26
+#if BCM_VER_RELEASE != 26 && BCM_VER_RELEASE != 27 && BCM_VER_RELEASE != 28
   CALL_WRAPPERS_RV(soc_shutdown(unit));
 #else
   return 0;
@@ -3375,6 +3694,27 @@ int __wrap_bcm_l3_egress_ecmp_create(
       bcm_l3_egress_ecmp_create(unit, ecmp, intf_count, intf_array));
 }
 
+void __wrap_bcm_l3_ecmp_dlb_port_quality_attr_t_init(
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+  CALL_WRAPPERS_NO_RV(bcm_l3_ecmp_dlb_port_quality_attr_t_init(quality_attr));
+}
+
+int __wrap_bcm_l3_ecmp_dlb_port_quality_attr_set(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+  CALL_WRAPPERS_RV(
+      bcm_l3_ecmp_dlb_port_quality_attr_set(unit, port, quality_attr));
+}
+
+int __wrap_bcm_l3_ecmp_dlb_port_quality_attr_get(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+  CALL_WRAPPERS_RV(
+      bcm_l3_ecmp_dlb_port_quality_attr_get(unit, port, quality_attr));
+}
+
 int __wrap_bcm_attach(int unit, char* type, char* subtype, int remunit) {
   CALL_WRAPPERS_RV(bcm_attach(unit, type, subtype, remunit));
 }
@@ -3561,6 +3901,39 @@ int __wrap_bcm_l3_route_traverse(
 
 int __wrap_bcm_vlan_list_destroy(int unit, bcm_vlan_data_t* list, int count) {
   CALL_WRAPPERS_RV(bcm_vlan_list_destroy(unit, list, count));
+}
+
+int __wrap_bcm_l3_egress_ecmp_ethertype_set(
+    int unit,
+    uint32 flags,
+    int ethertype_count,
+    int* ethertype_array) {
+  CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_ethertype_set(
+      unit, flags, ethertype_count, ethertype_array));
+}
+
+int __wrap_bcm_l3_egress_ecmp_ethertype_get(
+    int unit,
+    uint32* flags,
+    int ethertype_max,
+    int* ethertype_array,
+    int* ethertype_count) {
+  CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_ethertype_get(
+      unit, flags, ethertype_max, ethertype_array, ethertype_count));
+}
+
+int __wrap_bcm_l3_egress_ecmp_member_status_set(
+    int unit,
+    bcm_if_t intf,
+    int status) {
+  CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_member_status_set(unit, intf, status));
+}
+
+int __wrap_bcm_l3_egress_ecmp_member_status_get(
+    int unit,
+    bcm_if_t intf,
+    int* status) {
+  CALL_WRAPPERS_RV(bcm_l3_egress_ecmp_member_status_get(unit, intf, status));
 }
 
 int __wrap_bcm_l2_addr_get(

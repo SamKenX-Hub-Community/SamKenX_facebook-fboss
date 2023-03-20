@@ -14,7 +14,6 @@
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/hw/test/LoadBalancerUtils.h"
-#include "fboss/agent/platforms/wedge/WedgePlatformInit.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
 #include "fboss/agent/test/integration_tests/AgentIntegrationTest.h"
@@ -33,7 +32,7 @@ cfg::SwitchConfig AgentIntegrationTest::initialConfig() const {
   }
   utility::setPortToDefaultProfileIDMap(
       std::make_shared<PortMap>(), sw()->getPlatform());
-  cfg = utility::onePortPerVlanConfig(
+  cfg = utility::onePortPerInterfaceConfig(
       platform()->getHwSwitch(), ports, cfg::PortLoopbackMode::MAC, true, true);
 
   cfg.switchSettings()->maxRouteCounterIDs() = 1;

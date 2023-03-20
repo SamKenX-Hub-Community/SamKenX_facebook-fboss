@@ -16,8 +16,8 @@
 
 namespace facebook::fboss {
 
-std::array<folly::StringPiece, 24> HwPortFb303Stats::kPortStatKeys() {
-  return {
+const std::vector<folly::StringPiece>& HwPortFb303Stats::kPortStatKeys() const {
+  static std::vector<folly::StringPiece> kPortKeys{
       kInBytes(),
       kInUnicastPkts(),
       kInMulticastPkts(),
@@ -43,19 +43,24 @@ std::array<folly::StringPiece, 24> HwPortFb303Stats::kPortStatKeys() {
       kFecUncorrectable(),
       kInLabelMissDiscards(),
   };
+  return kPortKeys;
 }
 
-std::array<folly::StringPiece, 5> HwPortFb303Stats::kQueueStatKeys() {
-  return {
+const std::vector<folly::StringPiece>& HwPortFb303Stats::kQueueStatKeys()
+    const {
+  static std::vector<folly::StringPiece> kQueueKeys{
       kOutCongestionDiscardsBytes(),
       kOutCongestionDiscards(),
       kOutBytes(),
       kOutPkts(),
-      kWredDroppedPackets()};
+      kWredDroppedPackets(),
+      kOutEcnCounter()};
+  return kQueueKeys;
 }
 
-std::array<folly::StringPiece, 15> HwPortFb303Stats::kInMacsecPortStatKeys() {
-  return {
+const std::vector<folly::StringPiece>& HwPortFb303Stats::kInMacsecPortStatKeys()
+    const {
+  static std::vector<folly::StringPiece> kMacsecInKeys{
       kInPreMacsecDropPkts(),
       kInMacsecControlPkts(),
       kInMacsecDataPkts(),
@@ -71,125 +76,23 @@ std::array<folly::StringPiece, 15> HwPortFb303Stats::kInMacsecPortStatKeys() {
       kInMacsecNoSADroppedPkts(),
       kInMacsecUnusedSAPkts(),
       kInMacsecUntaggedPkts(),
+      kInMacsecCurrentXpn(),
   };
+  return kMacsecInKeys;
 }
 
-std::array<folly::StringPiece, 6> HwPortFb303Stats::kOutMacsecPortStatKeys() {
-  return {
+const std::vector<folly::StringPiece>&
+HwPortFb303Stats::kOutMacsecPortStatKeys() const {
+  static std::vector<folly::StringPiece> kMacsecOutKeys{
       kOutPreMacsecDropPkts(),
       kOutMacsecControlPkts(),
       kOutMacsecDataPkts(),
       kOutMacsecEncryptedBytes(),
       kOutMacsecTooLongDroppedPkts(),
       kOutMacsecUntaggedPkts(),
+      kOutMacsecCurrentXpn(),
   };
-}
-
-std::string HwPortFb303Stats::statName(
-    folly::StringPiece statName,
-    folly::StringPiece portName) {
-  return folly::to<std::string>(portName, ".", statName);
-}
-
-std::string HwPortFb303Stats::statName(
-    folly::StringPiece statName,
-    folly::StringPiece portName,
-    int queueId,
-    folly::StringPiece queueName) {
-  return folly::to<std::string>(
-      portName, ".", "queue", queueId, ".", queueName, ".", statName);
-}
-
-int64_t HwPortFb303Stats::getCounterLastIncrement(
-    folly::StringPiece statKey) const {
-  return portCounters_.getCounterLastIncrement(statKey.str());
-}
-
-void HwPortFb303Stats::reinitStats(std::optional<std::string> oldPortName) {
-  XLOG(DBG2) << "Reinitializing stats for " << portName_;
-
-  for (auto statKey : kPortStatKeys()) {
-    reinitStat(statKey, portName_, oldPortName);
-  }
-  for (auto queueIdAndName : queueId2Name_) {
-    for (auto statKey : kQueueStatKeys()) {
-      auto newStatName = statName(
-          statKey, portName_, queueIdAndName.first, queueIdAndName.second);
-      std::optional<std::string> oldStatName = oldPortName
-          ? std::optional<std::string>(statName(
-                statKey,
-                *oldPortName,
-                queueIdAndName.first,
-                queueIdAndName.second))
-          : std::nullopt;
-      portCounters_.reinitStat(newStatName, oldStatName);
-    }
-  }
-  if (macsecStatsInited_) {
-    reinitMacsecStats(oldPortName);
-  }
-}
-
-/*
- * Reinit macsec stats
- */
-void HwPortFb303Stats::reinitMacsecStats(
-    std::optional<std::string> oldPortName) {
-  auto reinitStats = [this, &oldPortName](const auto& keys) {
-    for (auto statKey : keys) {
-      reinitStat(statKey, portName_, oldPortName);
-    }
-  };
-  reinitStats(kInMacsecPortStatKeys());
-  reinitStats(kOutMacsecPortStatKeys());
-
-  macsecStatsInited_ = true;
-}
-/*
- * Reinit port stat
- */
-void HwPortFb303Stats::reinitStat(
-    folly::StringPiece statKey,
-    const std::string& portName,
-    std::optional<std::string> oldPortName) {
-  portCounters_.reinitStat(
-      statName(statKey, portName),
-      oldPortName ? std::optional<std::string>(statName(statKey, *oldPortName))
-                  : std::nullopt);
-}
-
-/*
- * Reinit port queue stat
- */
-void HwPortFb303Stats::reinitStat(
-    folly::StringPiece statKey,
-    int queueId,
-    std::optional<std::string> oldQueueName) {
-  portCounters_.reinitStat(
-      statName(statKey, portName_, queueId, queueId2Name_[queueId]),
-      oldQueueName ? std::optional<std::string>(
-                         statName(statKey, portName_, queueId, *oldQueueName))
-                   : std::nullopt);
-}
-
-void HwPortFb303Stats::queueChanged(int queueId, const std::string& queueName) {
-  auto qitr = queueId2Name_.find(queueId);
-  std::optional<std::string> oldQueueName = qitr == queueId2Name_.end()
-      ? std::nullopt
-      : std::optional<std::string>(qitr->second);
-  queueId2Name_[queueId] = queueName;
-  for (auto statKey : kQueueStatKeys()) {
-    reinitStat(statKey, queueId, oldQueueName);
-  }
-}
-
-void HwPortFb303Stats::queueRemoved(int queueId) {
-  auto qitr = queueId2Name_.find(queueId);
-  for (auto statKey : kQueueStatKeys()) {
-    portCounters_.removeStat(
-        statName(statKey, portName_, queueId, queueId2Name_[queueId]));
-  }
-  queueId2Name_.erase(queueId);
+  return kMacsecOutKeys;
 }
 
 void HwPortFb303Stats::updateStats(
@@ -249,12 +152,15 @@ void HwPortFb303Stats::updateStats(
                              int queueId,
                              const std::map<int16_t, int64_t>& queueStats) {
     auto qitr = queueStats.find(queueId);
-    CHECK(qitr != queueStats.end())
-        << "Missing stat: " << statKey
-        << " for queue: :" << queueId2Name_[queueId];
-    updateStat(timeRetrieved_, statKey, queueId, qitr->second);
+    /*
+     * Not all queue stats are available on all ASICs. Hence the queue stats
+     * maps are sparsely populated. So skip over keys that are not found.
+     */
+    if (qitr != queueStats.end()) {
+      updateStat(timeRetrieved_, statKey, queueId, qitr->second);
+    }
   };
-  for (const auto& queueIdAndName : queueId2Name_) {
+  for (const auto& queueIdAndName : queueId2Name()) {
     updateQueueStat(
         kOutCongestionDiscardsBytes(),
         queueIdAndName.first,
@@ -273,13 +179,25 @@ void HwPortFb303Stats::updateStats(
           queueIdAndName.first,
           *curPortStats.queueWredDroppedPackets_());
     }
+    if (curPortStats.queueEcnMarkedPackets_()->size()) {
+      updateQueueStat(
+          kOutEcnCounter(),
+          queueIdAndName.first,
+          *curPortStats.queueEcnMarkedPackets_());
+    }
   }
+  CHECK(
+      curPortStats.queueWatermarkBytes_()->empty() ||
+      curPortStats.queueWatermarkLevel_()->empty())
+      << "Expect only one of queue watermark bytes, level to be populated";
   if (curPortStats.queueWatermarkBytes_()->size()) {
     updateQueueWatermarkStats(*curPortStats.queueWatermarkBytes_());
+  } else if (curPortStats.queueWatermarkLevel_()->size()) {
+    updateQueueWatermarkStats(*curPortStats.queueWatermarkLevel_());
   }
   // Macsec stats
   if (curPortStats.macsecStats()) {
-    if (!macsecStatsInited_) {
+    if (!macsecStatsInited()) {
       reinitMacsecStats(std::nullopt);
     }
     auto updateMacsecPortStats = [this](auto& macsecPortStats, bool ingress) {
@@ -344,6 +262,10 @@ void HwPortFb303Stats::updateStats(
             timeRetrieved_,
             kInMacsecUntaggedPkts(),
             *macsecPortStats.noMacsecTagPkts());
+        updateStat(
+            timeRetrieved_,
+            kInMacsecCurrentXpn(),
+            *macsecPortStats.inCurrentXpn());
       } else {
         updateStat(
             timeRetrieved_,
@@ -353,6 +275,10 @@ void HwPortFb303Stats::updateStats(
             timeRetrieved_,
             kOutMacsecTooLongDroppedPkts(),
             *macsecPortStats.outTooLongDroppedPkts());
+        updateStat(
+            timeRetrieved_,
+            kOutMacsecCurrentXpn(),
+            *macsecPortStats.outCurrentXpn());
       }
     };
     updateMacsecPortStats(
@@ -363,19 +289,4 @@ void HwPortFb303Stats::updateStats(
   portStats_ = curPortStats;
 }
 
-void HwPortFb303Stats::updateStat(
-    const std::chrono::seconds& now,
-    folly::StringPiece statKey,
-    int queueId,
-    int64_t val) {
-  portCounters_.updateStat(
-      now, statName(statKey, portName_, queueId, queueId2Name_[queueId]), val);
-}
-
-void HwPortFb303Stats::updateStat(
-    const std::chrono::seconds& now,
-    folly::StringPiece statKey,
-    int64_t val) {
-  portCounters_.updateStat(now, statName(statKey, portName_), val);
-}
 } // namespace facebook::fboss

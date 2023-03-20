@@ -13,9 +13,11 @@
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 
 #include "fboss/agent/hw/HwCpuFb303Stats.h"
+#include "fboss/agent/hw/sai/api/CounterApi.h"
 #include "fboss/agent/hw/sai/api/HostifApi.h"
 #include "fboss/agent/hw/sai/store/SaiObject.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
+#include "fboss/agent/state/ControlPlane.h"
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/types.h"
 #include "fboss/lib/RefMap.h"
@@ -34,6 +36,7 @@ class SaiStore;
 
 using SaiHostifTrapGroup = SaiObject<SaiHostifTrapGroupTraits>;
 using SaiHostifTrap = SaiObject<SaiHostifTrapTraits>;
+using SaiHostifTrapCounter = SaiObject<SaiCounterTraits>;
 
 struct SaiCpuPortHandle {
   PortSaiId cpuPortId;
@@ -44,6 +47,7 @@ struct SaiCpuPortHandle {
 struct SaiHostifTrapHandle {
   std::shared_ptr<SaiHostifTrapGroup> trapGroup;
   std::shared_ptr<SaiHostifTrap> trap;
+  std::shared_ptr<SaiHostifTrapCounter> counter;
 };
 
 class SaiHostifManager {
@@ -67,8 +71,6 @@ class SaiHostifManager {
   packetReasonToHostifTrap(
       cfg::PacketRxReason reason,
       const SaiPlatform* platform);
-  static cfg::PacketRxReason hostifTrapToPacketReason(
-      sai_hostif_trap_type_t trapType);
   static SaiHostifTrapTraits::CreateAttributes makeHostifTrapAttributes(
       cfg::PacketRxReason trapId,
       HostifTrapGroupSaiId trapGroupId,
@@ -87,6 +89,8 @@ class SaiHostifManager {
   const SaiHostifTrapHandle* getHostifTrapHandle(
       cfg::PacketRxReason rxReason) const;
   SaiHostifTrapHandle* getHostifTrapHandle(cfg::PacketRxReason rxReason);
+  std::shared_ptr<SaiHostifTrapCounter> createHostifTrapCounter(
+      cfg::PacketRxReason rxReason);
 
  private:
   uint32_t getMaxCpuQueues() const;
@@ -101,8 +105,8 @@ class SaiHostifManager {
   void loadCpuPort();
   void loadCpuPortQueues();
   void changeCpuQueue(
-      const QueueConfig& oldQueueConfig,
-      const QueueConfig& newQueueConfig);
+      const ControlPlane::PortQueues& oldQueueConfig,
+      const ControlPlane::PortQueues& newQueueConfig);
   SaiQueueHandle* getQueueHandleImpl(
       const SaiQueueConfig& saiQueueConfig) const;
   SaiHostifTrapHandle* getHostifTrapHandleImpl(
@@ -124,6 +128,7 @@ class SaiHostifManager {
   std::shared_ptr<SaiQosMap> globalTcToQueueQosMap_;
   std::unique_ptr<SaiCpuPortHandle> cpuPortHandle_;
   HwCpuFb303Stats cpuStats_;
+  HwRxReasonStats rxReasonStats_;
 };
 
 } // namespace facebook::fboss

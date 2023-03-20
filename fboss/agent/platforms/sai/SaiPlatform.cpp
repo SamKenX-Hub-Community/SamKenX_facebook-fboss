@@ -13,12 +13,15 @@
 #include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/hw/HwSwitchWarmBootHelper.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
+#include "fboss/agent/hw/switch_asics/EbroAsic.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
+#include "fboss/agent/hw/switch_asics/Jericho2Asic.h"
 #include "fboss/agent/platforms/sai/SaiBcmDarwinPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiBcmElbertPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiBcmFujiPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiBcmGalaxyPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiBcmMinipackPlatformPort.h"
+#include "fboss/agent/platforms/sai/SaiBcmMontblancPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiBcmPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiBcmWedge100PlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiBcmWedge400PlatformPort.h"
@@ -27,9 +30,10 @@
 #include "fboss/agent/platforms/sai/SaiCloudRipperPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiElbert8DDPhyPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiFakePlatformPort.h"
-#include "fboss/agent/platforms/sai/SaiKametPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiLassenPlatformPort.h"
-#include "fboss/agent/platforms/sai/SaiMakaluPlatformPort.h"
+#include "fboss/agent/platforms/sai/SaiMeru400bfuPlatformPort.h"
+#include "fboss/agent/platforms/sai/SaiMeru400biaPlatformPort.h"
+#include "fboss/agent/platforms/sai/SaiMeru400biuPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiSandiaPlatformPort.h"
 #include "fboss/agent/platforms/sai/SaiWedge400CPlatformPort.h"
 #include "fboss/agent/state/Port.h"
@@ -38,6 +42,15 @@
 
 #include "fboss/agent/hw/sai/switch/SaiHandler.h"
 
+DEFINE_string(
+    dll_path,
+    "/etc/packages/neteng-fboss-wedge_agent/current",
+    "directory of HSDK warmboot DLL files");
+
+DEFINE_string(
+    firmware_path,
+    "/etc/packages/neteng-fboss-wedge_agent/current",
+    "Path to load the firmware");
 namespace {
 
 std::unordered_map<std::string, std::string> kSaiProfileValues;
@@ -99,9 +112,18 @@ SaiPlatform::SaiPlatform(
       qsfpCache_(std::make_unique<AutoInitQsfpCache>()) {
   const auto& portsByMasterPort =
       utility::getSubsidiaryPortIDs(getPlatformPorts());
+  const auto& platPorts = getPlatformPorts();
   CHECK(portsByMasterPort.size() > 1);
   for (auto itPort : portsByMasterPort) {
-    masterLogicalPortIds_.push_back(itPort.first);
+    if (FLAGS_hide_fabric_ports) {
+      if (*platPorts.find(static_cast<int32_t>(itPort.first))
+               ->second.mapping()
+               ->portType() != cfg::PortType::FABRIC_PORT) {
+        masterLogicalPortIds_.push_back(itPort.first);
+      }
+    } else {
+      masterLogicalPortIds_.push_back(itPort.first);
+    }
   }
 }
 
@@ -183,7 +205,9 @@ void SaiPlatform::initSaiProfileValues() {
       SAI_KEY_WARM_BOOT_WRITE_FILE, getWarmBootHelper()->warmBootDataPath()));
   kSaiProfileValues.insert(std::make_pair(
       SAI_KEY_BOOT_TYPE, getWarmBootHelper()->canWarmBoot() ? "1" : "0"));
-  kSaiProfileValues.insert(std::make_pair(SAI_KEY_BOOT_TYPE, "0"));
+  auto vendorProfileValues = getSaiProfileVendorExtensionValues();
+  kSaiProfileValues.insert(
+      vendorProfileValues.begin(), vendorProfileValues.end());
 }
 
 void SaiPlatform::initImpl(uint32_t hwFeaturesDesired) {
@@ -199,9 +223,14 @@ void SaiPlatform::initPorts() {
   for (auto& port : getPlatformPorts()) {
     std::unique_ptr<SaiPlatformPort> saiPort;
     PortID portId(port.first);
-    if (platformMode == PlatformMode::WEDGE400C) {
+    if (platformMode == PlatformMode::WEDGE400C ||
+        platformMode == PlatformMode::WEDGE400C_VOQ ||
+        platformMode == PlatformMode::WEDGE400C_FABRIC) {
       saiPort = std::make_unique<SaiWedge400CPlatformPort>(portId, this);
-    } else if (platformMode == PlatformMode::CLOUDRIPPER) {
+    } else if (
+        platformMode == PlatformMode::CLOUDRIPPER ||
+        platformMode == PlatformMode::CLOUDRIPPER_VOQ ||
+        platformMode == PlatformMode::CLOUDRIPPER_FABRIC) {
       saiPort = std::make_unique<SaiCloudRipperPlatformPort>(portId, this);
     } else if (platformMode == PlatformMode::WEDGE) {
       saiPort = std::make_unique<SaiBcmWedge40PlatformPort>(portId, this);
@@ -222,20 +251,24 @@ void SaiPlatform::initPorts() {
     } else if (platformMode == PlatformMode::FUJI) {
       saiPort = std::make_unique<SaiBcmFujiPlatformPort>(portId, this);
     } else if (platformMode == PlatformMode::ELBERT) {
-      if (getAsic()->getAsicType() == HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD) {
+      if (getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_ELBERT_8DD) {
         saiPort = std::make_unique<SaiElbert8DDPhyPlatformPort>(portId, this);
       } else if (
-          getAsic()->getAsicType() == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4) {
+          getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_TOMAHAWK4) {
         saiPort = std::make_unique<SaiBcmElbertPlatformPort>(portId, this);
       }
     } else if (platformMode == PlatformMode::LASSEN) {
       saiPort = std::make_unique<SaiLassenPlatformPort>(portId, this);
     } else if (platformMode == PlatformMode::SANDIA) {
       saiPort = std::make_unique<SaiSandiaPlatformPort>(portId, this);
-    } else if (platformMode == PlatformMode::MAKALU) {
-      saiPort = std::make_unique<SaiMakaluPlatformPort>(portId, this);
-    } else if (platformMode == PlatformMode::KAMET) {
-      saiPort = std::make_unique<SaiKametPlatformPort>(portId, this);
+    } else if (platformMode == PlatformMode::MERU400BIU) {
+      saiPort = std::make_unique<SaiMeru400biuPlatformPort>(portId, this);
+    } else if (platformMode == PlatformMode::MERU400BIA) {
+      saiPort = std::make_unique<SaiMeru400biaPlatformPort>(portId, this);
+    } else if (platformMode == PlatformMode::MERU400BFU) {
+      saiPort = std::make_unique<SaiMeru400bfuPlatformPort>(portId, this);
+    } else if (platformMode == PlatformMode::MONTBLANC) {
+      saiPort = std::make_unique<SaiBcmMontblancPlatformPort>(portId, this);
     } else {
       saiPort = std::make_unique<SaiFakePlatformPort>(portId, this);
     }
@@ -253,21 +286,6 @@ SaiPlatformPort* SaiPlatform::getPort(PortID id) const {
 
 PlatformPort* SaiPlatform::getPlatformPort(PortID port) const {
   return getPort(port);
-}
-
-std::optional<std::string> SaiPlatform::getPlatformAttribute(
-    cfg::PlatformAttributes platformAttribute) {
-  auto& platform = *config()->thrift.platform();
-
-  if (auto platformSettings = platform.platformSettings()) {
-    auto platformIter = platformSettings->find(platformAttribute);
-    if (platformIter == platformSettings->end()) {
-      return std::nullopt;
-    }
-    return platformIter->second;
-  } else {
-    return std::nullopt;
-  }
 }
 
 sai_service_method_table_t* SaiPlatform::getServiceMethodTable() const {
@@ -346,14 +364,59 @@ SaiSwitchTraits::CreateAttributes SaiPlatform::getSwitchAttributes(
   if (swType == cfg::SwitchType::VOQ || swType == cfg::SwitchType::FABRIC) {
     switchType = swType == cfg::SwitchType::VOQ ? SAI_SWITCH_TYPE_VOQ
                                                 : SAI_SWITCH_TYPE_FABRIC;
-    switchId = swId.value_or(0);
+    switchId = swId;
     if (swType == cfg::SwitchType::VOQ) {
-      cores = getAsic()->getNumCores();
+      auto agentCfg = config();
+      CHECK(agentCfg) << " agent config must be set ";
+      uint32_t systemCores = 0;
+      const Jericho2Asic indus(cfg::SwitchType::VOQ, 0, std::nullopt);
+      const EbroAsic ebro(cfg::SwitchType::VOQ, 0, std::nullopt);
+      for (const auto& [id, dsfNode] : *agentCfg->thrift.sw()->dsfNodes()) {
+        if (dsfNode.type() != cfg::DsfNodeType::INTERFACE_NODE) {
+          continue;
+        }
+        switch (*dsfNode.asicType()) {
+          case cfg::AsicType::ASIC_TYPE_JERICHO2:
+            systemCores += indus.getNumCores();
+            break;
+          case cfg::AsicType::ASIC_TYPE_EBRO:
+            systemCores += ebro.getNumCores();
+            break;
+          default:
+            throw FbossError("Unexpected asic type: ", *dsfNode.asicType());
+        }
+      }
+      cores = systemCores;
       sysPortConfigs = SaiSwitchTraits::Attributes::SysPortConfigList{
           getInternalSystemPortConfig()};
     }
   }
+  std::optional<SaiSwitchTraits::Attributes::DllPath> dllPath;
+#if defined(SAI_VERSION_8_2_0_0_ODP) ||                                        \
+    defined(SAI_VERSION_8_2_0_0_SIM_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
+    defined(SAI_VERSION_9_0_EA_SIM_ODP)
+  auto platformMode = getMode();
+  if (platformMode == PlatformMode::FUJI ||
+      platformMode == PlatformMode::ELBERT) {
+    std::vector<int8_t> dllPathCharArray;
+    std::copy(
+        FLAGS_dll_path.c_str(),
+        FLAGS_dll_path.c_str() + FLAGS_dll_path.size() + 1,
+        std::back_inserter(dllPathCharArray));
+    dllPath = dllPathCharArray;
+  }
+#endif
 
+  std::optional<SaiSwitchTraits::Attributes::FirmwarePathName> firmwarePathName{
+      std::nullopt};
+  if (getAsic()->isSupported(HwAsic::Feature::SAI_FIRMWARE_PATH)) {
+    std::vector<int8_t> firmwarePathNameArray;
+    std::copy(
+        FLAGS_firmware_path.c_str(),
+        FLAGS_firmware_path.c_str() + FLAGS_firmware_path.size() + 1,
+        std::back_inserter(firmwarePathNameArray));
+    firmwarePathName = firmwarePathNameArray;
+  }
   return {
     initSwitch,
         hwInfo, // hardware info
@@ -378,7 +441,7 @@ SaiSwitchTraits::CreateAttributes SaiPlatform::getSwitchAttributes(
         std::nullopt, // tam object list
         useEcnThresholds,
         std::nullopt, // counter refresh interval
-        std::nullopt, // Firmware path name
+        firmwarePathName, // Firmware path name
         std::nullopt, // Firmware load method
         std::nullopt, // Firmware load type
         std::nullopt, // Hardware access bus
@@ -394,6 +457,7 @@ SaiSwitchTraits::CreateAttributes SaiPlatform::getSwitchAttributes(
         std::nullopt, // Max ECMP member count
         std::nullopt, // ECMP member count
 #endif
+        dllPath, std::nullopt,
   };
 }
 

@@ -15,6 +15,7 @@
 #include "fboss/agent/hw/sai/switch/SaiQueueManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
+#include "fboss/agent/platforms/sai/SaiBcmPlatform.h"
 #include "fboss/agent/platforms/sai/SaiPlatform.h"
 
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
@@ -87,4 +88,59 @@ bool SaiPortManager::checkPortSerdesAttributes(
            std::get<std::optional<std::decay_t<decltype(
                SaiPortSerdesTraits::Attributes::IDriver{})>>>(fromStore)));
 }
+
+void SaiPortManager::changePortByRecreate(
+    const std::shared_ptr<Port>& oldPort,
+    const std::shared_ptr<Port>& newPort) {
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::SAI_PORT_VCO_CHANGE) &&
+      static_cast<SaiBcmPlatform*>(platform_)->needPortVcoChange(
+          oldPort->getSpeed(),
+          *(oldPort->getProfileConfig().fec()),
+          newPort->getSpeed(),
+          *(newPort->getProfileConfig().fec()))) {
+    // To change to a different VCO, we need to remove all the ports in the
+    // Port Macro and re-create the removed ports with the new speed.
+    auto portHandle = getPortHandle(newPort->getID());
+    // disable port
+    SaiPortTraits::Attributes::AdminState adminDisable{false};
+    SaiApiTable::getInstance()->portApi().setAttribute(
+        portHandle->port->adapterKey(), adminDisable);
+    removePort(oldPort);
+    pendingNewPorts_[newPort->getID()] = newPort;
+    bool allPortsInGroupRemoved = true;
+    auto& platformPortEntry =
+        platform_->getPort(oldPort->getID())->getPlatformPortEntry();
+    auto controllingPort =
+        PortID(*platformPortEntry.mapping()->controllingPort());
+    auto ports = platform_->getAllPortsInGroup(controllingPort);
+    XLOG(DBG2) << "Port " << oldPort->getID() << "'s controlling port is "
+               << controllingPort;
+    for (auto portId : ports) {
+      if (handles_.find(portId) != handles_.end()) {
+        XLOG(DBG2) << "Port " << portId
+                   << " in the same group but not removed yet";
+        allPortsInGroupRemoved = false;
+      }
+    }
+    if (allPortsInGroupRemoved) {
+      for (auto portId : ports) {
+        removeRemovedHandleIf(portId);
+      }
+      XLOG(DBG2)
+          << "All old ports in the same group removed, add new ports back";
+      for (auto portId : ports) {
+        if (pendingNewPorts_.find(portId) != pendingNewPorts_.end()) {
+          XLOG(DBG2) << "add new port " << portId;
+          addPort(pendingNewPorts_[portId]);
+          pendingNewPorts_.erase(portId);
+          // port should already be enabled
+        }
+      }
+    }
+  } else {
+    removePort(oldPort);
+    addPort(newPort);
+  }
+}
+
 } // namespace facebook::fboss

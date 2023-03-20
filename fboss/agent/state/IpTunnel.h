@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeBase.h"
 #include "fboss/agent/state/Thrifty.h"
@@ -13,120 +12,93 @@
 
 namespace facebook::fboss {
 
-enum TunnelType {
-  IPINIP,
-};
+USE_THRIFT_COW(IpTunnel);
 
-enum TunnelTermType {
-  MP2MP,
-  P2MP,
-};
-
-struct IpTunnelFields
-    : public ThriftyFields<IpTunnelFields, state::IpTunnelFields> {
-  // TODO(yijunli): BetterThriftyFields?
-  explicit IpTunnelFields(std::string id) {
-    auto& data = writableData();
-    *data.ipTunnelId() = id;
-  }
-
-  template <typename Fn>
-  void forEachChild(Fn /*fn*/) {}
-
-  state::IpTunnelFields toThrift() const override {
-    return data();
-  }
-  static IpTunnelFields fromThrift(const state::IpTunnelFields& ipTunnelThrift);
-};
-
-class IpTunnel
-    : public ThriftyBaseT<state::IpTunnelFields, IpTunnel, IpTunnelFields> {
+class IpTunnel : public ThriftStructNode<IpTunnel, state::IpTunnelFields> {
  public:
+  using Base = ThriftStructNode<IpTunnel, state::IpTunnelFields>;
+  explicit IpTunnel(const std::string& id) {
+    set<switch_state_tags::ipTunnelId>(id);
+  }
   std::string getID() const {
-    return *getFields()->data().ipTunnelId();
+    return get<switch_state_tags::ipTunnelId>()->cref();
   }
-  TunnelType getType() const {
-    return static_cast<TunnelType>(*getFields()->data().type());
+  cfg::TunnelType getType() const {
+    return static_cast<cfg::TunnelType>(get<switch_state_tags::type>()->cref());
   }
-  void setType(TunnelType type) {
-    writableFields()->writableData().type() = type;
+  void setType(cfg::TunnelType type) {
+    set<switch_state_tags::type>(static_cast<int>(type));
   }
   InterfaceID getUnderlayIntfId() const {
-    return InterfaceID(*getFields()->data().underlayIntfId());
+    return InterfaceID(get<switch_state_tags::underlayIntfId>()->cref());
   }
   void setUnderlayIntfId(InterfaceID id) {
-    writableFields()->writableData().underlayIntfId() = id;
+    set<switch_state_tags::underlayIntfId>(static_cast<int>(id));
   }
   cfg::IpTunnelMode getTTLMode() const {
-    return static_cast<cfg::IpTunnelMode>(*getFields()->data().ttlMode());
+    const auto& mode = cref<switch_state_tags::ttlMode>();
+    CHECK(mode);
+    return static_cast<cfg::IpTunnelMode>(mode->cref());
   }
   void setTTLMode(cfg::IpTunnelMode mode) {
-    writableFields()->writableData().ttlMode() = static_cast<int32_t>(mode);
+    setMode<switch_state_tags::ttlMode>(mode);
   }
   cfg::IpTunnelMode getDscpMode() const {
-    return static_cast<cfg::IpTunnelMode>(*getFields()->data().dscpMode());
+    const auto& mode = cref<switch_state_tags::dscpMode>();
+    CHECK(mode);
+    return static_cast<cfg::IpTunnelMode>(mode->cref());
   }
   void setDscpMode(cfg::IpTunnelMode mode) {
-    writableFields()->writableData().dscpMode() = static_cast<int32_t>(mode);
+    setMode<switch_state_tags::dscpMode>(mode);
   }
   cfg::IpTunnelMode getEcnMode() const {
-    return static_cast<cfg::IpTunnelMode>(*getFields()->data().ecnMode());
+    const auto& mode = cref<switch_state_tags::ecnMode>();
+    CHECK(mode);
+    return static_cast<cfg::IpTunnelMode>(mode->cref());
   }
   void setEcnMode(cfg::IpTunnelMode mode) {
-    writableFields()->writableData().ecnMode() = static_cast<int32_t>(mode);
+    setMode<switch_state_tags::ecnMode>(mode);
   }
-  TunnelTermType getTunnelTermType() const {
-    return static_cast<TunnelTermType>(*getFields()->data().tunnelTermType());
+  cfg::TunnelTerminationType getTunnelTermType() const {
+    return static_cast<cfg::TunnelTerminationType>(
+        get<switch_state_tags::tunnelTermType>()->cref());
   }
-  void setTunnelTermType(TunnelTermType type) {
-    writableFields()->writableData().tunnelTermType() = type;
+  void setTunnelTermType(cfg::TunnelTerminationType type) {
+    set<switch_state_tags::tunnelTermType>(static_cast<int>(type));
   }
-  // TODO: move the type conversion to elsewhere?
   folly::IPAddress getDstIP() const {
-    return folly::IPAddress(*getFields()->data().dstIp());
+    return folly::IPAddress(get<switch_state_tags::dstIp>()->cref());
   }
   void setDstIP(folly::IPAddress ip) {
-    writableFields()->writableData().dstIp() = ip.str();
+    set<switch_state_tags::dstIp>(ip.str());
   }
   folly::IPAddress getSrcIP() const {
-    return folly::IPAddress(*getFields()->data().srcIp());
+    return folly::IPAddress(get<switch_state_tags::srcIp>()->cref());
   }
   void setSrcIP(folly::IPAddress ip) {
-    writableFields()->writableData().srcIp() = ip.str();
+    set<switch_state_tags::srcIp>(ip.str());
   }
   folly::IPAddress getDstIPMask() const {
-    return folly::IPAddress(*getFields()->data().dstIpMask());
+    return folly::IPAddress(get<switch_state_tags::dstIpMask>()->cref());
   }
   void setDstIPMask(folly::IPAddress ip) {
-    writableFields()->writableData().dstIpMask() = ip.str();
+    set<switch_state_tags::dstIpMask>(ip.str());
   }
   folly::IPAddress getSrcIPMask() const {
-    return folly::IPAddress(*getFields()->data().srcIpMask());
+    return folly::IPAddress(get<switch_state_tags::srcIpMask>()->cref());
   }
   void setSrcIPMask(folly::IPAddress ip) {
-    writableFields()->writableData().srcIpMask() = ip.str();
+    set<switch_state_tags::srcIpMask>(ip.str());
   }
 
-  bool operator==(const IpTunnel& ipTunnel) {
-    return (getID() == ipTunnel.getID()) && (getType() == ipTunnel.getType()) &&
-        (getUnderlayIntfId() == ipTunnel.getUnderlayIntfId()) &&
-        (getTTLMode() == ipTunnel.getTTLMode()) &&
-        (getDscpMode() == ipTunnel.getDscpMode()) &&
-        (getEcnMode() == ipTunnel.getEcnMode()) &&
-        (getDstIP() == ipTunnel.getDstIP()) &&
-        (getSrcIP() == ipTunnel.getSrcIP()) &&
-        (getDstIPMask() == ipTunnel.getDstIPMask()) &&
-        (getSrcIPMask() == ipTunnel.getSrcIPMask()) &&
-        (getTunnelTermType() == ipTunnel.getTunnelTermType());
-  }
-  bool operator!=(const IpTunnel& ipTunnel) {
-    return !(*this == ipTunnel);
+  template <typename Tag>
+  void setMode(cfg::IpTunnelMode mode) {
+    set<Tag>(static_cast<int>(mode));
   }
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT<state::IpTunnelFields, IpTunnel, IpTunnelFields>::
-      ThriftyBaseT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 } // namespace facebook::fboss

@@ -10,7 +10,6 @@
 #pragma once
 
 #include "fboss/agent/FbossError.h"
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeBase.h"
@@ -28,55 +27,20 @@ namespace facebook::fboss {
 
 enum class MacEntryType : uint8_t { DYNAMIC_ENTRY, STATIC_ENTRY };
 
-struct MacEntryFields
-    : public ThriftyFields<MacEntryFields, state::MacEntryFields> {
-  MacEntryFields(
-      folly::MacAddress mac,
-      PortDescriptor portDescr,
-      std::optional<cfg::AclLookupClass> classID = std::nullopt,
-      MacEntryType type = MacEntryType::DYNAMIC_ENTRY)
-      : mac_(mac), portDescr_(portDescr), classID_(classID), type_(type) {}
+USE_THRIFT_COW(MacEntry);
 
-  template <typename Fn>
-  void forEachChild(Fn) {}
-
-  state::MacEntryFields toThrift() const override;
-  static MacEntryFields fromThrift(state::MacEntryFields const& ma);
-
-  folly::dynamic toFollyDynamicLegacy() const;
-  static MacEntryFields fromFollyDynamicLegacy(const folly::dynamic& json);
-
-  folly::MacAddress mac_;
-  PortDescriptor portDescr_;
-  std::optional<cfg::AclLookupClass> classID_{std::nullopt};
-  MacEntryType type_{MacEntryType::DYNAMIC_ENTRY};
-};
-
-class MacEntry
-    : public ThriftyBaseT<state::MacEntryFields, MacEntry, MacEntryFields> {
+class MacEntry : public ThriftStructNode<MacEntry, state::MacEntryFields> {
  public:
+  using Base = ThriftStructNode<MacEntry, state::MacEntryFields>;
   MacEntry(
       folly::MacAddress mac,
       PortDescriptor portDescr,
       std::optional<cfg::AclLookupClass> classID = std::nullopt,
-      MacEntryType type = MacEntryType::DYNAMIC_ENTRY)
-      : ThriftyBaseT(mac, portDescr, classID, type) {}
-
-  static std::shared_ptr<MacEntry> fromFollyDynamicLegacy(
-      const folly::dynamic& json) {
-    const auto& fields = MacEntryFields::fromFollyDynamicLegacy(json);
-    return std::make_shared<MacEntry>(fields);
-  }
-
-  folly::dynamic toFollyDynamicLegacy() const {
-    return getFields()->toFollyDynamicLegacy();
-  }
-
-  bool operator==(const MacEntry& macEntry) const {
-    return getFields()->mac_ == macEntry.getMac() &&
-        getFields()->portDescr_ == macEntry.getPort() &&
-        getFields()->classID_ == macEntry.getClassID() &&
-        getFields()->type_ == macEntry.getType();
+      MacEntryType type = MacEntryType::DYNAMIC_ENTRY) {
+    setMac(mac);
+    setPort(portDescr);
+    setClassID(classID);
+    setType(type);
   }
 
   bool operator!=(const MacEntry& other) const {
@@ -84,50 +48,58 @@ class MacEntry
   }
 
   folly::MacAddress getMac() const {
-    return getFields()->mac_;
+    return folly::MacAddress(get<switch_state_tags::mac>()->cref());
   }
 
   void setMac(folly::MacAddress mac) {
-    this->writableFields()->mac_ = mac;
+    set<switch_state_tags::mac>(mac.toString());
   }
 
   PortDescriptor getPort() const {
-    return getFields()->portDescr_;
+    return PortDescriptor::fromThrift(
+        get<switch_state_tags::portId>()->toThrift());
   }
 
   void setPort(PortDescriptor portDescr) {
-    this->writableFields()->portDescr_ = portDescr;
+    set<switch_state_tags::portId>(portDescr.toThrift());
   }
 
   std::optional<cfg::AclLookupClass> getClassID() const {
-    return getFields()->classID_;
+    if (auto classID = get<switch_state_tags::classID>()) {
+      return classID->cref();
+    }
+    return std::nullopt;
   }
 
   void setClassID(std::optional<cfg::AclLookupClass> classID = std::nullopt) {
-    this->writableFields()->classID_ = classID;
+    if (classID) {
+      set<switch_state_tags::classID>(classID.value());
+    } else {
+      ref<switch_state_tags::classID>().reset();
+    }
   }
 
-  folly::MacAddress getID() const {
-    return getMac();
+  std::string getID() const {
+    return getMac().toString();
   }
 
   void setPortDescriptor(PortDescriptor portDescr) {
-    writableFields()->portDescr_ = portDescr;
+    setPort(portDescr);
   }
 
   MacEntryType getType() const {
-    return getFields()->type_;
+    return static_cast<MacEntryType>(get<switch_state_tags::type>()->cref());
   }
 
   void setType(MacEntryType type) {
-    writableFields()->type_ = type;
+    set<switch_state_tags::type>(static_cast<state::MacEntryType>(type));
   }
 
   std::string str() const;
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT::ThriftyBaseT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 

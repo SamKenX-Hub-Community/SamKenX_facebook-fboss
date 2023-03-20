@@ -20,6 +20,12 @@ namespace {
 
 using namespace facebook::fboss;
 
+enum class QualifierType : uint8_t {
+  LOOKUPCLASS_L2,
+  LOOKUPCLASS_NEIGHBOR,
+  LOOKUPCLASS_ROUTE,
+};
+
 template <typename T, typename U>
 void configureQualifier(
     apache::thrift::optional_field_ref<T&> ref,
@@ -35,7 +41,8 @@ void configureQualifier(
 void configureAllIpQualifiers(
     cfg::AclEntry* acl,
     bool enable,
-    cfg::IpType ipType) {
+    cfg::IpType ipType,
+    cfg::AsicType /*asicType*/) {
   cfg::Ttl ttl;
   std::tie(*ttl.value(), *ttl.mask()) = std::make_tuple(0x80, 0x80);
 
@@ -73,7 +80,10 @@ void configureAllIpQualifiers(
   configureQualifier(acl->ttl(), enable, ttl);
 }
 
-void configureAllTcpQualifiers(cfg::AclEntry* acl, bool enable) {
+void configureAllTcpQualifiers(
+    cfg::AclEntry* acl,
+    bool enable,
+    cfg::AsicType /*asicType*/) {
   configureQualifier(acl->l4SrcPort(), enable, 10);
   configureQualifier(acl->l4DstPort(), enable, 20);
   configureQualifier(acl->proto(), enable, 6);
@@ -83,7 +93,8 @@ void configureAllTcpQualifiers(cfg::AclEntry* acl, bool enable) {
 void configureAllIcmpQualifiers(
     cfg::AclEntry* acl,
     bool enable,
-    cfg::IpType ipType) {
+    cfg::IpType ipType,
+    cfg::AsicType /*asicType*/) {
   if (ipType == cfg::IpType::IP6) {
     configureQualifier(acl->proto(), enable, 58); // Icmp v6
     configureQualifier(acl->icmpType(), enable, 1); // Destination unreachable
@@ -101,15 +112,14 @@ namespace facebook::fboss {
 
 class HwAclQualifierTest : public HwTest {
  public:
-  enum class LookupClassType : uint8_t {
-    LOOKUPCLASS_L2,
-    LOOKUPCLASS_NEIGHBOR,
-    LOOKUPCLASS_ROUTE,
-  };
-
   void configureAllHwQualifiers(cfg::AclEntry* acl, bool enable) {
-    configureQualifier(acl->srcPort(), enable, masterLogicalPortIds()[0]);
-    configureQualifier(acl->dstPort(), enable, masterLogicalPortIds()[1]);
+    configureQualifier(
+        acl->srcPort(), enable, masterLogicalInterfacePortIds()[0]);
+    if (getAsicType() != cfg::AsicType::ASIC_TYPE_JERICHO2) {
+      // No out port support on J2. Out port not used in prod
+      configureQualifier(
+          acl->dstPort(), enable, masterLogicalInterfacePortIds()[1]);
+    }
   }
 
   void configureAllL2QualifiersHelper(cfg::AclEntry* acl) {
@@ -122,7 +132,9 @@ class HwAclQualifierTest : public HwTest {
      * implement queues on trident2.
      */
     if (getPlatform()->getAsic()->getAsicType() !=
-        HwAsic::AsicType::ASIC_TYPE_TRIDENT2) {
+            cfg::AsicType::ASIC_TYPE_TRIDENT2 &&
+        // L2 switching only on NPU type switch
+        getHwSwitch()->getSwitchType() == cfg::SwitchType::NPU) {
       configureQualifier(
           acl->lookupClassL2(),
           true,
@@ -159,7 +171,7 @@ class HwAclQualifierTest : public HwTest {
     return "acl0";
   }
 
-  void aclSetupHelper(bool isIpV4, LookupClassType lookupClassType) {
+  void aclSetupHelper(bool isIpV4, QualifierType lookupClassType) {
     auto newCfg = initialConfig();
     auto* acl = utility::addAcl(&newCfg, kAclName(), cfg::AclActionType::DENY);
 
@@ -170,23 +182,23 @@ class HwAclQualifierTest : public HwTest {
     }
 
     switch (lookupClassType) {
-      case LookupClassType::LOOKUPCLASS_L2:
+      case QualifierType::LOOKUPCLASS_L2:
         if (getPlatform()->getAsic()->getAsicType() !=
-            HwAsic::AsicType::ASIC_TYPE_TRIDENT2) {
+            cfg::AsicType::ASIC_TYPE_TRIDENT2) {
           configureQualifier(
               acl->lookupClassL2(),
               true,
               cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_1);
         }
         break;
-      case LookupClassType::LOOKUPCLASS_NEIGHBOR:
+      case QualifierType::LOOKUPCLASS_NEIGHBOR:
         configureQualifier(
             acl->lookupClassNeighbor(),
             true,
             isIpV4 ? cfg::AclLookupClass::DST_CLASS_L3_LOCAL_IP4
                    : cfg::AclLookupClass::DST_CLASS_L3_LOCAL_IP6);
         break;
-      case LookupClassType::LOOKUPCLASS_ROUTE:
+      case QualifierType::LOOKUPCLASS_ROUTE:
         configureQualifier(
             acl->lookupClassRoute(),
             true,
@@ -208,7 +220,8 @@ class HwAclQualifierTest : public HwTest {
 
  protected:
   cfg::SwitchConfig initialConfig() const {
-    return utility::oneL3IntfConfig(getHwSwitch(), masterLogicalPortIds()[0]);
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
   }
 };
 
@@ -218,8 +231,8 @@ TEST_F(HwAclQualifierTest, AclIp4TcpQualifiers) {
     auto* acl1 = utility::addAcl(&newCfg, "ip4_tcp", cfg::AclActionType::DENY);
     configureAllHwQualifiers(acl1, true);
     configureAllL2QualifiersHelper(acl1);
-    configureAllIpQualifiers(acl1, true, cfg::IpType::IP4);
-    configureAllTcpQualifiers(acl1, true);
+    configureAllIpQualifiers(acl1, true, cfg::IpType::IP4, getAsicType());
+    configureAllTcpQualifiers(acl1, true, getAsicType());
     applyNewConfig(newCfg);
   };
 
@@ -238,8 +251,8 @@ TEST_F(HwAclQualifierTest, AclIp6TcpQualifiers) {
     auto* acl1 = utility::addAcl(&newCfg, "ip6_tcp", cfg::AclActionType::DENY);
     configureAllHwQualifiers(acl1, true);
     configureAllL2QualifiersHelper(acl1);
-    configureAllIpQualifiers(acl1, true, cfg::IpType::IP6);
-    configureAllTcpQualifiers(acl1, true);
+    configureAllIpQualifiers(acl1, true, cfg::IpType::IP6, getAsicType());
+    configureAllTcpQualifiers(acl1, true, getAsicType());
     applyNewConfig(newCfg);
   };
 
@@ -258,7 +271,7 @@ TEST_F(HwAclQualifierTest, AclIcmp4Qualifiers) {
     auto* acl1 = utility::addAcl(&newCfg, "icmp4", cfg::AclActionType::DENY);
     configureAllHwQualifiers(acl1, true);
     configureAllL2QualifiersHelper(acl1);
-    configureAllIcmpQualifiers(acl1, true, cfg::IpType::IP4);
+    configureAllIcmpQualifiers(acl1, true, cfg::IpType::IP4, getAsicType());
     applyNewConfig(newCfg);
   };
 
@@ -277,7 +290,7 @@ TEST_F(HwAclQualifierTest, AclIcmp6Qualifiers) {
     auto* acl1 = utility::addAcl(&newCfg, "icmp6", cfg::AclActionType::DENY);
     configureAllHwQualifiers(acl1, true);
     configureAllL2QualifiersHelper(acl1);
-    configureAllIcmpQualifiers(acl1, true, cfg::IpType::IP6);
+    configureAllIcmpQualifiers(acl1, true, cfg::IpType::IP6, getAsicType());
     applyNewConfig(newCfg);
   };
 
@@ -319,15 +332,15 @@ TEST_F(HwAclQualifierTest, AclModifyQualifier) {
     // icmp6
     configureAllHwQualifiers(acl, true);
     configureAllL2QualifiersHelper(acl);
-    configureAllIcmpQualifiers(acl, true, cfg::IpType::IP6);
+    configureAllIcmpQualifiers(acl, true, cfg::IpType::IP6, getAsicType());
     applyNewConfig(newCfg);
     // ip6 tcp
-    configureAllIcmpQualifiers(acl, false, cfg::IpType::IP6);
-    configureAllIpQualifiers(acl, true, cfg::IpType::IP6);
+    configureAllIcmpQualifiers(acl, false, cfg::IpType::IP6, getAsicType());
+    configureAllIpQualifiers(acl, true, cfg::IpType::IP6, getAsicType());
     applyNewConfig(newCfg);
     // imcp6
-    configureAllIpQualifiers(acl, false, cfg::IpType::IP6);
-    configureAllIcmpQualifiers(acl, true, cfg::IpType::IP6);
+    configureAllIpQualifiers(acl, false, cfg::IpType::IP6, getAsicType());
+    configureAllIcmpQualifiers(acl, true, cfg::IpType::IP6, getAsicType());
     applyNewConfig(newCfg);
   };
 
@@ -371,7 +384,7 @@ TEST_F(HwAclQualifierTest, AclVlanIDQualifier) {
   auto setup = [=]() {
     auto newCfg = initialConfig();
     if (getPlatform()->getAsic()->getAsicType() ==
-        HwAsic::AsicType::ASIC_TYPE_TRIDENT2) {
+        cfg::AsicType::ASIC_TYPE_TRIDENT2) {
       return;
     }
     auto* acl = utility::addAcl(&newCfg, "acl0", cfg::AclActionType::DENY);
@@ -382,7 +395,7 @@ TEST_F(HwAclQualifierTest, AclVlanIDQualifier) {
 
   auto verify = [=]() {
     if (getPlatform()->getAsic()->getAsicType() ==
-        HwAsic::AsicType::ASIC_TYPE_TRIDENT2) {
+        cfg::AsicType::ASIC_TYPE_TRIDENT2) {
       return;
     }
     EXPECT_EQ(utility::getAclTableNumAclEntries(getHwSwitch()), 1);
@@ -428,8 +441,7 @@ TEST_F(HwAclQualifierTest, AclIp6Qualifiers) {
 
 TEST_F(HwAclQualifierTest, AclIp4LookupClassL2) {
   auto setup = [=]() {
-    aclSetupHelper(
-        true /* isIpV4 */, HwAclQualifierTest::LookupClassType::LOOKUPCLASS_L2);
+    aclSetupHelper(true /* isIpV4 */, QualifierType::LOOKUPCLASS_L2);
   };
 
   auto verify = [=]() { aclVerifyHelper(); };
@@ -439,9 +451,7 @@ TEST_F(HwAclQualifierTest, AclIp4LookupClassL2) {
 
 TEST_F(HwAclQualifierTest, AclIp4LookupClassNeighbor) {
   auto setup = [=]() {
-    aclSetupHelper(
-        true /* isIpV4 */,
-        HwAclQualifierTest::LookupClassType::LOOKUPCLASS_NEIGHBOR);
+    aclSetupHelper(true /* isIpV4 */, QualifierType::LOOKUPCLASS_NEIGHBOR);
   };
 
   auto verify = [=]() { aclVerifyHelper(); };
@@ -451,9 +461,7 @@ TEST_F(HwAclQualifierTest, AclIp4LookupClassNeighbor) {
 
 TEST_F(HwAclQualifierTest, AclIp4LookupClassRoute) {
   auto setup = [=]() {
-    aclSetupHelper(
-        true /* isIpV4 */,
-        HwAclQualifierTest::LookupClassType::LOOKUPCLASS_ROUTE);
+    aclSetupHelper(true /* isIpV4 */, QualifierType::LOOKUPCLASS_ROUTE);
   };
 
   auto verify = [=]() { aclVerifyHelper(); };
@@ -463,9 +471,7 @@ TEST_F(HwAclQualifierTest, AclIp4LookupClassRoute) {
 
 TEST_F(HwAclQualifierTest, AclIp6LookupClassL2) {
   auto setup = [=]() {
-    aclSetupHelper(
-        false /* isIpV6 */,
-        HwAclQualifierTest::LookupClassType::LOOKUPCLASS_L2);
+    aclSetupHelper(false /* isIpV6 */, QualifierType::LOOKUPCLASS_L2);
   };
 
   auto verify = [=]() { aclVerifyHelper(); };
@@ -475,9 +481,7 @@ TEST_F(HwAclQualifierTest, AclIp6LookupClassL2) {
 
 TEST_F(HwAclQualifierTest, AclIp6LookupClassNeighbor) {
   auto setup = [=]() {
-    aclSetupHelper(
-        false /* isIpV6 */,
-        HwAclQualifierTest::LookupClassType::LOOKUPCLASS_NEIGHBOR);
+    aclSetupHelper(false /* isIpV6 */, QualifierType::LOOKUPCLASS_NEIGHBOR);
   };
 
   auto verify = [=]() { aclVerifyHelper(); };
@@ -487,24 +491,7 @@ TEST_F(HwAclQualifierTest, AclIp6LookupClassNeighbor) {
 
 TEST_F(HwAclQualifierTest, AclIp6LookupClassRoute) {
   auto setup = [=]() {
-    aclSetupHelper(
-        false /* isIpV6 */,
-        HwAclQualifierTest::LookupClassType::LOOKUPCLASS_ROUTE);
-  };
-
-  auto verify = [=]() { aclVerifyHelper(); };
-
-  verifyAcrossWarmBoots(setup, verify);
-}
-
-TEST_F(HwAclQualifierTest, AclIp6LookupClassRouteDPR) {
-  auto setup = [=]() {
-    auto newCfg = initialConfig();
-    auto* acl = utility::addAcl(&newCfg, kAclName(), cfg::AclActionType::DENY);
-    configureIp6QualifiersHelper(acl);
-    configureQualifier(
-        acl->lookupClassRoute(), true, cfg::AclLookupClass::DST_CLASS_L3_DPR);
-    applyNewConfig(newCfg);
+    aclSetupHelper(false /* isIpV6 */, QualifierType::LOOKUPCLASS_ROUTE);
   };
 
   auto verify = [=]() { aclVerifyHelper(); };

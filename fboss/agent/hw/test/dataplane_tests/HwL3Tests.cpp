@@ -25,7 +25,9 @@ class HwL3Test : public HwLinkStateDependentTest {
  protected:
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::oneL3IntfConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], cfg::PortLoopbackMode::MAC);
+        getHwSwitch(),
+        masterLogicalPortIds()[0],
+        getAsic()->desiredLoopbackMode());
     return cfg;
   }
 
@@ -66,7 +68,7 @@ class HwL3Test : public HwLinkStateDependentTest {
 
     auto verify = [=]() {
       auto vlanId = utility::firstVlanID(initialConfig());
-      auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+      auto intfMac = utility::getFirstInterfaceMac(getProgrammedState());
       RoutePrefix<folly::IPAddressV4> prefix4(kGetRoutePrefixIPv4());
       RoutePrefix<folly::IPAddressV6> prefix6(kGetRoutePrefixIPv6());
       auto cidr4 = folly::CIDRNetwork(prefix4.network(), prefix4.mask());
@@ -140,7 +142,7 @@ class HwL3Test : public HwLinkStateDependentTest {
 
     auto verify = [=]() {
       auto vlanId = utility::firstVlanID(initialConfig());
-      auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+      auto intfMac = utility::getFirstInterfaceMac(getProgrammedState());
       // Verify hit bit NOT set on both neighbor entries
       EXPECT_FALSE(utility::isHostHit(this->getHwSwitch(), kNbrIPv4()));
       EXPECT_FALSE(utility::isHostHit(this->getHwSwitch(), kNbrIPv6()));

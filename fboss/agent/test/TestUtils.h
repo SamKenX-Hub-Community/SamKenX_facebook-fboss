@@ -44,6 +44,16 @@ namespace cfg {
 class SwitchConfig;
 }
 
+template <cfg::SwitchType type>
+struct SwitchTypeT {
+  static constexpr auto switchType = type;
+};
+
+using SwitchTypes = ::testing::Types<
+    SwitchTypeT<cfg::SwitchType::NPU>,
+    SwitchTypeT<cfg::SwitchType::VOQ>,
+    SwitchTypeT<cfg::SwitchType::FABRIC>>;
+
 /*
  * In the non unit test code state passed to apply*Config is the state
  * returned from SwSwitch init, which is always published. However this
@@ -76,7 +86,9 @@ std::unique_ptr<HwTestHandle> createTestHandle(
     cfg::SwitchConfig* cfg,
     SwitchFlags flags = SwitchFlags::DEFAULT);
 
-std::unique_ptr<MockPlatform> createMockPlatform();
+std::unique_ptr<MockPlatform> createMockPlatform(
+    cfg::SwitchType switchType = cfg::SwitchType::NPU,
+    std::optional<int64_t> switchId = std::nullopt);
 std::unique_ptr<SwSwitch> setupMockSwitchWithoutHW(
     std::unique_ptr<MockPlatform> platform,
     const std::shared_ptr<SwitchState>& state,
@@ -86,6 +98,19 @@ std::unique_ptr<SwSwitch> setupMockSwitchWithHW(
     std::unique_ptr<MockPlatform> platform,
     const std::shared_ptr<SwitchState>& state,
     SwitchFlags flags);
+cfg::DsfNode makeDsfNodeCfg(
+    int64_t switchId = 0,
+    cfg::DsfNodeType type = cfg::DsfNodeType::INTERFACE_NODE);
+
+cfg::SwitchConfig updateSwitchID(
+    const cfg::SwitchConfig& origCfg,
+    int64_t oldSwitchId,
+    int64_t newSwitchId);
+
+std::shared_ptr<SystemPort> makeSysPort(
+    const std::optional<std::string>& qosPolicy,
+    int64_t sysPortId = 1,
+    int64_t switchId = 1);
 /*
  * Get the MockHwSwitch from a SwSwitch.
  */
@@ -187,6 +212,8 @@ std::shared_ptr<SwitchState> testStateAWithPortsUp();
  */
 std::shared_ptr<SwitchState> testStateAWithLookupClasses();
 
+std::shared_ptr<SwitchState> testStateAWithoutIpv4VlanIntf(VlanID vlanId);
+
 /*
  * Bring all ports up for a given input state
  */
@@ -200,10 +227,15 @@ std::shared_ptr<SwitchState> bringAllPortsDown(
     const std::shared_ptr<SwitchState>& in);
 
 /*
+ * Fabric switch test config
+ */
+cfg::SwitchConfig testConfigFabricSwitch();
+/*
  * The returned configuration object, if applied to a SwitchState with ports
  * 1-20, will yield the same SwitchState as that returned by testStateA().
  */
-cfg::SwitchConfig testConfigA();
+cfg::SwitchConfig testConfigA(
+    cfg::SwitchType switchType = cfg::SwitchType::NPU);
 /*
  * Same as testConfgA but with AclLookupClass associated with every port.
  * (MH-NIC case queue-per-host configuration).
@@ -435,7 +467,7 @@ class WaitForMacEntryAddedOrDeleted : public WaitForSwitchState {
               const auto& newVlan =
                   delta.getVlansDelta().getNew()->getNodeIf(vlan);
 
-              auto newEntry = newVlan->getMacTable()->getNodeIf(mac);
+              auto newEntry = newVlan->getMacTable()->getMacIf(mac);
               if (added) {
                 return (newEntry != nullptr);
               }
@@ -458,42 +490,31 @@ void preparedMockPortConfig(
     std::optional<std::string> name = std::nullopt,
     cfg::PortState state = cfg::PortState::ENABLED);
 
-template <typename ThriftyNode, bool areFields = false>
-void validateThriftyMigration(const ThriftyNode& node) {
-  folly::dynamic dyn = node.toFollyDynamic();
-  EXPECT_NO_THROW(folly::toJson(dyn));
-  auto newNode = ThriftyNode::fromFollyDynamic(dyn);
-
-  dyn = node.toFollyDynamicLegacy();
-  EXPECT_NO_THROW(folly::toJson(dyn));
-  auto legacyNode = ThriftyNode::fromFollyDynamicLegacy(dyn);
-
-  dyn = node.toFollyDynamicLegacy();
-  EXPECT_NO_THROW(folly::toJson(dyn));
-  auto forwardMigrationNode = ThriftyNode::fromFollyDynamic(dyn);
-
-  dyn = node.toFollyDynamic();
-  EXPECT_NO_THROW(folly::toJson(dyn));
-  auto backwardMigrationNode = ThriftyNode::fromFollyDynamicLegacy(dyn);
-
+template <typename Node, bool areFields = false>
+void validateNodeSerialization(const Node& node) {
   if constexpr (!areFields) {
-    EXPECT_EQ(node, *newNode);
-    EXPECT_EQ(*newNode, *legacyNode);
-    EXPECT_EQ(*legacyNode, *forwardMigrationNode);
-    EXPECT_EQ(*forwardMigrationNode, *backwardMigrationNode);
+    if constexpr (!kIsThriftCowNode<Node>) {
+      // Thrifty Nodes
+      auto nodeBack = Node::fromThrift(node.toThrift());
+      EXPECT_EQ(node, *nodeBack);
+    } else {
+      // Thrift-cow Nodes
+      auto nodeBack = std::make_shared<Node>();
+      nodeBack->fromThrift(node.toThrift());
+      EXPECT_EQ(node, *nodeBack);
+    }
   } else {
-    EXPECT_EQ(node, newNode);
-    EXPECT_EQ(newNode, legacyNode);
-    EXPECT_EQ(legacyNode, forwardMigrationNode);
-    EXPECT_EQ(forwardMigrationNode, backwardMigrationNode);
+    auto nodeBack = Node::fromThrift(node.toThrift());
+    EXPECT_EQ(node, nodeBack);
   }
 }
 
 template <typename Node>
-void validateNodeSerilization(const Node& node) {
-  auto nodeBack = Node::fromFollyDynamic(node.toFollyDynamic());
+void validateThriftStructNodeSerialization(const Node& node) {
+  auto nodeBack = std::make_shared<Node>(node.toThrift());
   EXPECT_EQ(node, *nodeBack);
-  nodeBack = Node::fromThrift(node.toThrift());
+  nodeBack = std::make_shared<Node>();
+  nodeBack->fromThrift(node.toThrift());
   EXPECT_EQ(node, *nodeBack);
 }
 
@@ -512,10 +533,14 @@ bool isSameNodeMap(const NodeMap& lhs, const NodeMap& rhs) {
 }
 
 template <typename NodeMap>
-void validateNodeMapSerilization(const NodeMap& nodeMap) {
-  auto nodeMapBack = NodeMap::fromFollyDynamic(nodeMap.toFollyDynamic());
+void validateNodeMapSerialization(const NodeMap& nodeMap) {
+  auto nodeMapBack = NodeMap::fromThrift(nodeMap.toThrift());
   EXPECT_TRUE(isSameNodeMap(nodeMap, *nodeMapBack));
-  nodeMapBack = NodeMap::fromThrift(nodeMap.toThrift());
-  EXPECT_TRUE(isSameNodeMap(nodeMap, *nodeMapBack));
+}
+
+template <typename NodeMap>
+void validateThriftMapMapSerialization(const NodeMap& nodeMap) {
+  auto nodeMapBack = std::make_shared<NodeMap>(nodeMap.toThrift());
+  EXPECT_TRUE(nodeMap.toThrift() == nodeMapBack->toThrift());
 }
 } // namespace facebook::fboss

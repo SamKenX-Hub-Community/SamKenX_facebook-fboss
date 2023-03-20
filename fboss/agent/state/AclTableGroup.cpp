@@ -12,6 +12,7 @@
 #include <thrift/lib/cpp/util/EnumUtils.h>
 #include "fboss/agent/state/AclEntry.h"
 #include "fboss/agent/state/AclTable.h"
+#include "fboss/agent/state/AclTableMap.h"
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/agent/state/StateUtils.h"
 
@@ -21,31 +22,25 @@ using folly::IPAddress;
 namespace {
 constexpr auto kAclStage = "aclStage";
 constexpr auto kName = "name";
-constexpr auto kAclTableMap = "aclTableMap";
+constexpr auto kAclTableGroupName = "ingress-ACL-Table-Group";
 } // namespace
 
 namespace facebook::fboss {
 
-folly::dynamic AclTableGroupFields::toFollyDynamic() const {
-  folly::dynamic aclTableGroup = folly::dynamic::object;
-  aclTableGroup[kAclStage] = static_cast<int>(stage);
-  aclTableGroup[kName] = name;
-  aclTableGroup[kAclTableMap] = aclTableMap->toFollyDynamic();
-  return aclTableGroup;
+AclTableGroup::AclTableGroup(cfg::AclStage stage) {
+  set<switch_state_tags::stage>(stage);
 }
 
-AclTableGroupFields AclTableGroupFields::fromFollyDynamic(
-    const folly::dynamic& aclTableGroupJson) {
-  AclTableGroupFields aclTableGroup(
-      cfg::AclStage(aclTableGroupJson[kAclStage].asInt()),
-      aclTableGroupJson[kName].asString(),
-      AclTableMap::fromFollyDynamic(aclTableGroupJson[kAclTableMap]));
-
-  return aclTableGroup;
+std::shared_ptr<AclTableGroup>
+AclTableGroup::createDefaultAclTableGroupFromThrift(
+    const std::map<std::string, state::AclEntryFields>& aclMap) {
+  auto aclTableMap = AclTableMap::createDefaultAclTableMapFromThrift(aclMap);
+  state::AclTableGroupFields data{};
+  data.stage() = cfg::AclStage::INGRESS;
+  data.name() = kAclTableGroupName;
+  data.aclTableMap() = aclTableMap->toThrift();
+  return std::make_shared<AclTableGroup>(data);
 }
 
-AclTableGroup::AclTableGroup(cfg::AclStage stage) : NodeBaseT(stage) {}
-
-template class NodeBaseT<AclTableGroup, AclTableGroupFields>;
-
+template class ThriftStructNode<AclTableGroup, state::AclTableGroupFields>;
 } // namespace facebook::fboss

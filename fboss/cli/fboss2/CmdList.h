@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "fboss/cli/fboss2/CmdGlobalOptions.h"
-#include "fboss/cli/fboss2/utils/CmdUtils.h"
+#include "fboss/cli/fboss2/utils/CmdCommonUtils.h"
 
 namespace facebook::fboss {
 
@@ -23,7 +23,9 @@ using ValidFilterMapType = std::unordered_map<
     std::string_view,
     std::shared_ptr<CmdGlobalOptions::BaseTypeVerifier>>;
 using CommandHandlerFn = std::function<void()>;
-using GetValidFilterFn = std::function<ValidFilterMapType()>;
+using ValidFilterHandlerFn = std::function<ValidFilterMapType()>;
+using ArgTypeHandlerFn = std::function<utils::ObjectArgTypeId()>;
+using LocalOptionsHandlerFn = std::function<std::vector<utils::LocalOption>()>;
 
 using CmdVerb = std::string;
 using CmdObject = std::string;
@@ -33,14 +35,58 @@ using CmdHelpMsg = std::string;
 struct Command {
   Command(
       const std::string& name,
-      const utils::ObjectArgTypeId argType,
       const std::string& help,
-      const CommandHandlerFn& handler,
+      const CommandHandlerFn& commandHandler,
+      const ArgTypeHandlerFn& argTypeHandler,
       const std::vector<Command>& subcommands = {})
       : name{name},
-        argType{argType},
         help{help},
-        handler{handler},
+        commandHandler{commandHandler},
+        argTypeHandler{argTypeHandler},
+        subcommands{subcommands} {}
+
+  Command(
+      const std::string& name,
+      const std::string& help,
+      const CommandHandlerFn& commandHandler,
+      const ValidFilterHandlerFn& validFilterHandler,
+      const ArgTypeHandlerFn& argTypeHandler,
+      const std::vector<Command>& subcommands = {})
+      : name{name},
+        help{help},
+        commandHandler{commandHandler},
+        validFilterHandler{validFilterHandler},
+        argTypeHandler{argTypeHandler},
+        subcommands{subcommands} {}
+
+  Command(
+      const std::string& name,
+      const std::string& help,
+      const CommandHandlerFn& commandHandler,
+      const ArgTypeHandlerFn& argTypeHandler,
+      const LocalOptionsHandlerFn& localOptionsHandler,
+      const std::vector<Command>& subcommands = {})
+      : name{name},
+        help{help},
+        commandHandler{commandHandler},
+        argTypeHandler{argTypeHandler},
+        localOptionsHandler{localOptionsHandler},
+        subcommands{subcommands} {}
+
+  Command(
+      const std::string& name,
+      const std::string& help,
+      const CommandHandlerFn& commandHandler,
+      const ValidFilterHandlerFn& validFilterHandler,
+      const ArgTypeHandlerFn& argTypeHandler,
+      const LocalOptionsHandlerFn& localOptionsHandler,
+      const std::vector<Command>& subcommands = {})
+      : name{name},
+        help{help},
+        commandHandler{commandHandler},
+        validFilterHandler{validFilterHandler},
+        argTypeHandler{argTypeHandler},
+        localOptionsHandler{localOptionsHandler},
         subcommands{subcommands} {}
 
   // Some commands don't have handlers and only have more subcommands
@@ -48,30 +94,14 @@ struct Command {
       const std::string& name,
       const std::string& help,
       const std::vector<Command>& subcommands)
-      : name{name},
-        argType{utils::ObjectArgTypeId::OBJECT_ARG_TYPE_ID_NONE},
-        help{help},
-        subcommands{subcommands} {}
-
-  Command(
-      const std::string& name,
-      const utils::ObjectArgTypeId argType,
-      const std::string& help,
-      const CommandHandlerFn& handler,
-      const GetValidFilterFn& validFilterGetter,
-      const std::vector<Command>& subcommands = {})
-      : name{name},
-        argType{argType},
-        help{help},
-        handler{handler},
-        validFilterHandler{validFilterGetter},
-        subcommands{subcommands} {}
+      : name{name}, help{help}, subcommands{subcommands} {}
 
   const std::string name;
-  const utils::ObjectArgTypeId argType;
   const std::string help;
-  const std::optional<CommandHandlerFn> handler;
-  const std::optional<GetValidFilterFn> validFilterHandler;
+  const std::optional<CommandHandlerFn> commandHandler;
+  const std::optional<ValidFilterHandlerFn> validFilterHandler;
+  const std::optional<ArgTypeHandlerFn> argTypeHandler;
+  const std::optional<LocalOptionsHandlerFn> localOptionsHandler;
   const std::vector<Command> subcommands;
 };
 
@@ -79,21 +109,64 @@ struct RootCommand : public Command {
   RootCommand(
       const std::string& verb,
       const std::string& object,
-      const utils::ObjectArgTypeId argType,
       const std::string& help,
-      const CommandHandlerFn& handler,
+      const CommandHandlerFn& commandHandler,
+      const ArgTypeHandlerFn& argTypeHandler,
       const std::vector<Command>& subcommands = {})
-      : Command(object, argType, help, handler, subcommands), verb{verb} {}
+      : Command(object, help, commandHandler, argTypeHandler, subcommands),
+        verb{verb} {}
 
   RootCommand(
       const std::string& verb,
       const std::string& object,
-      const utils::ObjectArgTypeId argType,
       const std::string& help,
-      const CommandHandlerFn& handler,
-      const GetValidFilterFn& validFilterGetter,
+      const CommandHandlerFn& commandHandler,
+      const ValidFilterHandlerFn& validFilterHandler,
+      const ArgTypeHandlerFn& argTypeHandler,
       const std::vector<Command>& subcommands = {})
-      : Command(object, argType, help, handler, validFilterGetter, subcommands),
+      : Command(
+            object,
+            help,
+            commandHandler,
+            validFilterHandler,
+            argTypeHandler,
+            subcommands),
+        verb{verb} {}
+
+  RootCommand(
+      const std::string& verb,
+      const std::string& object,
+      const std::string& help,
+      const CommandHandlerFn& commandHandler,
+      const ArgTypeHandlerFn& argTypeHandler,
+      const LocalOptionsHandlerFn& localOptionsHandler,
+      const std::vector<Command>& subcommands = {})
+      : Command(
+            object,
+            help,
+            commandHandler,
+            argTypeHandler,
+            localOptionsHandler,
+            subcommands),
+        verb{verb} {}
+
+  RootCommand(
+      const std::string& verb,
+      const std::string& object,
+      const std::string& help,
+      const CommandHandlerFn& commandHandler,
+      const ValidFilterHandlerFn& validFilterHandler,
+      const ArgTypeHandlerFn& argTypeHandler,
+      const LocalOptionsHandlerFn& localOptionsHandler,
+      const std::vector<Command>& subcommands = {})
+      : Command(
+            object,
+            help,
+            commandHandler,
+            validFilterHandler,
+            argTypeHandler,
+            localOptionsHandler,
+            subcommands),
         verb{verb} {}
 
   RootCommand(
@@ -143,11 +216,23 @@ void commandHandler() {
   T().run();
 }
 
+void helpCommandHandler();
+
 template <typename T>
-ValidFilterMapType getValidFilterHandler() {
+ValidFilterMapType validFilterHandler() {
   return T().getValidFilters();
 }
 
-void helpHandler();
+template <typename T>
+utils::ObjectArgTypeId argTypeHandler() {
+  return T().ObjectArgTypeId;
+}
+
+utils::ObjectArgTypeId helpArgTypeHandler();
+
+template <typename T>
+std::vector<utils::LocalOption> localOptionsHandler() {
+  return T().LocalOptions;
+}
 
 } // namespace facebook::fboss

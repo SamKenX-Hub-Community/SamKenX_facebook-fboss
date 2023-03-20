@@ -31,15 +31,23 @@ namespace facebook::fboss {
 class HwSwitchStateReplayTest : public HwTest {
   std::shared_ptr<SwitchState> getWarmBootState() {
     if (FLAGS_replay_switch_state_file.size()) {
-      std::string warmBootJson;
-      auto ret =
-          folly::readFile(FLAGS_replay_switch_state_file.c_str(), warmBootJson);
+      std::vector<std::byte> bytes;
+      auto ret = folly::readFile(FLAGS_replay_switch_state_file.c_str(), bytes);
       sysCheckError(
           ret,
           "Unable to read switch state from : ",
           FLAGS_replay_switch_state_file);
-      return SwitchState::fromFollyDynamic(
-          folly::parseJson(warmBootJson)["swSwitch"]);
+      // By default parse switch state as thrift
+      state::WarmbootState thriftState;
+      auto buf = folly::IOBuf::copyBuffer(bytes.data(), bytes.size());
+      apache::thrift::BinaryProtocolReader reader;
+      reader.setInput(buf.get());
+      try {
+        thriftState.read(&reader);
+        return SwitchState::fromThrift(*thriftState.swSwitchState());
+      } catch (const std::exception& e) {
+        XLOG(FATAL) << "Failed to parse replay switch state file to thrift.";
+      }
     }
     // No file was given as input. This would happen when this gets
     // invoked as part of bcm_test test suite. In which case, just
@@ -47,10 +55,10 @@ class HwSwitchStateReplayTest : public HwTest {
     // but that would entail making replay test a stand alone tool, which
     // then forgoes benefit of continuous validation we get by being part
     // of bcm_tests
-    XLOG(INFO)
+    XLOG(DBG2)
         << "No replay state file specified, applying one port per vlan config";
-    auto config =
-        utility::onePortPerVlanConfig(getHwSwitch(), masterLogicalPortIds());
+    auto config = utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
     applyNewConfig(config);
     return getProgrammedState();
   }
@@ -59,10 +67,10 @@ class HwSwitchStateReplayTest : public HwTest {
   void runTest() {
     auto setup = [=]() {
       auto wbState = getWarmBootState();
-      for (auto port : *wbState->getPorts()) {
-        if (port->isUp()) {
-          port->setLoopbackMode(cfg::PortLoopbackMode::MAC);
-          XLOG(INFO) << " Setting loopback mode for : " << port->getID();
+      for (auto port : std::as_const(*wbState->getPorts())) {
+        if (port.second->isUp()) {
+          port.second->setLoopbackMode(getAsic()->desiredLoopbackMode());
+          XLOG(DBG2) << " Setting loopback mode for : " << port.second->getID();
         }
       }
       applyNewState(wbState);

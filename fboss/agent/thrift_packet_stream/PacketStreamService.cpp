@@ -43,7 +43,7 @@ apache::thrift::ServerStream<TPacket> PacketStreamService::connect(
         apache::thrift::ServerStream<TPacket>::createPublisher(
             [client = clientId, this] {
               // when the client is disconnected run this section.
-              XLOG(INFO) << "Client disconnected: " << client;
+              XLOG(DBG2) << "Client disconnected: " << client;
               clientMap_.withWLock([client = client](auto& lockedMap) {
                 lockedMap.erase(client);
               });
@@ -57,7 +57,7 @@ apache::thrift::ServerStream<TPacket> PacketStreamService::connect(
               std::make_pair(client, ClientInfo(std::move(publisher))));
         });
     clientConnected(clientId);
-    XLOG(INFO) << clientId << " connected successfully to PacketStreamService";
+    XLOG(DBG2) << clientId << " connected successfully to PacketStreamService";
     return std::move(streamAndPublisher.first);
   } catch (const std::exception& except) {
     XLOG(ERR) << "connect failed with exp:" << except.what();
@@ -77,7 +77,7 @@ void PacketStreamService::send(const std::string& clientId, TPacket&& packet) {
     const auto& clientInfo = iter->second;
     auto portIter = clientInfo.portList_.find(*packet.l2Port());
     if (portIter == clientInfo.portList_.end()) {
-      XLOG(ERR) << "Port '" << *packet.l2Port() << "'Not Registered";
+      XLOG(ERR) << "Port '" << *packet.l2Port() << "' not Registered";
       throw createTPacketException(
           TPacketErrorCode::PORT_NOT_REGISTERED, "PORT not registered");
     }

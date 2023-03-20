@@ -61,22 +61,24 @@ class AgentTest : public ::testing::Test, public AgentInitializer {
       SETUP_POSTWB_FN setupPostWarmboot,
       VERIFY_POSTWB_FN verifyPostWarmboot) {
     if (platform()->getHwSwitch()->getBootType() != BootType::WARM_BOOT) {
-      XLOG(INFO) << "cold boot setup()";
+      XLOG(DBG2) << "cold boot setup()";
       setup();
+    } else {
+      XLOG(DBG2) << "skip setup() for warmboot";
     }
 
     if (runVerification()) {
-      XLOG(INFO) << "verify()";
+      XLOG(DBG2) << "verify()";
       verify();
     }
 
     if (platform()->getHwSwitch()->getBootType() == BootType::WARM_BOOT) {
       // If we did a warm boot, do post warmboot actions now
-      XLOG(INFO) << "setupPostWarmboot()";
+      XLOG(DBG2) << "setupPostWarmboot()";
       setupPostWarmboot();
 
       if (runVerification()) {
-        XLOG(INFO) << "verifyPostWarmboot()";
+        XLOG(DBG2) << "verifyPostWarmboot()";
         verifyPostWarmboot();
       }
     }
@@ -101,6 +103,13 @@ class AgentTest : public ::testing::Test, public AgentInitializer {
   }
 
   void dumpRunningConfig(const std::string& targetDir);
+
+  void setupConfigFile(
+      const cfg::SwitchConfig& cfg,
+      const std::string& configDir,
+      const std::string& configFile) const;
+  void reloadConfig(std::string reason) const;
+  virtual void logLinkDbgMessage(std::vector<PortID>& /* portIDs */) const {}
 
  private:
   template <typename AddrT>

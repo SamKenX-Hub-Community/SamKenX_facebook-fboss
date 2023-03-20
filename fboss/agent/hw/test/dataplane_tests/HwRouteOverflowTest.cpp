@@ -10,6 +10,7 @@
 
 #include "fboss/agent/FbossHwUpdateError.h"
 #include "fboss/agent/HwSwitch.h"
+#include "fboss/agent/hw/test/HwTestRouteUtils.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwOverflowTest.h"
 #include "fboss/agent/test/RouteScaleGenerators.h"
 #include "fboss/lib/platforms/PlatformProductInfo.h"
@@ -71,7 +72,11 @@ TEST_F(HwOverflowTest, overflowRoutes) {
       break;
     case PlatformMode::WEDGE400C:
     case PlatformMode::WEDGE400C_SIM:
+    case PlatformMode::WEDGE400C_VOQ:
+    case PlatformMode::WEDGE400C_FABRIC:
     case PlatformMode::CLOUDRIPPER:
+    case PlatformMode::CLOUDRIPPER_VOQ:
+    case PlatformMode::CLOUDRIPPER_FABRIC:
     case PlatformMode::LASSEN:
     case PlatformMode::SANDIA:
       XLOG(WARNING) << " No overflow test for 400C yet";
@@ -80,11 +85,16 @@ TEST_F(HwOverflowTest, overflowRoutes) {
     case PlatformMode::ELBERT:
       // No overflow test for TH4 yet
       break;
-    case PlatformMode::MAKALU:
-      // No overflow test for MAKALU yet
+    case PlatformMode::MERU400BIU:
+      // No overflow test for MERU400BIU yet
       break;
-    case PlatformMode::KAMET:
-      // No overflow test for KAMET yet
+    case PlatformMode::MERU400BIA:
+      // No overflow test for MERU400BIA yet
+      break;
+    case PlatformMode::MERU400BFU:
+      // No overflow test for MERU400BFU yet
+      break;
+    case PlatformMode::MONTBLANC:
       break;
   }
   if (routeChunks.size() == 0) {
@@ -118,7 +128,7 @@ class HwRouteCounterOverflowTest : public HwOverflowTest {
 };
 
 TEST_F(HwRouteCounterOverflowTest, overflowRouteCounters) {
-  if (!getPlatform()->getAsic()->isSupported(HwAsic::Feature::ROUTE_COUNTERS)) {
+  if (!utility::isRouteCounterSupported(getHwSwitch())) {
     return;
   }
   applyNewState(

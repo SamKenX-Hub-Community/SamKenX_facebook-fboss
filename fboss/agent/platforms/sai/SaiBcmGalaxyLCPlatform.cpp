@@ -16,13 +16,19 @@ namespace facebook::fboss {
 
 SaiBcmGalaxyLCPlatform::SaiBcmGalaxyLCPlatform(
     std::unique_ptr<PlatformProductInfo> productInfo,
-    folly::MacAddress localMac)
+    folly::MacAddress localMac,
+    const std::string& /* platformMappingStr */)
     : SaiBcmGalaxyPlatform(
           std::move(productInfo),
           std::make_unique<GalaxyLCPlatformMapping>(
               GalaxyLCPlatformMapping::getLinecardName()),
-          localMac) {
-  asic_ = std::make_unique<TomahawkAsic>();
+          localMac) {}
+
+void SaiBcmGalaxyLCPlatform::setupAsic(
+    cfg::SwitchType switchType,
+    std::optional<int64_t> switchId,
+    std::optional<cfg::Range64> systemPortRange) {
+  asic_ = std::make_unique<TomahawkAsic>(switchType, switchId, systemPortRange);
 }
 
 HwAsic* SaiBcmGalaxyLCPlatform::getAsic() const {

@@ -1,9 +1,10 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 
 #include "fboss/lib/thrift_service_client/ThriftServiceClient.h"
-#include "fboss/qsfp_service/platforms/wedge/WedgeManager.h"
-#include "fboss/qsfp_service/platforms/wedge/WedgeManagerInit.h"
-#include "fboss/util/QsfpUtilTx.h"
+#include "fboss/qsfp_service/platforms/wedge/WedgeManager.h" // @manual=//fboss/qsfp_service/platforms/wedge:wedge-platform-default
+#include "fboss/qsfp_service/platforms/wedge/WedgeManagerInit.h" // @manual=//fboss/qsfp_service/platforms/wedge:wedge-platform-default
+#include "fboss/util/qsfp/QsfpUtilContainer.h"
+#include "fboss/util/qsfp/QsfpUtilTx.h"
 #include "fboss/util/wedge_qsfp_util.h"
 #include "folly/gen/Base.h"
 
@@ -66,7 +67,7 @@ int main(int argc, char* argv[]) {
   folly::init(&argc, &argv, true);
   gflags::SetCommandLineOptionWithMode(
       "minloglevel", "0", gflags::SET_FLAGS_DEFAULT);
-  folly::EventBase evb;
+  folly::EventBase& evb = QsfpUtilContainer::getInstance()->getEventBase();
 
   if (FLAGS_list_commands) {
     listCommands();
@@ -156,12 +157,8 @@ int main(int argc, char* argv[]) {
     return EX_OK;
   }
 
-  auto busAndError = getTransceiverAPI();
-  if (busAndError.second) {
-    return busAndError.second;
-  }
-  auto bus = std::move(busAndError.first);
-  auto i2cInfo = DirectI2cInfo{bus.get(), wedgeManager.get()};
+  auto bus = QsfpUtilContainer::getInstance()->getTransceiverBus();
+  auto i2cInfo = DirectI2cInfo{bus, wedgeManager.get()};
 
   bool printInfo =
       !(FLAGS_clear_low_power || FLAGS_tx_disable || FLAGS_tx_enable ||
@@ -172,11 +169,11 @@ int main(int argc, char* argv[]) {
         FLAGS_update_module_firmware || FLAGS_get_module_fw_info ||
         FLAGS_app_sel || FLAGS_cdb_command || FLAGS_update_bulk_module_fw ||
         FLAGS_vdm_info || FLAGS_prbs_start || FLAGS_prbs_stop ||
-        FLAGS_prbs_stats || FLAGS_module_io_stats);
+        FLAGS_prbs_stats || FLAGS_module_io_stats || FLAGS_batch_ops);
 
   if (FLAGS_direct_i2c || !printInfo) {
     try {
-      tryOpenBus(bus.get());
+      tryOpenBus(bus);
     } catch (const std::exception& ex) {
       fprintf(stderr, "error: unable to open device: %s\n", ex.what());
       return EX_IOERR;
@@ -215,21 +212,19 @@ int main(int argc, char* argv[]) {
   }
 
   if (FLAGS_read_reg) {
-    return doReadReg(
-        bus.get(), ports, FLAGS_offset, FLAGS_length, FLAGS_page, evb);
+    return doReadReg(bus, ports, FLAGS_offset, FLAGS_length, FLAGS_page, evb);
   }
 
   if (FLAGS_write_reg) {
-    return doWriteReg(
-        bus.get(), ports, FLAGS_offset, FLAGS_page, FLAGS_data, evb);
+    return doWriteReg(bus, ports, FLAGS_offset, FLAGS_page, FLAGS_data, evb);
   }
 
   if (FLAGS_batch_ops) {
-    return doBatchOps(bus.get(), ports, FLAGS_batchfile, evb);
+    return doBatchOps(bus, ports, FLAGS_batchfile, evb);
   }
 
   if (FLAGS_tx_disable || FLAGS_tx_enable) {
-    QsfpUtilTx txCtrl(bus.get(), ports, evb);
+    QsfpUtilTx txCtrl(bus, ports, evb);
     return txCtrl.setTxDisable();
   }
 
@@ -240,69 +235,66 @@ int main(int argc, char* argv[]) {
 
   int retcode = EX_OK;
   for (unsigned int portNum : ports) {
-    if (FLAGS_clear_low_power && overrideLowPower(bus.get(), portNum, false)) {
+    if (FLAGS_clear_low_power && overrideLowPower(portNum, false)) {
       printf("QSFP %d: cleared low power flags\n", portNum);
     }
-    if (FLAGS_set_low_power && overrideLowPower(bus.get(), portNum, true)) {
+    if (FLAGS_set_low_power && overrideLowPower(portNum, true)) {
       printf("QSFP %d: set low power flags\n", portNum);
     }
 
-    if (FLAGS_set_40g && rateSelect(bus.get(), portNum, 0x0)) {
+    if (FLAGS_set_40g && rateSelect(portNum, 0x0)) {
       printf("QSFP %d: set to optimize for 10G channels\n", portNum);
     }
-    if (FLAGS_set_100g && rateSelect(bus.get(), portNum, 0xaa)) {
+    if (FLAGS_set_100g && rateSelect(portNum, 0xaa)) {
       printf("QSFP %d: set to optimize for 25G channels\n", portNum);
     }
-    if (FLAGS_app_sel && appSel(bus.get(), portNum, FLAGS_app_sel)) {
+    if (FLAGS_app_sel && appSel(bus, portNum, FLAGS_app_sel)) {
       printf("QSFP %d: set to application %d\n", portNum, FLAGS_app_sel);
     }
 
-    if (FLAGS_cdr_enable && setCdr(bus.get(), portNum, 0xff)) {
+    if (FLAGS_cdr_enable && setCdr(bus, portNum, 0xff)) {
       printf("QSFP %d: CDR enabled\n", portNum);
     }
 
-    if (FLAGS_cdr_disable && setCdr(bus.get(), portNum, 0x00)) {
+    if (FLAGS_cdr_disable && setCdr(bus, portNum, 0x00)) {
       printf("QSFP %d: CDR disabled\n", portNum);
     }
 
-    if (FLAGS_qsfp_hard_reset && doQsfpHardReset(bus.get(), portNum)) {
+    if (FLAGS_qsfp_hard_reset && doQsfpHardReset(bus, portNum)) {
       printf("QSFP %d: Hard reset done\n", portNum);
     }
 
     if (FLAGS_electrical_loopback) {
-      if (getModuleType(bus.get(), portNum) !=
-          TransceiverManagementInterface::CMIS) {
-        if (doMiniphotonLoopback(bus.get(), portNum, electricalLoopback)) {
+      if (getModuleType(bus, portNum) != TransceiverManagementInterface::CMIS) {
+        if (doMiniphotonLoopback(bus, portNum, electricalLoopback)) {
           printf(
               "QSFP %d: done setting module to electrical loopback.\n",
               portNum);
         }
       } else {
-        cmisHostInputLoopback(bus.get(), portNum, electricalLoopback);
+        cmisHostInputLoopback(bus, portNum, electricalLoopback);
       }
     }
 
     if (FLAGS_optical_loopback) {
-      if (getModuleType(bus.get(), portNum) !=
-          TransceiverManagementInterface::CMIS) {
-        if (doMiniphotonLoopback(bus.get(), portNum, opticalLoopback)) {
+      if (getModuleType(bus, portNum) != TransceiverManagementInterface::CMIS) {
+        if (doMiniphotonLoopback(bus, portNum, opticalLoopback)) {
           printf(
               "QSFP %d: done setting module to optical loopback.\n", portNum);
         }
       } else {
-        cmisMediaInputLoopback(bus.get(), portNum, opticalLoopback);
+        cmisMediaInputLoopback(bus, portNum, opticalLoopback);
       }
     }
 
     if (FLAGS_clear_loopback) {
-      if (getModuleType(bus.get(), portNum) !=
-          TransceiverManagementInterface::CMIS) {
-        if (doMiniphotonLoopback(bus.get(), portNum, noLoopback)) {
+      if (getModuleType(bus, portNum) != TransceiverManagementInterface::CMIS) {
+        if (doMiniphotonLoopback(bus, portNum, noLoopback)) {
           printf("QSFP %d: done clear module to loopback.\n", portNum);
         }
       } else {
-        cmisHostInputLoopback(bus.get(), portNum, noLoopback);
-        cmisMediaInputLoopback(bus.get(), portNum, noLoopback);
+        cmisHostInputLoopback(bus, portNum, noLoopback);
+        cmisMediaInputLoopback(bus, portNum, noLoopback);
       }
     }
 
@@ -339,11 +331,10 @@ int main(int argc, char* argv[]) {
     }
 
     if (FLAGS_cdb_command) {
-      if (getModuleType(bus.get(), portNum) !=
-          TransceiverManagementInterface::CMIS) {
+      if (getModuleType(bus, portNum) != TransceiverManagementInterface::CMIS) {
         printf("This command is applicable to CMIS module only\n");
       } else {
-        doCdbCommand(bus.get(), portNum);
+        doCdbCommand(bus, portNum);
       }
     }
 

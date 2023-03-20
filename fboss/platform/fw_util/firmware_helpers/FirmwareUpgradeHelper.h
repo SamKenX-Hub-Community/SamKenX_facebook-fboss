@@ -1,12 +1,14 @@
 // Copyright 2021-present Facebook. All Rights Reserved.
 #pragma once
 
+#include <stdint.h>
+#include <stdlib.h>
+
 #include <folly/String.h>
 #include <folly/Subprocess.h>
 #include <glog/logging.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include "fboss/platform/fw_util/firmware_helpers/Utils.h"
+
+#include "fboss/platform/helpers/Utils.h"
 
 namespace facebook::fboss::platform::fw_util {
 std::string readSysfs(std::string);

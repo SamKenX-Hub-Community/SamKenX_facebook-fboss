@@ -21,50 +21,37 @@
 
 namespace facebook::fboss {
 
-using LoadBalancerMapTraits = NodeMapTraits<LoadBalancerID, LoadBalancer>;
-
-struct LoadBalancerMapThriftTraits
-    : public ThriftyNodeMapTraits<LoadBalancerID, state::LoadBalancerFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "id";
-    return _key;
-  }
-
-  static KeyType parseKey(const folly::dynamic& key) {
-    auto keyInt = key.asInt();
-    switch (keyInt) {
-      case static_cast<int>(LoadBalancerID::ECMP):
-      case static_cast<int>(LoadBalancerID::AGGREGATE_PORT):
-        break;
-      default:
-        throw FbossError("invalid load balancer key:", keyInt);
-    }
-    return folly::to<LoadBalancerID>(keyInt);
-  }
-};
+using LoadBalancerMapTypeClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::enumeration,
+    apache::thrift::type_class::structure>;
+using LoadBalancerMapThriftType =
+    std::map<cfg::LoadBalancerID, state::LoadBalancerFields>;
+class LoadBalancerMap;
+using LoadBalancerMapTraits = ThriftMapNodeTraits<
+    LoadBalancerMap,
+    LoadBalancerMapTypeClass,
+    LoadBalancerMapThriftType,
+    LoadBalancer>;
 
 /*
  * A container for the set of load-balancing data-plane entities.
  */
-class LoadBalancerMap : public ThriftyNodeMapT<
-                            LoadBalancerMap,
-                            LoadBalancerMapTraits,
-                            LoadBalancerMapThriftTraits> {
+class LoadBalancerMap
+    : public ThriftMapNode<LoadBalancerMap, LoadBalancerMapTraits> {
  public:
-  LoadBalancerMap();
-  ~LoadBalancerMap() override;
+  using Base = ThriftMapNode<LoadBalancerMap, LoadBalancerMapTraits>;
 
+  using Base::Base;
+
+  LoadBalancerMap() {}
+  ~LoadBalancerMap() override {}
   std::shared_ptr<LoadBalancer> getLoadBalancerIf(LoadBalancerID id) const;
 
   void addLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer);
   void updateLoadBalancer(std::shared_ptr<LoadBalancer> loadBalancer);
 
-  static std::shared_ptr<LoadBalancerMap> fromFollyDynamicLegacy(
-      const folly::dynamic& serializedLoadBalancers);
-
  private:
   // Inherit the constructors required for clone()
-  using ThriftyNodeMapT::ThriftyNodeMapT;
   friend class CloneAllocator;
 };
 

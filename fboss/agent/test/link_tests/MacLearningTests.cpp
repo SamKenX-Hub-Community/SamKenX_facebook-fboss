@@ -57,7 +57,9 @@ class MacLearningTest : public LinkTest {
     auto l2EntryLearned = [&](const std::shared_ptr<SwitchState>& state) {
       auto vlan = state->getVlans()->getVlan(vlanId);
       auto* macTable = vlan->getMacTable().get();
-      auto node = macTable->getNodeIf(macAddr);
+      auto node = macTable->getMacIf(macAddr);
+      XLOG(DBG2) << "found l2 entry node for " << macAddr << " and vlan "
+                 << vlanId << ": " << (node != nullptr);
       return node != nullptr;
     };
     EXPECT_TRUE(waitForSwitchStateCondition(l2EntryLearned, kMaxRetries));
@@ -89,7 +91,7 @@ class MacLearningTest : public LinkTest {
         true,
         sw()->getHw(),
         sw()->getPlatform()->getLocalMac(),
-        (*sw()->getState()->getVlans()->begin())->getID(),
+        sw()->getState()->getVlans()->getFirstVlanID(),
         txPort,
         255,
         srcMac);
@@ -101,8 +103,9 @@ class MacLearningTest : public LinkTest {
 TEST_F(MacLearningTest, l2EntryFlap) {
   auto verify = [this]() {
     auto macAddr = MacAddress("02:00:00:00:00:05");
-    auto txPort = getCabledPorts()[0];
-    auto rxPort = getCabledPorts()[1];
+    auto connectedPair = *getConnectedPairs().begin();
+    auto txPort = connectedPair.first;
+    auto rxPort = connectedPair.second;
     auto cfg = sw()->getConfig();
     auto portCfg = std::find_if(
         cfg.ports()->begin(), cfg.ports()->end(), [&rxPort](auto& p) {

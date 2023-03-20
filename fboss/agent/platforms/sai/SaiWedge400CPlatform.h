@@ -14,13 +14,16 @@
 namespace facebook::fboss {
 
 class Wedge400CEbbLabPlatformMapping;
+class Wedge400CVoqPlatformMapping;
+class Wedge400CFabricPlatformMapping;
 class EbroAsic;
 
 class SaiWedge400CPlatform : public SaiTajoPlatform {
  public:
-  explicit SaiWedge400CPlatform(
+  SaiWedge400CPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
-      folly::MacAddress localMac);
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
   ~SaiWedge400CPlatform() override;
   std::string getHwConfig() override;
   HwAsic* getAsic() const override;
@@ -29,10 +32,28 @@ class SaiWedge400CPlatform : public SaiTajoPlatform {
   std::vector<sai_system_port_config_t> getInternalSystemPortConfig()
       const override;
 
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
+
+  std::unique_ptr<PlatformMapping> createWedge400CPlatformMapping(
+      const std::string& platformMappingStr);
+
  protected:
   SaiWedge400CPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
       std::unique_ptr<Wedge400CEbbLabPlatformMapping> mapping,
+      folly::MacAddress localMac);
+
+  SaiWedge400CPlatform(
+      std::unique_ptr<PlatformProductInfo> productInfo,
+      std::unique_ptr<Wedge400CVoqPlatformMapping> mapping,
+      folly::MacAddress localMac);
+
+  SaiWedge400CPlatform(
+      std::unique_ptr<PlatformProductInfo> productInfo,
+      std::unique_ptr<Wedge400CFabricPlatformMapping> mapping,
       folly::MacAddress localMac);
 
   std::unique_ptr<EbroAsic> asic_;
@@ -40,9 +61,26 @@ class SaiWedge400CPlatform : public SaiTajoPlatform {
 
 class SaiWedge400CEbbLabPlatform : public SaiWedge400CPlatform {
  public:
-  explicit SaiWedge400CEbbLabPlatform(
+  SaiWedge400CEbbLabPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
-      folly::MacAddress localMac);
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
+};
+
+class SaiWedge400CVoqPlatform : public SaiWedge400CPlatform {
+ public:
+  SaiWedge400CVoqPlatform(
+      std::unique_ptr<PlatformProductInfo> productInfo,
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
+};
+
+class SaiWedge400CFabricPlatform : public SaiWedge400CPlatform {
+ public:
+  SaiWedge400CFabricPlatform(
+      std::unique_ptr<PlatformProductInfo> productInfo,
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
 };
 
 } // namespace facebook::fboss

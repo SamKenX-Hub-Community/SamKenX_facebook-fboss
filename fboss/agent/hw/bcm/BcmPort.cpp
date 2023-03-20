@@ -96,12 +96,12 @@ static constexpr int kCodewordErrorsPageSize = 8;
 bool hasPortQueueChanges(
     const shared_ptr<facebook::fboss::Port>& oldPort,
     const shared_ptr<facebook::fboss::Port>& newPort) {
-  if (oldPort->getPortQueues().size() != newPort->getPortQueues().size()) {
+  if (oldPort->getPortQueues()->size() != newPort->getPortQueues()->size()) {
     return true;
   }
 
-  for (const auto& newQueue : newPort->getPortQueues()) {
-    auto oldQueue = oldPort->getPortQueues().at(newQueue->getID());
+  for (const auto& newQueue : std::as_const(*(newPort->getPortQueues()))) {
+    auto oldQueue = oldPort->getPortQueues()->impl().at(newQueue->getID());
     if (oldQueue->getName() != newQueue->getName()) {
       return true;
     }
@@ -323,15 +323,16 @@ void BcmPort::removePortStat(folly::StringPiece statKey) {
 void BcmPort::removePortPfcStatsLocked(
     const BcmPort::PortStatsWLockedPtr& /* lockedPortStatsPtr */,
     const std::shared_ptr<Port>& swPort,
-    std::optional<std::vector<PfcPriority>> priorities) {
+    Port::PfcPriorityList priorities) {
   XLOG(DBG3) << "Destroy PFC stats for " << swPort->getName();
 
   // Destroy per priority PFC statistics
-  if (priorities.has_value()) {
-    for (auto pri : priorities.value()) {
-      removePortStat(getPfcPriorityStatsKey(kInPfc(), pri));
-      removePortStat(getPfcPriorityStatsKey(kInPfcXon(), pri));
-      removePortStat(getPfcPriorityStatsKey(kOutPfc(), pri));
+  if (priorities) {
+    for (auto pri : *priorities) {
+      PfcPriority priority = static_cast<PfcPriority>(pri->cref());
+      removePortStat(getPfcPriorityStatsKey(kInPfc(), priority));
+      removePortStat(getPfcPriorityStatsKey(kInPfcXon(), priority));
+      removePortStat(getPfcPriorityStatsKey(kOutPfc(), priority));
     }
   }
 
@@ -345,12 +346,13 @@ void BcmPort::reinitPortPfcStats(const std::shared_ptr<Port>& swPort) {
 
   XLOG(DBG3) << "Reinitializing PFC stats for " << portName;
   // Reinit per priority PFC statistics
-  std::optional<std::vector<PfcPriority>> pfcPri = swPort->getPfcPriorities();
-  if (pfcPri.has_value()) {
-    for (auto pri : pfcPri.value()) {
-      reinitPortStat(getPfcPriorityStatsKey(kInPfc(), pri), portName);
-      reinitPortStat(getPfcPriorityStatsKey(kInPfcXon(), pri), portName);
-      reinitPortStat(getPfcPriorityStatsKey(kOutPfc(), pri), portName);
+  auto pfcPri = swPort->getPfcPriorities();
+  if (pfcPri) {
+    for (auto pri : *pfcPri) {
+      PfcPriority priority = static_cast<PfcPriority>(pri->cref());
+      reinitPortStat(getPfcPriorityStatsKey(kInPfc(), priority), portName);
+      reinitPortStat(getPfcPriorityStatsKey(kInPfcXon(), priority), portName);
+      reinitPortStat(getPfcPriorityStatsKey(kOutPfc(), priority), portName);
     }
   }
 
@@ -396,7 +398,7 @@ void BcmPort::reinitPortStatsLocked(
 
   if (swPort) {
     queueManager_->setPortName(portName);
-    queueManager_->setupQueueCounters(swPort->getPortQueues());
+    queueManager_->setupQueueCounters(swPort->getPortQueues()->impl());
   }
 
   // (re) init out queue length
@@ -688,7 +690,8 @@ void BcmPort::program(const shared_ptr<Port>& port) {
   setupPrbs(port);
 
   // Update Inter-packet frame if needed.
-  if (auto ipgBits = port->getProfileConfig().interPacketGapBits()) {
+  phy::ProfileSideConfig profileConfig = port->getProfileConfig();
+  if (auto ipgBits = profileConfig.interPacketGapBits()) {
     setInterPacketGapBits(*ipgBits);
   }
 
@@ -697,8 +700,7 @@ void BcmPort::program(const shared_ptr<Port>& port) {
     enableLinkscan();
   }
   // Cache the number of phy lanes this port uses
-  const auto& iphyPinConfigs = port->getPinConfigs();
-  auto lanes = utility::getIphyLaneConfigs(iphyPinConfigs).size();
+  auto lanes = port->getPinConfigs().size();
   numLanes_.exchange(lanes);
 
   {
@@ -1141,18 +1143,25 @@ std::string BcmPort::statName(
 
 phy::PhyInfo BcmPort::updateIPhyInfo() {
   phy::PhyInfo info;
+  phy::PhyState state;
+  phy::PhyStats stats;
 
   info.name() = getPortName();
+  state.name() = *info.name();
 
   // Global phy parameters
   phy::DataPlanePhyChip phyChip;
   phyChip.type() = phy::DataPlanePhyChipType::IPHY;
   info.phyChip() = phyChip;
+  state.phyChip() = phyChip;
   info.speed() = getSpeed();
+  state.speed() = *info.speed();
   info.linkState() = isUp();
+  state.linkState() = *info.linkState();
 
   // PCS parameters
   phy::PcsInfo pcs;
+  phy::PcsStats pcsStats;
   // FEC parameters
   if (auto portStats = getPortStats()) {
     auto fecMode = getFECMode();
@@ -1190,16 +1199,40 @@ phy::PhyInfo BcmPort::updateIPhyInfo() {
           fecMode, /* operational FecMode */
           *info.speed() /* operational Speed */);
       pcs.rsFec() = rsFec;
+      pcsStats.rsFec() = rsFec;
     }
   }
 
   // PMD Parameters
   phy::PmdInfo pmd;
+  phy::PmdState pmdState;
+  phy::PmdStats pmdStats;
   int totalPmdLanes = numLanes_;
+  phy::PmdInfo lastPmd = *lastPhyInfo_.line()->pmd();
+  phy::PmdState lastPmdState;
+  if (auto lastState = lastPhyInfo_.state()) {
+    lastPmdState = *lastState->line()->pmd();
+  }
+  phy::PmdStats lastPmdStats;
+  if (auto lastStats = lastPhyInfo_.stats()) {
+    lastPmdStats = *lastStats->line()->pmd();
+  }
   for (int lane = 0; lane < totalPmdLanes; lane++) {
     phy::LaneInfo laneInfo;
+    phy::LaneState laneState;
     laneInfo.lane_ref() = lane;
+    laneState.lane_ref() = lane;
+    if (hw_->getPlatform()->getAsic()->isSupported(
+            HwAsic::Feature::RX_FREQUENCY_PPM)) {
+      uint32_t value;
+      auto rv = bcm_port_phy_control_get(
+          unit_, port_, BCM_PORT_PHY_CONTROL_RX_PPM, &value);
+      bcmCheckError(rv, "failed to get rx frequency ppm");
+      laneInfo.rxFrequencyPPM() = value;
+      laneState.rxFrequencyPPM() = value;
+    }
     pmd.lanes_ref()[lane] = laneInfo;
+    pmdState.lanes_ref()[lane] = laneState;
   }
 #if defined(BCM_SDK_VERSION_GTE_6_5_24)
   if (hw_->getPlatform()->getAsic()->isSupported(
@@ -1209,10 +1242,19 @@ phy::PhyInfo BcmPort::updateIPhyInfo() {
     if (!BCM_FAILURE(rv)) {
       for (int lane = 0; lane < totalPmdLanes; lane++) {
         pmd.lanes_ref()[lane].lane_ref() = lane;
+        pmdState.lanes_ref()[lane].lane_ref() = lane;
+        pmdStats.lanes_ref()[lane].lane_ref() = lane;
         pmd.lanes_ref()[lane].cdrLockLive_ref() =
             lock_status.rx_lock_bmp & (1 << lane);
-        pmd.lanes_ref()[lane].cdrLockChanged_ref() =
-            lock_status.rx_lock_change_bmp & (1 << lane);
+        pmdState.lanes_ref()[lane].cdrLockLive_ref() =
+            lock_status.rx_lock_bmp & (1 << lane);
+        bool changed = lock_status.rx_lock_change_bmp & (1 << lane);
+        pmd.lanes_ref()[lane].cdrLockChanged_ref() = changed;
+        pmdState.lanes_ref()[lane].cdrLockChanged_ref() = changed;
+        utility::updateCdrLockChangedCount(
+            changed, lane, pmd.lanes_ref()[lane], lastPmd);
+        utility::updateCdrLockChangedCount(
+            changed, lane, pmdStats.lanes_ref()[lane], lastPmdStats);
       }
     } else {
       XLOG(ERR) << "Failed to read rx_lock_status for port " << port_ << " :"
@@ -1228,10 +1270,19 @@ phy::PhyInfo BcmPort::updateIPhyInfo() {
     if (!BCM_FAILURE(rv)) {
       for (int lane = 0; lane < totalPmdLanes; lane++) {
         pmd.lanes_ref()[lane].lane_ref() = lane;
+        pmdState.lanes_ref()[lane].lane_ref() = lane;
+        pmdStats.lanes_ref()[lane].lane_ref() = lane;
         pmd.lanes_ref()[lane].signalDetectLive_ref() =
             sd_status.signal_detect_bmp & (1 << lane);
-        pmd.lanes_ref()[lane].signalDetectChanged_ref() =
-            sd_status.signal_detect_change_bmp & (1 << lane);
+        pmdState.lanes_ref()[lane].signalDetectLive_ref() =
+            sd_status.signal_detect_bmp & (1 << lane);
+        bool changed = sd_status.signal_detect_change_bmp & (1 << lane);
+        pmd.lanes_ref()[lane].signalDetectChanged_ref() = changed;
+        pmdState.lanes_ref()[lane].signalDetectChanged_ref() = changed;
+        utility::updateSignalDetectChangedCount(
+            changed, lane, pmd.lanes_ref()[lane], lastPmd);
+        utility::updateSignalDetectChangedCount(
+            changed, lane, pmdStats.lanes_ref()[lane], lastPmdStats);
       }
     } else {
       XLOG(ERR) << "Failed to read rx_signal_detect_status for port " << port_
@@ -1246,23 +1297,39 @@ phy::PhyInfo BcmPort::updateIPhyInfo() {
   lineSideInfo.pcs() = pcs;
   lineSideInfo.pmd() = pmd;
 
+  phy::PhySideState lineSideState;
+  lineSideState.side() = phy::Side::LINE;
+  lineSideState.pmd() = pmdState;
+
+  phy::PhySideStats lineSideStats;
+  lineSideStats.side() = phy::Side::LINE;
+  lineSideStats.pcs() = pcsStats;
+  lineSideStats.pmd() = pmdStats;
+
   // Local/Remote Fault Status
   auto faultStatusPtr = cachedFaultStatus.wlock();
   if (*faultStatusPtr) {
     phy::RsInfo rsInfo;
     rsInfo.faultStatus() = **faultStatusPtr;
     lineSideInfo.rs() = rsInfo;
+    lineSideState.rs() = rsInfo;
     // Reset the cached status back to nullopt. We want to only update
     // the fault status in PhyInfo when port state update happens
     *faultStatusPtr = std::nullopt;
   }
 
   info.line() = lineSideInfo;
+  state.line() = lineSideState;
+  stats.line() = lineSideStats;
 
   // PhyInfo update timestamp
   auto now = duration_cast<seconds>(system_clock::now().time_since_epoch());
   info.timeCollected() = now.count();
+  state.timeCollected() = now.count();
+  stats.timeCollected() = now.count();
 
+  info.state() = state;
+  info.stats() = stats;
   lastPhyInfo_ = info;
   return info;
 }
@@ -1304,11 +1371,6 @@ void BcmPort::updateStats() {
       kInBroadcastPkts(),
       snmpIfHCInBroadcastPkts,
       &(*curPortStats.inBroadcastPkts_()));
-  updateStat(
-      now,
-      kInDiscardsRaw(),
-      snmpIfInDiscards,
-      &(*curPortStats.inDiscardsRaw_()));
   updateStat(now, kInErrors(), snmpIfInErrors, &(*curPortStats.inErrors_()));
   updateStat(
       now,
@@ -1360,8 +1422,15 @@ void BcmPort::updateStats() {
       &(*curPortStats.inDstNullDiscards_()));
 
   auto settings = getProgrammedSettings();
+  // InDiscards will be read along with PFC if PFC is enabled
   if (settings && settings->getPfc().has_value()) {
     updatePortPfcStats(now, curPortStats, settings->getPfcPriorities());
+  } else {
+    updateStat(
+        now,
+        kInDiscardsRaw(),
+        snmpIfInDiscards,
+        &(*curPortStats.inDiscardsRaw_()));
   }
   updateFecStats(now, curPortStats);
   updateFdrStats(now);
@@ -1371,7 +1440,9 @@ void BcmPort::updateStats() {
   std::vector<utility::CounterPrevAndCur> toSubtractFromInDiscardsRaw = {
       {*lastPortStats.inDstNullDiscards_(),
        *curPortStats.inDstNullDiscards_()}};
-  if (isMmuLossy()) {
+  if (isMmuLossy() &&
+      hw_->getPlatform()->getAsic()->isSupported(
+          HwAsic::Feature::IN_PAUSE_INCREMENTS_DISCARDS)) {
     // If MMU setup as lossy, all incoming pause frames will be
     // discarded and will count towards in discards. This makes in discards
     // counter somewhat useless. So instead calculate "in_non_pause_discards",
@@ -1546,34 +1617,88 @@ std::string BcmPort::getPfcPriorityStatsKey(
 void BcmPort::updatePortPfcStats(
     std::chrono::seconds now,
     HwPortStats& portStats,
-    std::optional<std::vector<PfcPriority>> pfcPriorities) {
+    Port::PfcPriorityList pfcPriorities) {
   // Update per priority statistics for the priorities
   // which are enabled for PFC!
-  if (pfcPriorities.has_value()) {
-    for (auto pri : pfcPriorities.value()) {
+  if (pfcPriorities) {
+    for (auto pri : *pfcPriorities) {
+      PfcPriority pfcPri = static_cast<PfcPriority>(pri->cref());
       updateStat(
           now,
-          getPfcPriorityStatsKey(kInPfc(), pri),
-          kInPfcStats.at(pri),
-          &(portStats.inPfc_()[pri]));
+          getPfcPriorityStatsKey(kInPfc(), pfcPri),
+          kInPfcStats.at(pfcPri),
+          &(portStats.inPfc_()[pfcPri]));
       updateStat(
           now,
-          getPfcPriorityStatsKey(kInPfcXon(), pri),
-          kInPfcXonStats.at(pri),
-          &(portStats.inPfcXon_()[pri]));
+          getPfcPriorityStatsKey(kInPfcXon(), pfcPri),
+          kInPfcXonStats.at(pfcPri),
+          &(portStats.inPfcXon_()[pfcPri]));
       updateStat(
           now,
-          getPfcPriorityStatsKey(kOutPfc(), pri),
-          kOutPfcStats.at(pri),
-          &(portStats.outPfc_()[pri]));
+          getPfcPriorityStatsKey(kOutPfc(), pfcPri),
+          kOutPfcStats.at(pfcPri),
+          &(portStats.outPfc_()[pfcPri]));
     }
   }
 
-  // Update per port PFC statistics
-  updateStat(
-      now, kInPfc(), snmpBcmRxPFCControlFrame, &(*portStats.inPfcCtrl_()));
+  // out pfc collection
   updateStat(
       now, kOutPfc(), snmpBcmTxPFCControlFrame, &(*portStats.outPfcCtrl_()));
+
+  /*
+   * PFC count will be subtracted from the discards to compute the actual
+   * discards Read discards first followed by PFC count. This will ensure that
+   * PFC count >= discards and so discards wont show PFC packets in them
+   * (discards cannot go negative and so it will be 0).
+   */
+  bcm_stat_val_t statTypes[2] = {snmpIfInDiscards, snmpBcmRxPFCControlFrame};
+  /*
+   * Update per port PFC statistics. Use the Multi Get API to retrieve both
+   * PFC count and Discard count. This will ensure that in an environment where
+   * there are high PFC packets, the PFC packets sent in the gap between the
+   * collection of the 2 stats does not show up as discards (T130263331)
+   */
+  updateMultiStat(
+      now,
+      {kInDiscardsRaw(), kInPfc()},
+      statTypes,
+      {&(*portStats.inDiscardsRaw_()), &(*portStats.inPfcCtrl_())},
+      2);
+}
+
+void BcmPort::updateMultiStat(
+    std::chrono::seconds now,
+    std::vector<folly::StringPiece> statKeys,
+    bcm_stat_val_t* types,
+    std::vector<int64_t*> portStatVals,
+    uint8_t statsCount) {
+  uint64_t values[statsCount];
+  auto ret = bcm_stat_sync_multi_get(unit_, port_, statsCount, types, values);
+  if (BCM_FAILURE(ret)) {
+    XLOG(ERR) << "Failed to get multi stats for port " << port_ << " :"
+              << bcm_errmsg(ret);
+    return;
+  }
+  for (int i = 0; i < statsCount; ++i) {
+    auto statKey = statKeys.at(i);
+    auto type = types[i];
+    auto statVal = portStatVals.at(i);
+    auto stat = getPortCounterIf(statKey);
+    auto value = values[i];
+
+    if (stat == nullptr) {
+      for (auto iter = portCounters_.begin(); iter != portCounters_.end();
+           iter++) {
+        XLOG(ERR) << "key: " << iter->first
+                  << " , counter name: " << iter->second.getName();
+      }
+      XLOG(FATAL) << "failed to find port counter for key " << statKey
+                  << " and type " << type << ", existing counters:";
+    }
+
+    stat->updateValue(now, value);
+    *statVal = value;
+  }
 }
 
 void BcmPort::updateStat(
@@ -1866,7 +1991,7 @@ uint32_t BcmPort::getCL91FECStatus() const {
       BCM_PORT_PHY_CONTROL_FORWARD_ERROR_CORRECTION_CL91,
       &cl91Status);
   if (rv == BCM_E_UNAVAIL) {
-    XLOG(INFO) << "Failed to read if CL91 FEC is enabled: " << bcm_errmsg(rv);
+    XLOG(DBG2) << "Failed to read if CL91 FEC is enabled: " << bcm_errmsg(rv);
     return 0;
   }
   bcmCheckError(rv, "failed to read if CL91 FEC is enabled");
@@ -1875,8 +2000,8 @@ uint32_t BcmPort::getCL91FECStatus() const {
 
 bool BcmPort::isCL91FECApplicable() const {
   auto asic = hw_->getPlatform()->getAsic()->getAsicType();
-  return asic == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK ||
-      asic == HwAsic::AsicType::ASIC_TYPE_FAKE;
+  return asic == cfg::AsicType::ASIC_TYPE_TOMAHAWK ||
+      asic == cfg::AsicType::ASIC_TYPE_FAKE;
 }
 
 bool BcmPort::setFEC(const std::shared_ptr<Port>& swPort) {
@@ -1937,7 +2062,7 @@ bool BcmPort::setFEC(const std::shared_ptr<Port>& swPort) {
         BCM_PORT_PHY_CONTROL_FORWARD_ERROR_CORRECTION_CL91,
         desiredCl91Status);
     if (rv == BCM_E_UNAVAIL) {
-      XLOG(INFO) << "Failed to set CL91 FEC is enabled: " << bcm_errmsg(rv);
+      XLOG(DBG2) << "Failed to set CL91 FEC is enabled: " << bcm_errmsg(rv);
       return changed;
     }
     bcmCheckError(rv, "failed to set cl91 fec setting");
@@ -1993,7 +2118,7 @@ phy::TxSettings BcmPort::getTxSettingsForLane(int lane) const {
 void BcmPort::setTxSetting(const std::shared_ptr<Port>& swPort) {
   const auto& iphyPinConfigs = swPort->getPinConfigs();
   if (iphyPinConfigs.empty()) {
-    XLOG(INFO) << "No iphy pin configs to program for " << swPort->getName();
+    XLOG(DBG2) << "No iphy pin configs to program for " << swPort->getName();
     return;
   }
   if (platformPort_->shouldUsePortResourceAPIs()) {
@@ -2092,7 +2217,7 @@ void BcmPort::setTxSettingViaPhyTx(
 
   const auto& iphyLaneConfigs = utility::getIphyLaneConfigs(iphyPinConfigs);
   if (iphyLaneConfigs.empty()) {
-    XLOG(INFO) << "No iphy lane configs needed to program for "
+    XLOG(DBG2) << "No iphy lane configs needed to program for "
                << swPort->getName();
     return;
   }
@@ -2243,8 +2368,8 @@ bool BcmPort::getFdrEnabled() const {
 void BcmPort::initCustomStats() const {
   int rv = 0;
   auto asicType = hw_->getPlatform()->getAsic()->getAsicType();
-  if (asicType == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3 ||
-      asicType == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4) {
+  if (asicType == cfg::AsicType::ASIC_TYPE_TOMAHAWK3 ||
+      asicType == cfg::AsicType::ASIC_TYPE_TOMAHAWK4) {
     rv = bcm_stat_custom_add(
         0, port_, snmpBcmCustomReceive3, bcmDbgCntRxL3DstDiscardDrop);
   } else {
@@ -2318,8 +2443,13 @@ void BcmPort::getProgrammedPfcWatchdogParams(
 std::vector<PfcPriority> BcmPort::getLastConfiguredPfcPriorities() {
   std::vector<PfcPriority> enabledPfcPriorities;
   auto savedPort = getProgrammedSettings();
-  if (savedPort && savedPort->getPfcPriorities().has_value()) {
-    enabledPfcPriorities = savedPort->getPfcPriorities().value();
+  if (savedPort) {
+    if (auto pfcPriorities = savedPort->getPfcPriorities()) {
+      for (auto pfcPri : *pfcPriorities) {
+        enabledPfcPriorities.push_back(
+            static_cast<PfcPriority>(pfcPri->cref()));
+      }
+    }
   }
   return enabledPfcPriorities;
 }
@@ -2350,8 +2480,8 @@ bool BcmPort::pfcWatchdogNeedsReprogramming(const std::shared_ptr<Port>& port) {
    * not hit unconfig flow.
    */
   int enabledPfcPriority = 0;
-  if (port->getPfcPriorities().has_value()) {
-    enabledPfcPriority = *port->getPfcPriorities().value().begin();
+  if (port->getPfcPriorities()) {
+    enabledPfcPriority = port->getPfcPriorities()->at(0)->cref();
   } else {
     auto lastPfcPriorities = getLastConfiguredPfcPriorities();
     if (!lastPfcPriorities.empty()) {
@@ -2488,7 +2618,12 @@ void BcmPort::programPfcWatchdog(const std::shared_ptr<Port>& swPort) {
   if (swPort->getPfc().has_value() &&
       swPort->getPfc()->watchdog().has_value()) {
     populatePfcWatchdogParams(swPort->getPfc()->watchdog().value());
-    enabledPfcPriorities = swPort->getPfcPriorities().value();
+    if (auto pfcPriorities = swPort->getPfcPriorities()) {
+      for (const auto& pfcPri : *pfcPriorities) {
+        enabledPfcPriorities.push_back(
+            static_cast<PfcPriority>(pfcPri->cref()));
+      }
+    }
   } else {
     // Default values initialized will be used, expected for unconfig cases.
     enabledPfcPriorities = getLastConfiguredPfcPriorities();
@@ -2777,7 +2912,7 @@ cfg::PortProfileID BcmPort::getCurrentProfile() const {
 bool BcmPort::isPortPgConfigured() const {
   return (
       hw_->getPlatform()->getAsic()->isSupported(HwAsic::Feature::PFC) &&
-      (*programmedSettings_.rlock())->getPortPgConfigs().has_value());
+      (*programmedSettings_.rlock())->getPortPgConfigs());
 }
 
 PortPgConfigs BcmPort::getCurrentProgrammedPgSettings() const {

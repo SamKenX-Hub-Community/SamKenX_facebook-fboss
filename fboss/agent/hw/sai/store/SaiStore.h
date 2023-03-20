@@ -46,6 +46,17 @@ struct AdapterHostKeyWarmbootRecoverable<SaiNextHopGroupTraits>
 template <>
 struct AdapterHostKeyWarmbootRecoverable<SaiAclTableTraits> : std::false_type {
 };
+
+#if defined(SAI_VERSION_8_2_0_0_ODP) ||                                        \
+    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
+    defined(SAI_VERSION_8_2_0_0_SIM_ODP) ||                                    \
+    defined(SAI_VERSION_9_0_EA_SIM_ODP) || defined(SAI_VERSION_9_0_EA_DNX_ODP)
+
+template <>
+struct AdapterHostKeyWarmbootRecoverable<SaiWredTraits> : std::false_type {};
+
+#endif
+
 /*
  * SaiObjectStore is the critical component of SaiStore,
  * it provides the needed operations on a single type of SaiObject
@@ -85,14 +96,16 @@ class SaiObjectStore {
    * Using the adapter key, the sai store can be populated with its attributes.
    */
   std::shared_ptr<ObjectType> loadObjectOwnedByAdapter(
-      const typename SaiObjectTraits::AdapterKey& adapterKey) {
-    auto object = reloadObject(adapterKey);
+      const typename SaiObjectTraits::AdapterKey& adapterKey,
+      bool addToWarmbootHandles = false) {
+    auto object = reloadObject(adapterKey, addToWarmbootHandles);
     object->setOwnedByAdapter(true);
     return object;
   }
 
   std::shared_ptr<ObjectType> reloadObject(
-      const typename SaiObjectTraits::AdapterKey& adapterKey) {
+      const typename SaiObjectTraits::AdapterKey& adapterKey,
+      bool addToWarmbootHandles = false) {
     ObjectType temporary(adapterKey);
     auto adapterHostKey = temporary.adapterHostKey();
     auto obj = objects_.ref(adapterHostKey);
@@ -104,20 +117,24 @@ class SaiObjectStore {
       // destroy temporary without removing underlying sai object
       temporary.release();
     }
-    auto iter = warmBootHandles_.find(adapterHostKey);
-    if (iter != warmBootHandles_.end()) {
-      // Adapter keys are discovered by sai store in two ways
-      // 1. by calling get object keys api which is possible in cold and warm
-      // boot.
-      // 2. by looking into saved hw switch state, only possible in warm boot
-      //
-      // For objects owned by adapter keys, first is possible ONLY if adapter
-      // supports get object keys api for a given object type. Unfortunately,
-      // not all adapters may support get object keys api for all objects. For
-      // such adapters, warmboot handles may not have this key during cold boot.
-      // For adapters which support get object keys api, warm boot handles will
-      // always have this object.
-      warmBootHandles_.erase(iter);
+    if (addToWarmbootHandles) {
+      warmBootHandles_.emplace(adapterHostKey, obj);
+    } else {
+      auto iter = warmBootHandles_.find(adapterHostKey);
+      if (iter != warmBootHandles_.end()) {
+        // Adapter keys are discovered by sai store in two ways
+        // 1. by calling get object keys api which is possible in cold and warm
+        // boot.
+        // 2. by looking into saved hw switch state, only possible in warm boot
+        //
+        // For objects owned by adapter keys, first is possible ONLY if adapter
+        // supports get object keys api for a given object type. Unfortunately,
+        // not all adapters may support get object keys api for all objects. For
+        // such adapters, warmboot handles may not have this key during cold
+        // boot. For adapters which support get object keys api, warm boot
+        // handles will always have this object.
+        warmBootHandles_.erase(iter);
+      }
     }
     return obj;
   }
@@ -420,6 +437,15 @@ class SaiObjectStore {
           // state.
           return ObjectType(key);
         }
+#if defined(SAI_VERSION_8_2_0_0_ODP) ||                                        \
+    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
+    defined(SAI_VERSION_9_0_EA_DNX_ODP)
+        if constexpr (std::is_same_v<ObjectTraits, SaiWredTraits>) {
+          // Allow warm boot from version which doesn't save ahk
+          // TODO(zecheng): Remove after device warmbooted to 8.2
+          return ObjectType(key);
+        }
+#endif
         throw FbossError(
             "attempting to load an object whose adapter host key is not found.");
       }
@@ -552,6 +578,7 @@ class SaiStore {
       SaiObjectStore<SaiBridgePortTraits>,
       SaiObjectStore<SaiBufferPoolTraits>,
       SaiObjectStore<SaiBufferProfileTraits>,
+      SaiObjectStore<SaiIngressPriorityGroupTraits>,
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
       SaiObjectStore<SaiCounterTraits>,
 #endif
@@ -563,6 +590,7 @@ class SaiStore {
       SaiObjectStore<SaiRouteTraits>,
       SaiObjectStore<SaiVlanRouterInterfaceTraits>,
       SaiObjectStore<SaiMplsRouterInterfaceTraits>,
+      SaiObjectStore<SaiPortRouterInterfaceTraits>,
       SaiObjectStore<SaiFdbTraits>,
       SaiObjectStore<SaiVirtualRouterTraits>,
       SaiObjectStore<SaiNextHopGroupMemberTraits>,
@@ -570,9 +598,7 @@ class SaiStore {
       SaiObjectStore<SaiIpNextHopTraits>,
       SaiObjectStore<SaiLocalMirrorTraits>,
       SaiObjectStore<SaiEnhancedRemoteMirrorTraits>,
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
       SaiObjectStore<SaiSflowMirrorTraits>,
-#endif
       SaiObjectStore<SaiMplsNextHopTraits>,
       SaiObjectStore<SaiNeighborTraits>,
       SaiObjectStore<SaiHostifTrapGroupTraits>,
@@ -591,7 +617,8 @@ class SaiStore {
       SaiObjectStore<SaiTamEventTraits>,
       SaiObjectStore<SaiTamTraits>,
       SaiObjectStore<SaiTunnelTraits>,
-      SaiObjectStore<SaiTunnelTermTraits>,
+      SaiObjectStore<SaiP2MPTunnelTermTraits>,
+      SaiObjectStore<SaiP2PTunnelTermTraits>,
       SaiObjectStore<SaiLagTraits>,
       SaiObjectStore<SaiLagMemberTraits>,
       SaiObjectStore<SaiMacsecTraits>,

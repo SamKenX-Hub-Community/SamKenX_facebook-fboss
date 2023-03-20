@@ -10,17 +10,92 @@
 
 #pragma once
 
+#include <functional>
+#include <memory>
+#include <optional>
+
 namespace facebook::fboss::thrift_cow {
+
+namespace detail {
+
+// thrift cow objects are represented either as shared_ptr or optional. when
+// const reference to these objects, these are represented as when const
+// reference to these objects are returned, they're returned as const
+// std::shared_ptr<T>& or const std::optional<T>& . when these references are
+// dereferenced (or accessed), the inner type loses constness. this leads to
+// crash as non-const methods are invoked on const(or published)  objects.
+//
+// to avoid this unacceptable behavior, a caller must be aware of always to
+// invoke const methods even on children(or nested) objects especially if an
+// object is published.
+//
+// providing this safe reference access wrapper, so called won't have to worry
+// on constness of inner type.
+//
+// if a const shared_ptr<T>& or const std::optional<T>& is dereferenced either
+// with * operator or -> operator, inner type is returned with constness of
+// reference. this ensures method with an appropriate constness is invoked on
+// thrift cow object.
+template <typename Type>
+struct ReferenceWrapper : std::reference_wrapper<Type> {
+  using Base = std::reference_wrapper<Type>;
+  using Base::Base;
+
+  template <
+      typename T = Type,
+      std::enable_if_t<!std::is_const_v<T>, bool> = true>
+  auto& operator*() {
+    return *(this->get());
+  }
+
+  template <
+      typename T = Type,
+      std::enable_if_t<std::is_const_v<T>, bool> = true>
+  const auto& operator*() const {
+    return std::as_const(*(this->get()));
+  }
+
+  template <
+      typename T = Type,
+      std::enable_if_t<!std::is_const_v<T>, bool> = true>
+  auto* operator->() {
+    return std::addressof(**this);
+  }
+
+  template <
+      typename T = Type,
+      std::enable_if_t<std::is_const_v<T>, bool> = true>
+  const auto* operator->() const {
+    return std::addressof(**this);
+  }
+
+  template <
+      typename T = Type,
+      std::enable_if_t<!std::is_const_v<T>, bool> = true>
+  void reset() {
+    this->get().reset();
+  }
+
+  explicit operator bool() const {
+    return bool(this->get());
+  }
+
+  auto& unwrap() const {
+    return this->get();
+  }
+};
+
+} // namespace detail
 
 // used to denote node vs field types
 struct NodeType {};
 
 struct FieldsType {};
 
-template <typename TType>
+template <typename TType, typename Derived>
 struct ThriftStructFields;
 
-template <typename TType>
+template <typename TType, typename>
 class ThriftStructNode;
 
 template <typename TType>
@@ -35,10 +110,10 @@ struct ThriftListFields;
 template <typename TypeClass, typename TType>
 class ThriftListNode;
 
-template <typename TypeClass, typename TType>
+template <typename Traits>
 struct ThriftMapFields;
 
-template <typename TypeClass, typename TType>
+template <typename Traits, typename>
 class ThriftMapNode;
 
 template <typename TypeClass, typename TType>

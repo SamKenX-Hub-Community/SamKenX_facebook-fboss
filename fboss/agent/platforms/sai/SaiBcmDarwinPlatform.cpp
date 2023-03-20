@@ -19,12 +19,21 @@ namespace facebook::fboss {
 
 SaiBcmDarwinPlatform::SaiBcmDarwinPlatform(
     std::unique_ptr<PlatformProductInfo> productInfo,
-    folly::MacAddress localMac)
+    folly::MacAddress localMac,
+    const std::string& platformMappingStr)
     : SaiBcmPlatform(
           std::move(productInfo),
-          std::make_unique<DarwinPlatformMapping>(),
-          localMac) {
-  asic_ = std::make_unique<Tomahawk3Asic>();
+          platformMappingStr.empty()
+              ? std::make_unique<DarwinPlatformMapping>()
+              : std::make_unique<DarwinPlatformMapping>(platformMappingStr),
+          localMac) {}
+
+void SaiBcmDarwinPlatform::setupAsic(
+    cfg::SwitchType switchType,
+    std::optional<int64_t> switchId,
+    std::optional<cfg::Range64> systemPortRange) {
+  asic_ =
+      std::make_unique<Tomahawk3Asic>(switchType, switchId, systemPortRange);
 }
 
 HwAsic* SaiBcmDarwinPlatform::getAsic() const {

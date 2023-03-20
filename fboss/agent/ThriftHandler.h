@@ -29,6 +29,8 @@
 #include <thrift/lib/cpp2/async/DuplexChannel.h>
 #include <thrift/lib/cpp2/server/ThriftServer.h>
 
+DECLARE_bool(disable_duplex);
+
 namespace facebook::fboss {
 
 class AggregatePort;
@@ -178,6 +180,7 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
       std::map<int32_t, PortStatus>& status,
       std::unique_ptr<std::vector<int32_t>> ports) override;
   void setPortState(int32_t portId, bool enable) override;
+  void setPortDrainState(int32_t portId, bool drain) override;
   void setPortLoopbackMode(int32_t portId, PortLoopbackMode mode) override;
   void getAllPortLoopbackMode(
       std::map<int32_t, PortLoopbackMode>& port2LbMode) override;
@@ -187,36 +190,36 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
       std::unique_ptr<TransceiverInfo> transceiver,
       bool force) override;
 
-  void clearPortPrbsStats(int32_t portId, phy::PrbsComponent component)
+  void clearPortPrbsStats(int32_t portId, phy::PortComponent component)
       override;
   void getPortPrbsStats(
       phy::PrbsStats& prbsStats,
       int32_t portId,
-      phy::PrbsComponent component) override;
+      phy::PortComponent component) override;
   void setPortPrbs(
       int32_t portId,
-      phy::PrbsComponent component,
+      phy::PortComponent component,
       bool enable,
       int32_t polynominal) override;
   void getSupportedPrbsPolynomials(
       std::vector<prbs::PrbsPolynomial>& prbsCapabilities,
       std::unique_ptr<std::string> portName,
-      phy::PrbsComponent component) override;
+      phy::PortComponent component) override;
   void getInterfacePrbsState(
       prbs::InterfacePrbsState& prbsState,
       std::unique_ptr<std::string> portName,
-      phy::PrbsComponent component) override;
+      phy::PortComponent component) override;
   void setInterfacePrbs(
       std::unique_ptr<std::string> portName,
-      phy::PrbsComponent component,
+      phy::PortComponent component,
       std::unique_ptr<prbs::InterfacePrbsState> state) override;
   void getInterfacePrbsStats(
       phy::PrbsStats& response,
       std::unique_ptr<std::string> portName,
-      phy::PrbsComponent component) override;
+      phy::PortComponent component) override;
   void clearInterfacePrbsStats(
       std::unique_ptr<std::string> portName,
-      phy::PrbsComponent component) override;
+      phy::PortComponent component) override;
   void getInterfaceDetail(
       InterfaceDetail& interfaceDetails,
       int32_t interfaceId) override;
@@ -277,6 +280,14 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
   void getAllRouteCounterBytes(
       std::map<std::string, std::int64_t>& routeCounters) override;
 
+  void getTeFlowTableDetails(std::vector<TeFlowDetails>& flowTable) override;
+  void getFabricReachability(
+      std::map<std::string, FabricEndpoint>& reachability) override;
+  void getDsfNodes(std::map<int64_t, cfg::DsfNode>& dsfNodes) override;
+  void getSystemPorts(std::map<int64_t, SystemPortThrift>& sysPorts) override;
+  void getSysPortStats(
+      std::map<std::string, HwSysPortStats>& hwSysPortStats) override;
+  void getHwPortStats(std::map<std::string, HwPortStats>& hwPortStats) override;
   /*
    * Event handler for when a connection is destroyed.  When there is an ongoing
    * duplex connection, there may be other threads that depend on the connection
@@ -343,9 +354,9 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
   void getConfigAppliedInfo(ConfigAppliedInfo& configAppliedInfo) override;
 
   /**
-   * Serialize live running switch state at the path pointer by JSON Pointer
+   * Serialize live running switch state at the path pointer by thrift path
    */
-  void getCurrentStateJSON(std::string& ret, std::unique_ptr<std::string>)
+  void getCurrentStateJSON(std::string& ret, std::unique_ptr<std::string> path)
       override;
 
   /**
@@ -418,6 +429,8 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
   }
 
  private:
+  void ensureNPU(folly::StringPiece function) const;
+  void ensureNotFabric(folly::StringPiece function) const;
   struct ThreadLocalListener {
     EventBase* eventBase;
     std::unordered_map<
@@ -457,6 +470,10 @@ class ThriftHandler : virtual public FbossCtrlSvIf,
     FbossError error(folly::exceptionStr(ex));
     callback->exception(error);
   }
+  bool isNpuSwitch() const;
+  bool isFabricSwitch() const;
+  bool isVoqSwitch() const;
+  bool isSwitchType(cfg::SwitchType switchType) const;
 
   /*
    * A pointer to the SwSwitch.  We don't own this.

@@ -37,6 +37,17 @@ class SaiBcmPlatform : public SaiHwPlatform {
   const char* getHwConfigValue(const std::string& key) const;
   virtual uint32_t numLanesPerCore() const = 0;
   virtual uint32_t numCellsAvailable() const = 0;
+  virtual bool supportsDynamicBcmConfig() const {
+    return false;
+  }
+  virtual bool needPortVcoChange(
+      cfg::PortSpeed oldSpeed,
+      phy::FecMode oldFec,
+      cfg::PortSpeed newSpeed,
+      phy::FecMode newFec) const;
+  virtual phy::VCOFrequency getPortVcoFrequency(
+      cfg::PortSpeed speed,
+      phy::FecMode fec) const;
 
  protected:
   void initWedgeLED(int led, folly::ByteRange range);

@@ -72,6 +72,18 @@ target_link_libraries(hw_copp_utils
   ${LIBGMOCK_LIBRARIES}
 )
 
+add_library(hw_teflow_utils
+  fboss/agent/hw/test/HwTeFlowTestUtils.cpp
+)
+
+target_link_libraries(hw_teflow_utils
+  config_factory
+  hw_switch_ensemble
+  state
+  Folly::folly
+  switch_config_cpp2
+)
+
 add_library(hw_olympic_qos_utils
   fboss/agent/hw/test/dataplane_tests/HwTestOlympicUtils.cpp
 )
@@ -179,6 +191,7 @@ add_fbthrift_cpp_library(
 
 add_library(hw_switch_test
   fboss/agent/hw/test/HwEcmpTests.cpp
+  fboss/agent/hw/test/HwTestFabricUtils.cpp
   fboss/agent/hw/test/HwFabricSwitchTests.cpp
   fboss/agent/hw/test/HwFlexPortTests.cpp
   fboss/agent/hw/test/HwEcmpTrunkTests.cpp
@@ -214,16 +227,16 @@ add_library(hw_switch_test
   fboss/agent/hw/test/HwSwitchStateReplayTest.cpp
   fboss/agent/hw/test/HwParityErrorTest.cpp
   fboss/agent/hw/test/HwPtpTcTests.cpp
-  # TODO: Compile takes too long. Commenting until addressing it
-  # fboss/agent/hw/test/HwHashPolarizationTestUtils.cpp
-  # fboss/agent/hw/test/HwTestFullHashedPacketsForSaiTomahawk.cpp
-  # fboss/agent/hw/test/HwTestFullHashedPacketsForSaiTrident2.cpp
-  # fboss/agent/hw/test/HwTestFullHashedPacketsForTomahawk.cpp
-  # fboss/agent/hw/test/HwTestFullHashedPacketsForTomahawk3.cpp
-  # fboss/agent/hw/test/HwTestFullHashedPacketsForTomahawk4.cpp
-  # fboss/agent/hw/test/HwTestFullHashedPacketsForTrident2.cpp
-  # fboss/agent/hw/test/dataplane_tests/HwHashPolarizationTests.cpp
-
+  fboss/agent/hw/test/HwTeFlowTestUtils.cpp
+  fboss/agent/hw/test/HwTeFlowTests.cpp
+  fboss/agent/hw/test/HwHashPolarizationTestUtils.cpp
+  fboss/agent/hw/test/HwTestFullHashedPacketsForSaiTomahawk.cpp
+  fboss/agent/hw/test/HwTestFullHashedPacketsForSaiTrident2.cpp
+  fboss/agent/hw/test/HwTestFullHashedPacketsForTomahawk.cpp
+  fboss/agent/hw/test/HwTestFullHashedPacketsForTomahawk3.cpp
+  fboss/agent/hw/test/HwTestFullHashedPacketsForTomahawk4.cpp
+  fboss/agent/hw/test/HwTestFullHashedPacketsForTrident2.cpp
+  fboss/agent/hw/test/dataplane_tests/HwHashPolarizationTests.cpp
   fboss/agent/hw/test/dataplane_tests/HwAclCounterTests.cpp
   fboss/agent/hw/test/dataplane_tests/HwConfigSetupTest.cpp
   fboss/agent/hw/test/dataplane_tests/HwConfigVerifyQosTests.cpp
@@ -256,6 +269,7 @@ add_library(hw_switch_test
   fboss/agent/hw/test/dataplane_tests/HwOlympicQosTests.cpp
   fboss/agent/hw/test/dataplane_tests/HwOlympicQosSchedulerTests.cpp
   fboss/agent/hw/test/dataplane_tests/HwOverflowTest.cpp
+  fboss/agent/hw/test/dataplane_tests/HwTeFlowTrafficTests.cpp
   fboss/agent/hw/test/dataplane_tests/HwTrafficPfcTests.cpp
   fboss/agent/hw/test/dataplane_tests/HwProdInvariantHelper.cpp
   fboss/agent/hw/test/dataplane_tests/HwProdInvariantTests.cpp
@@ -342,4 +356,14 @@ target_link_libraries(hw_queue_per_host_utils
   switch_config_cpp2
   ${GTEST}
   ${LIBGMOCK_LIBRARIES}
+)
+
+add_library(hw_linkstate_toggler
+  fboss/agent/hw/test/HwLinkStateToggler.cpp
+)
+
+target_link_libraries(hw_linkstate_toggler
+  hw_switch
+  state
+  core
 )

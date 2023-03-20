@@ -12,6 +12,7 @@
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
+#include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/state/Thrifty.h"
 #include "fboss/agent/types.h"
 
@@ -24,204 +25,220 @@
 
 namespace facebook::fboss {
 
-struct PortQueueFields
-    : public ThriftyFields<PortQueueFields, state::PortQueueFields> {
-  using AQMMap = boost::container::
-      flat_map<cfg::QueueCongestionBehavior, cfg::ActiveQueueManagement>;
+USE_THRIFT_COW(PortQueue)
 
-  template <typename Fn>
-  void forEachChild(Fn) {}
+// TODO: add resolver for thrift list and a mechanism for thrift struct node to
+// pick that resolver for member list.
 
-  state::PortQueueFields toThrift() const override;
-  static PortQueueFields fromThrift(state::PortQueueFields const&);
-
-  bool operator==(const PortQueueFields& queue) const;
-
-  PortQueueFields() {}
-
-  PortQueueFields(
-      uint8_t _id,
-      cfg::QueueScheduling _scheduling,
-      cfg::StreamType _streamType,
-      int _weight,
-      std::optional<int> _reservedBytes,
-      std::optional<cfg::MMUScalingFactor> _scalingFactor,
-      std::optional<std::string> _name,
-      std::optional<int> _sharedBytes,
-      AQMMap _aqms,
-      std::optional<cfg::PortQueueRate> _portQueueRate,
-      std::optional<int> _bandwidthBurstMinKbits,
-      std::optional<int> _bandwidthBurstMaxKbits,
-      std::optional<TrafficClass> _trafficClass,
-      std::optional<std::set<PfcPriority>> _pfcPriorities)
-      : id(_id),
-        scheduling(_scheduling),
-        streamType(_streamType),
-        weight(_weight),
-        reservedBytes(_reservedBytes),
-        scalingFactor(_scalingFactor),
-        name(_name),
-        sharedBytes(_sharedBytes),
-        aqms(_aqms),
-        portQueueRate(_portQueueRate),
-        bandwidthBurstMinKbits(_bandwidthBurstMinKbits),
-        bandwidthBurstMaxKbits(_bandwidthBurstMaxKbits),
-        trafficClass(_trafficClass),
-        pfcPriorities(_pfcPriorities) {}
-
-  uint8_t id{0};
-  cfg::QueueScheduling scheduling{cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN};
-  cfg::StreamType streamType{cfg::StreamType::UNICAST};
-  int weight{1};
-  std::optional<int> reservedBytes{std::nullopt};
-  std::optional<cfg::MMUScalingFactor> scalingFactor{std::nullopt};
-  std::optional<std::string> name{std::nullopt};
-  std::optional<int> sharedBytes{std::nullopt};
-  // Using map to avoid manually sorting aqm list from thrift api
-  AQMMap aqms;
-  std::optional<cfg::PortQueueRate> portQueueRate{std::nullopt};
-
-  std::optional<int> bandwidthBurstMinKbits;
-  std::optional<int> bandwidthBurstMaxKbits;
-  std::optional<TrafficClass> trafficClass;
-  std::optional<std::set<PfcPriority>> pfcPriorities;
+template <>
+struct thrift_cow::ThriftStructResolver<PortQueueFields> {
+  using type = PortQueue;
 };
 
 /*
  * PortQueue defines the behaviour of the per port queues
  */
-class PortQueue
-    : public ThriftyBaseT<state::PortQueueFields, PortQueue, PortQueueFields> {
+class PortQueue : public thrift_cow::ThriftStructNode<PortQueueFields> {
  public:
-  using AQMMap = PortQueueFields::AQMMap;
+  using Base = thrift_cow::ThriftStructNode<PortQueueFields>;
+  using AQMMap = boost::container::
+      flat_map<cfg::QueueCongestionBehavior, cfg::ActiveQueueManagement>;
+  using AqmsType = typename Base::Fields::TypeFor<ctrl_if_tags::aqms>;
+  using PortQueueRateType =
+      typename Base::Fields::TypeFor<ctrl_if_tags::portQueueRate>;
 
   explicit PortQueue(uint8_t id) {
-    writableFields()->id = id;
-  }
-
-  bool operator!=(const PortQueue& queue) const {
-    return !(*this == queue);
+    set<ctrl_if_tags::id>(id);
   }
 
   std::string toString() const;
 
   uint8_t getID() const {
-    return getFields()->id;
+    return cref<ctrl_if_tags::id>()->cref();
   }
 
   void setScheduling(cfg::QueueScheduling scheduling) {
-    writableFields()->scheduling = scheduling;
-    if (scheduling == cfg::QueueScheduling::STRICT_PRIORITY) {
-      writableFields()->weight = 0;
+    set<ctrl_if_tags::scheduling>(apache::thrift::util::enumName(scheduling));
+    switch (scheduling) {
+      case cfg::QueueScheduling::STRICT_PRIORITY:
+      case cfg::QueueScheduling::INTERNAL:
+        set<ctrl_if_tags::weight>(0);
+        break;
+      case cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN:
+      case cfg::QueueScheduling::DEFICIT_ROUND_ROBIN:
+        break;
     }
   }
 
   cfg::QueueScheduling getScheduling() const {
-    return getFields()->scheduling;
+    const auto& name = cref<ctrl_if_tags::scheduling>()->cref();
+    return apache::thrift::util::enumValueOrThrow<cfg::QueueScheduling>(name);
   }
 
   void setStreamType(cfg::StreamType type) {
-    writableFields()->streamType = type;
+    set<ctrl_if_tags::streamType>(apache::thrift::util::enumName(type));
   }
 
   cfg::StreamType getStreamType() const {
-    return getFields()->streamType;
+    const auto& name = cref<ctrl_if_tags::streamType>()->cref();
+    return apache::thrift::util::enumValueOrThrow<cfg::StreamType>(name);
   }
 
   int getWeight() const {
-    return getFields()->weight;
+    return cref<ctrl_if_tags::weight>()->cref();
   }
 
   void setWeight(int weight) {
-    if (getFields()->scheduling != cfg::QueueScheduling::STRICT_PRIORITY) {
-      writableFields()->weight = weight;
+    if (getScheduling() != cfg::QueueScheduling::STRICT_PRIORITY) {
+      set<ctrl_if_tags::weight>(weight);
     }
   }
 
   std::optional<int> getReservedBytes() const {
-    return getFields()->reservedBytes;
+    if (const auto& reserved = cref<ctrl_if_tags::reserved>()) {
+      return std::optional<int>(reserved->cref());
+    }
+    return std::nullopt;
   }
 
   void setReservedBytes(int reservedBytes) {
-    writableFields()->reservedBytes = reservedBytes;
+    set<ctrl_if_tags::reserved>(reservedBytes);
   }
 
   std::optional<cfg::MMUScalingFactor> getScalingFactor() const {
-    return getFields()->scalingFactor;
+    if (const auto& scalingFactor = cref<switch_state_tags::scalingFactor>()) {
+      return apache::thrift::util::enumValueOrThrow<cfg::MMUScalingFactor>(
+          scalingFactor->cref());
+    }
+    return std::nullopt;
   }
 
   void setScalingFactor(cfg::MMUScalingFactor scalingFactor) {
-    writableFields()->scalingFactor = scalingFactor;
+    set<switch_state_tags::scalingFactor>(
+        apache::thrift::util::enumName(scalingFactor));
   }
 
-  const AQMMap& getAqms() const {
-    return getFields()->aqms;
+  const auto& getAqms() const {
+    return cref<ctrl_if_tags::aqms>();
   }
 
   void resetAqms(std::vector<cfg::ActiveQueueManagement> aqms) {
-    writableFields()->aqms.clear();
-    for (auto& aqm : aqms) {
-      writableFields()->aqms.emplace(*aqm.behavior(), aqm);
+    if (!aqms.empty()) {
+      set<ctrl_if_tags::aqms>(std::move(aqms));
+    } else {
+      ref<ctrl_if_tags::aqms>().reset();
     }
   }
 
   std::optional<std::string> getName() const {
-    return getFields()->name;
+    if (const auto& name = cref<ctrl_if_tags::name>()) {
+      return name->cref();
+    }
+    return std::nullopt;
   }
   void setName(const std::string& name) {
-    writableFields()->name = name;
+    set<ctrl_if_tags::name>(name);
   }
   std::optional<int> getSharedBytes() const {
-    return getFields()->sharedBytes;
+    if (const auto& sharedBytes = cref<switch_state_tags::sharedBytes>()) {
+      return sharedBytes->cref();
+    }
+    return std::nullopt;
   }
   void setSharedBytes(int sharedBytes) {
-    writableFields()->sharedBytes = sharedBytes;
+    set<switch_state_tags::sharedBytes>(sharedBytes);
   }
 
-  std::optional<cfg::PortQueueRate> getPortQueueRate() const {
-    return getFields()->portQueueRate;
+  const auto& getPortQueueRate() const {
+    return cref<ctrl_if_tags::portQueueRate>();
   }
 
   void setPortQueueRate(cfg::PortQueueRate portQueueRate) {
-    writableFields()->portQueueRate = portQueueRate;
+    set<ctrl_if_tags::portQueueRate>(std::move(portQueueRate));
   }
 
   std::optional<int> getBandwidthBurstMinKbits() const {
-    return getFields()->bandwidthBurstMinKbits;
+    if (const auto& bandwidthBurstMinKbits =
+            cref<ctrl_if_tags::bandwidthBurstMinKbits>()) {
+      return bandwidthBurstMinKbits->cref();
+    }
+    return std::nullopt;
   }
 
   void setBandwidthBurstMinKbits(int bandwidthBurstMinKbits) {
-    writableFields()->bandwidthBurstMinKbits = bandwidthBurstMinKbits;
+    set<ctrl_if_tags::bandwidthBurstMinKbits>(bandwidthBurstMinKbits);
   }
 
   std::optional<int> getBandwidthBurstMaxKbits() const {
-    return getFields()->bandwidthBurstMaxKbits;
+    if (const auto& bandwidthBurstMaxKbits =
+            cref<ctrl_if_tags::bandwidthBurstMaxKbits>()) {
+      return bandwidthBurstMaxKbits->cref();
+    }
+    return std::nullopt;
   }
 
   void setBandwidthBurstMaxKbits(int bandwidthBurstMaxKbits) {
-    writableFields()->bandwidthBurstMaxKbits = bandwidthBurstMaxKbits;
+    set<ctrl_if_tags::bandwidthBurstMinKbits>(bandwidthBurstMaxKbits);
   }
 
   std::optional<TrafficClass> getTrafficClass() const {
-    return getFields()->trafficClass;
+    if (const auto& trafficClass = cref<switch_state_tags::trafficClass>()) {
+      return static_cast<TrafficClass>(trafficClass->cref());
+    }
+    return std::nullopt;
   }
 
   void setTrafficClasses(TrafficClass trafficClass) {
-    writableFields()->trafficClass = trafficClass;
+    set<switch_state_tags::trafficClass>(trafficClass);
   }
 
+  // THRIFT_COPY: change from list to set in thrift file and use thrift set node
+  // directly
   std::optional<std::set<PfcPriority>> getPfcPrioritySet() const {
-    return getFields()->pfcPriorities;
+    if (const auto& pfcPriorities = cref<switch_state_tags::pfcPriorities>()) {
+      std::set<PfcPriority> returnValue{};
+      for (const auto& pfcPriority : std::as_const(*pfcPriorities)) {
+        returnValue.insert(static_cast<PfcPriority>(pfcPriority->cref()));
+      }
+      return returnValue;
+    }
+    return std::nullopt;
   }
 
   void setPfcPrioritySet(std::set<PfcPriority> pfcPrioritySet) {
-    writableFields()->pfcPriorities = pfcPrioritySet;
+    if (!pfcPrioritySet.empty()) {
+      std::vector<int16_t> vec{
+          std::begin(pfcPrioritySet), std::end(pfcPrioritySet)};
+      set<switch_state_tags::pfcPriorities>(vec);
+    } else {
+      ref<switch_state_tags::pfcPriorities>().reset();
+    }
   }
+
+  bool isAqmsSame(const PortQueue* other) const;
+
+  bool isPortQueueRateSame(const PortQueue* other) const {
+    if (!other) {
+      return false;
+    }
+    const auto thisRate = get<ctrl_if_tags::portQueueRate>();
+    const auto thatRate = other->get<ctrl_if_tags::portQueueRate>();
+    if (thisRate == nullptr && thatRate == nullptr) {
+      return true;
+    } else if (thisRate == nullptr) {
+      return false;
+    } else if (thatRate == nullptr) {
+      return false;
+    }
+    return thisRate->toThrift() == thatRate->toThrift();
+  }
+
+  std::optional<cfg::QueueCongestionDetection> findDetectionInAqms(
+      cfg::QueueCongestionBehavior behavior) const;
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT<state::PortQueueFields, PortQueue, PortQueueFields>::
-      ThriftyBaseT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 

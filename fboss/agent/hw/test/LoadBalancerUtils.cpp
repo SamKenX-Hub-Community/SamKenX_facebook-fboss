@@ -19,6 +19,7 @@
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/packet/PktFactory.h"
+#include "fboss/agent/packet/PktUtil.h"
 #include "fboss/agent/state/LoadBalancer.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/ResourceLibUtil.h"
@@ -47,6 +48,15 @@ cfg::Fields getFullHashFields() {
   return hashFields;
 }
 
+cfg::Fields getFullHashUdf() {
+  auto hashFields = getHalfHashFields();
+  hashFields.transportFields() = std::set<cfg::TransportField>(
+      {cfg::TransportField::SOURCE_PORT,
+       cfg::TransportField::DESTINATION_PORT});
+  hashFields.udfGroups() = std::vector<std::string>({kUdfGroupName});
+  return hashFields;
+}
+
 cfg::LoadBalancer getHalfHashConfig(
     const Platform* platform,
     cfg::LoadBalancerID id) {
@@ -71,6 +81,18 @@ cfg::LoadBalancer getFullHashConfig(
   *loadBalancer.algorithm() = cfg::HashingAlgorithm::CRC16_CCITT;
   return loadBalancer;
 }
+cfg::LoadBalancer getFullHashUdfConfig(
+    const Platform* platform,
+    cfg::LoadBalancerID id) {
+  cfg::LoadBalancer loadBalancer;
+  *loadBalancer.id() = id;
+  if (platform->getAsic()->isSupported(
+          HwAsic::Feature::HASH_FIELDS_CUSTOMIZATION)) {
+    *loadBalancer.fieldSelection() = getFullHashUdf();
+  }
+  *loadBalancer.algorithm() = cfg::HashingAlgorithm::CRC16_CCITT;
+  return loadBalancer;
+}
 cfg::LoadBalancer getTrunkHalfHashConfig(const Platform* platform) {
   return getHalfHashConfig(platform, cfg::LoadBalancerID::AGGREGATE_PORT);
 }
@@ -84,7 +106,9 @@ cfg::LoadBalancer getEcmpHalfHashConfig(const Platform* platform) {
 cfg::LoadBalancer getEcmpFullHashConfig(const Platform* platform) {
   return getFullHashConfig(platform, cfg::LoadBalancerID::ECMP);
 }
-
+cfg::LoadBalancer getEcmpFullUdfHashConfig(const Platform* platform) {
+  return getFullHashUdfConfig(platform, cfg::LoadBalancerID::ECMP);
+}
 std::vector<cfg::LoadBalancer> getEcmpFullTrunkHalfHashConfig(
     const Platform* platform) {
   return {getEcmpFullHashConfig(platform), getTrunkHalfHashConfig(platform)};
@@ -97,7 +121,6 @@ std::vector<cfg::LoadBalancer> getEcmpFullTrunkFullHashConfig(
     const Platform* platform) {
   return {getEcmpFullHashConfig(platform), getTrunkFullHashConfig(platform)};
 }
-
 std::shared_ptr<SwitchState> setLoadBalancer(
     const Platform* platform,
     const std::shared_ptr<SwitchState>& inputState,
@@ -130,11 +153,101 @@ std::shared_ptr<SwitchState> addLoadBalancers(
   return newState;
 }
 
+cfg::UdfConfig addUdfConfig(void) {
+  cfg::UdfConfig udfCfg;
+  cfg::UdfGroup udfGroupEntry;
+  cfg::UdfPacketMatcher matchCfg;
+  std::map<std::string, cfg::UdfGroup> udfMap;
+  std::map<std::string, cfg::UdfPacketMatcher> udfPacketMatcherMap;
+
+  matchCfg.name() = kUdfPktMatcherName;
+  matchCfg.l4PktType() = cfg::UdfMatchL4Type::UDF_L4_PKT_TYPE_UDP;
+  matchCfg.UdfL4DstPort() = kUdfL4DstPort;
+
+  udfGroupEntry.name() = kUdfGroupName;
+  udfGroupEntry.header() = cfg::UdfBaseHeaderType::UDF_L4_HEADER;
+  udfGroupEntry.startOffsetInBytes() = kUdfStartOffsetInBytes;
+  udfGroupEntry.fieldSizeInBytes() = kUdfFieldSizeInBytes;
+  // has to be the same as in matchCfg
+  udfGroupEntry.udfPacketMatcherIds() = {kUdfPktMatcherName};
+
+  udfMap.insert(std::make_pair(*udfGroupEntry.name(), udfGroupEntry));
+  udfPacketMatcherMap.insert(std::make_pair(*matchCfg.name(), matchCfg));
+  udfCfg.udfGroups() = udfMap;
+  udfCfg.udfPacketMatcher() = udfPacketMatcherMap;
+  return udfCfg;
+}
+
+/*
+ *  RoCEv2 header lookss as below
+ *  Dst Queue Pair field is in the middle
+ *  of the header. (below fields in bits)
+ *   ----------------------------------
+ *  | Opcode(8)  | Flags(8) | Key (16) |
+ *  --------------- -------------------
+ *  | Resvd (8)  | Dst Queue Pair (24) |
+ *  -----------------------------------
+ *  | Ack Req(8) | Packet Seq num (24) |
+ *  ------------------------------------
+ */
+void pumpRoCETraffic(
+    bool isV6,
+    HwSwitch* hw,
+    folly::MacAddress dstMac,
+    std::optional<VlanID> vlan,
+    std::optional<PortID> frontPanelPortToLoopTraffic,
+    int hopLimit,
+    std::optional<folly::MacAddress> srcMacAddr) {
+  folly::MacAddress srcMac(
+      srcMacAddr.has_value() ? *srcMacAddr
+                             : MacAddressGenerator().get(dstMac.u64HBO() + 1));
+  auto srcIp = folly::IPAddress(isV6 ? "1001::1" : "100.0.0.1");
+  auto dstIp = folly::IPAddress(isV6 ? "2001::1" : "200.0.0.1");
+
+  XLOG(INFO) << "Send traffic with RoCE payload ..";
+  for (auto i = 0; i < 10000; ++i) {
+    std::vector<uint8_t> rocePayload = {0x0a, 0x40, 0xff, 0xff, 0x00};
+    std::vector<uint8_t> roceEndPayload = {0x40, 0x00, 0x00, 0x03};
+
+    // vary dst queues pair ids ONLY in the RoCE pkt
+    // to verify that we can hash on it
+    int dstQueueIds = i;
+    // since dst queue pair id is in the middle of the packet
+    // we need to keep front/end payload which doesn't vary
+    rocePayload.push_back((dstQueueIds & 0x00ff0000) >> 16);
+    rocePayload.push_back((dstQueueIds & 0x0000ff00) >> 8);
+    rocePayload.push_back((dstQueueIds & 0x000000ff));
+    // 12 byte payload
+    std::move(
+        roceEndPayload.begin(),
+        roceEndPayload.end(),
+        std::back_inserter(rocePayload));
+    auto pkt = makeUDPTxPacket(
+        hw,
+        vlan,
+        srcMac,
+        dstMac,
+        srcIp, /* fixed */
+        dstIp, /* fixed */
+        kRandomUdfL4SrcPort, /* arbit src port, fixed */
+        kUdfL4DstPort, /* RoCE fixed dst port */
+        0,
+        hopLimit,
+        rocePayload);
+    if (frontPanelPortToLoopTraffic) {
+      hw->sendPacketOutOfPortSync(
+          std::move(pkt), frontPanelPortToLoopTraffic.value());
+    } else {
+      hw->sendPacketSwitchedSync(std::move(pkt));
+    }
+  }
+}
+
 void pumpTraffic(
     bool isV6,
     HwSwitch* hw,
     folly::MacAddress dstMac,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     std::optional<PortID> frontPanelPortToLoopTraffic,
     int hopLimit,
     std::optional<folly::MacAddress> srcMacAddr) {
@@ -146,7 +259,7 @@ void pumpTraffic(
         folly::sformat(isV6 ? "1001::{}" : "100.0.0.{}", i + 1));
     for (auto j = 0; j < 100; ++j) {
       auto dstIp = folly::IPAddress(
-          folly::sformat(isV6 ? "2001::{}" : "200.0.0.{}", j + 1));
+          folly::sformat(isV6 ? "2001::{}" : "201.0.0.{}", j + 1));
       auto pkt = makeUDPTxPacket(
           hw,
           vlan,
@@ -168,6 +281,49 @@ void pumpTraffic(
   }
 }
 
+void pumpTraffic(
+    HwSwitch* hw,
+    folly::MacAddress dstMac,
+    std::vector<folly::IPAddress> srcIps,
+    std::vector<folly::IPAddress> dstIps,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t streams,
+    std::optional<VlanID> vlan,
+    std::optional<PortID> frontPanelPortToLoopTraffic,
+    int hopLimit,
+    std::optional<folly::MacAddress> srcMacAddr,
+    int numPkts) {
+  folly::MacAddress srcMac(
+      srcMacAddr.has_value() ? *srcMacAddr
+                             : MacAddressGenerator().get(dstMac.u64HBO() + 1));
+  for (auto srcIp : srcIps) {
+    for (auto dstIp : dstIps) {
+      CHECK_EQ(srcIp.isV4(), dstIp.isV4());
+      for (auto i = 0; i < streams; i++) {
+        while (numPkts--) {
+          auto pkt = makeUDPTxPacket(
+              hw,
+              vlan,
+              srcMac,
+              dstMac,
+              srcIp,
+              dstIp,
+              srcPort + i,
+              dstPort + i,
+              0,
+              hopLimit);
+          if (frontPanelPortToLoopTraffic) {
+            hw->sendPacketOutOfPortSync(
+                std::move(pkt), frontPanelPortToLoopTraffic.value());
+          } else {
+            hw->sendPacketSwitchedSync(std::move(pkt));
+          }
+        }
+      }
+    }
+  }
+}
 /*
  * Generate traffic with random source ip, destination ip, source port and
  * destination port. every run will pump same random traffic as random number
@@ -232,12 +388,12 @@ void pumpDeterministicRandomTraffic(
       }
       count++;
       if (count % 1000 == 0) {
-        XLOG(INFO) << counter << " . sent " << count << " packets";
+        XLOG(DBG2) << counter << " . sent " << count << " packets";
         counter++;
       }
     }
   }
-  XLOG(INFO) << "Sent total of " << count << " packets";
+  XLOG(DBG2) << "Sent total of " << count << " packets";
 }
 
 void pumpMplsTraffic(
@@ -324,7 +480,7 @@ bool isLoadBalancedImpl(
           (static_cast<float>(portOutBytes) / highest) * 100.0;
       auto percentDev = std::abs(weightPercent - portOutBytesPercent);
       // Don't tolerate a deviation of more than maxDeviationPct
-      XLOG(INFO) << "Percent Deviation: " << percentDev
+      XLOG(DBG2) << "Percent Deviation: " << percentDev
                  << ", Maximum Deviation: " << maxDeviationPct;
       if (percentDev > maxDeviationPct) {
         return false;
@@ -333,7 +489,7 @@ bool isLoadBalancedImpl(
   } else {
     auto percentDev = (static_cast<float>(highest - lowest) / lowest) * 100.0;
     // Don't tolerate a deviation of more than maxDeviationPct
-    XLOG(INFO) << "Percent Deviation: " << percentDev
+    XLOG(DBG2) << "Percent Deviation: " << percentDev
                << ", Maximum Deviation: " << maxDeviationPct;
     if (percentDev > maxDeviationPct) {
       return false;

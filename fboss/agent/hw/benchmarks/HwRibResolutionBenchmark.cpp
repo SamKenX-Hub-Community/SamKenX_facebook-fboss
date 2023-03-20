@@ -16,6 +16,8 @@
 #include "fboss/agent/test/RouteGeneratorTestUtils.h"
 #include "fboss/agent/test/RouteScaleGenerators.h"
 
+#include "fboss/agent/benchmarks/AgentBenchmarks.h"
+
 #include <folly/Benchmark.h>
 #include <folly/logging/xlog.h>
 
@@ -23,16 +25,22 @@ namespace facebook::fboss {
 
 BENCHMARK(RibResolutionBenchmark) {
   folly::BenchmarkSuspender suspender;
-  auto ensemble = createHwEnsemble(HwSwitchEnsemble::getAllFeatures());
-  auto config = utility::onePortPerVlanConfig(
-      ensemble->getHwSwitch(), ensemble->masterLogicalPortIds());
-  ensemble->applyInitialConfig(config);
-  utility::THAlpmRouteScaleGenerator gen(ensemble->getProgrammedState(), true);
+  std::unique_ptr<AgentEnsemble> ensemble{};
+
+  AgentEnsembleSwitchConfigFn initialConfigFn =
+      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
+        CHECK_GT(ports.size(), 0);
+        return utility::onePortPerInterfaceConfig(hwSwitch, ports);
+      };
+  ensemble = createAgentEnsemble(initialConfigFn);
+  auto ports = ensemble->masterLogicalPortIds();
+
+  utility::THAlpmRouteScaleGenerator gen(ensemble->getSw()->getState());
   const auto& routeChunks = gen.getThriftRoutes();
   // Create a dummy rib since we don't want to go through
   // HwSwitchEnsemble and write to HW
   auto rib = RoutingInformationBase::fromFollyDynamic(
-      ensemble->getRib()->toFollyDynamic(), nullptr, nullptr);
+      ensemble->getSw()->getRib()->toFollyDynamic(), nullptr, nullptr);
   auto switchState = ensemble->getProgrammedState();
   suspender.dismiss();
   std::for_each(

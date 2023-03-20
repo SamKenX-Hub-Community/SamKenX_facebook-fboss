@@ -10,94 +10,65 @@
 #pragma once
 
 #include <folly/MacAddress.h>
-#include "fboss/agent/Utils.h"
+#include <memory>
+
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeBase.h"
 #include "fboss/agent/state/Thrifty.h"
 
 namespace facebook::fboss {
 
-template <typename IPADDR>
-struct NeighborResponseEntryFields : public ThriftyFields<
-                                         NeighborResponseEntryFields<IPADDR>,
-                                         state::NeighborResponseEntryFields> {
-  using AddressType = IPADDR;
-  static constexpr auto kMac = "mac";
-  static constexpr auto kNeighborResponseIntf = "interfaceId";
-
-  NeighborResponseEntryFields(
-      AddressType ipAddress,
-      folly::MacAddress mac,
-      InterfaceID interfaceID)
-      : ipAddress(ipAddress), mac(mac), interfaceID(interfaceID) {}
-
-  NeighborResponseEntryFields(folly::MacAddress mac, InterfaceID interfaceID)
-      : mac(mac), interfaceID(interfaceID) {}
-
-  state::NeighborResponseEntryFields toThrift() const override;
-  static NeighborResponseEntryFields fromThrift(
-      state::NeighborResponseEntryFields const& entryTh);
-
-  folly::dynamic toFollyDynamicLegacy() const;
-  static NeighborResponseEntryFields fromFollyDynamicLegacy(
-      const folly::dynamic& entry);
-
-  template <typename Fn>
-  void forEachChild(Fn /*fn*/) {}
-
-  bool operator==(const NeighborResponseEntryFields& other) const {
-    return mac == other.mac && interfaceID == other.interfaceID;
-  }
-
-  AddressType ipAddress;
-  folly::MacAddress mac;
-  InterfaceID interfaceID{0};
-};
-
 template <typename IPADDR, typename SUBCLASS>
-class NeighborResponseEntry : public ThriftyBaseT<
-                                  state::NeighborResponseEntryFields,
-                                  SUBCLASS,
-                                  NeighborResponseEntryFields<IPADDR>> {
+class NeighborResponseEntry
+    : public ThriftStructNode<SUBCLASS, state::NeighborResponseEntryFields> {
  public:
   using AddressType = IPADDR;
 
-  AddressType getID() const {
-    return this->getFields()->ipAddress;
+  NeighborResponseEntry(
+      AddressType ipAddress,
+      folly::MacAddress mac,
+      InterfaceID interfaceID) {
+    setIP(ipAddress);
+    setMac(mac);
+    setInterfaceID(interfaceID);
+  }
+
+  std::string getID() const {
+    auto ip = getIP();
+    return ip.str();
   }
 
   AddressType getIP() const {
-    return this->getFields()->ipAddress;
+    return AddressType(
+        this->template get<switch_state_tags::ipAddress>()->cref());
   }
 
   void setIP(AddressType ip) {
-    this->writableFields()->ipAddress = ip;
+    this->template set<switch_state_tags::ipAddress>(ip.str());
   }
 
   folly::MacAddress getMac() const {
-    return this->getFields()->mac;
+    return folly::MacAddress(
+        this->template get<switch_state_tags::mac>()->cref());
   }
 
   void setMac(folly::MacAddress mac) {
-    this->writableFields()->mac = mac;
+    this->template set<switch_state_tags::mac>(mac.toString());
   }
 
   InterfaceID getInterfaceID() const {
-    return this->getFields()->interfaceID;
+    return InterfaceID(
+        this->template get<switch_state_tags::interfaceId>()->cref());
   }
 
   void setInterfaceID(InterfaceID interface) {
-    this->writableFields()->interfaceID = interface;
+    this->template set<switch_state_tags::interfaceId>(interface);
   }
 
  private:
-  using Parent = ThriftyBaseT<
-      state::NeighborResponseEntryFields,
-      SUBCLASS,
-      NeighborResponseEntryFields<IPADDR>>;
+  using Parent = ThriftStructNode<SUBCLASS, state::NeighborResponseEntryFields>;
   using Parent::Parent;
   friend class CloneAllocator;
 };
 
 } // namespace facebook::fboss
-#include "fboss/agent/state/NeighborResponseEntry-defs.h"

@@ -29,6 +29,8 @@
 #include "fboss/agent/SetupThrift.h"
 #include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/SwitchStats.h"
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
+
 #include "fboss/agent/ThriftHandler.h"
 #include "fboss/agent/TunManager.h"
 #include "fboss/lib/CommonUtils.h"
@@ -96,7 +98,11 @@ FOLLY_INIT_LOGGING_CONFIG("fboss=DBG2; default:async=true");
 namespace facebook::fboss {
 
 void Initializer::start() {
-  std::thread t(&Initializer::initThread, this);
+  start(sw_);
+}
+
+void Initializer::start(HwSwitch::Callback* callback) {
+  std::thread t(&Initializer::initThread, this, callback);
   t.detach();
 }
 
@@ -113,9 +119,9 @@ void Initializer::waitForInitDone() {
   initCondition_.wait(lk, [&] { return sw_->isFullyInitialized(); });
 }
 
-void Initializer::initThread() {
+void Initializer::initThread(HwSwitch::Callback* callback) {
   try {
-    initImpl();
+    initImpl(callback);
   } catch (const std::exception& ex) {
     XLOG(FATAL) << "switch initialization failed: " << folly::exceptionStr(ex);
   }
@@ -141,12 +147,12 @@ SwitchFlags Initializer::setupFlags() {
   return flags;
 }
 
-void Initializer::initImpl() {
+void Initializer::initImpl(HwSwitch::Callback* hwCallBack) {
   auto startTime = steady_clock::now();
   std::lock_guard<mutex> g(initLock_);
   // Initialize the switch.  This operation can take close to a minute
   // on some of our current platforms.
-  sw_->init(nullptr, setupFlags());
+  sw_->init(hwCallBack, nullptr, setupFlags());
 
   sw_->applyConfig("apply initial config");
   // Enable route update logging for all routes so that when we are told
@@ -172,22 +178,22 @@ void Initializer::initImpl() {
   auto timeInterval = std::chrono::seconds(1);
   fs_->addFunction(callback, timeInterval, "updateStats");
   fs_->start();
-  XLOG(INFO) << "Started background thread: UpdateStatsThread";
+  XLOG(DBG2) << "Started background thread: UpdateStatsThread";
   initCondition_.notify_all();
 }
 
 void SignalHandler::signalReceived(int /*signum*/) noexcept {
   restart_time::mark(RestartEvent::SIGNAL_RECEIVED);
 
-  XLOG(INFO) << "[Exit] Signal received ";
+  XLOG(DBG2) << "[Exit] Signal received ";
   steady_clock::time_point begin = steady_clock::now();
   stopServices_();
   steady_clock::time_point servicesStopped = steady_clock::now();
-  XLOG(INFO) << "[Exit] Services stop time "
+  XLOG(DBG2) << "[Exit] Services stop time "
              << duration_cast<duration<float>>(servicesStopped - begin).count();
   sw_->gracefulExit();
   steady_clock::time_point switchGracefulExit = steady_clock::now();
-  XLOG(INFO)
+  XLOG(DBG2)
       << "[Exit] Switch Graceful Exit time "
       << duration_cast<duration<float>>(switchGracefulExit - servicesStopped)
              .count()
@@ -247,8 +253,11 @@ void AgentInitializer::createSwitch(
   // if somehow a client did manage to get into the shell, the shell
   // would read EOF immediately and exit.
   if (!freopen("/dev/null", "r", stdin)) {
-    XLOG(INFO) << "Could not open /dev/null ";
+    XLOG(DBG2) << "Could not open /dev/null ";
   }
+
+  // Initialize Bitsflow for agent
+  initializeBitsflow();
 
   // Now that we have parsed the command line flags, create the Platform
   // object
@@ -261,6 +270,10 @@ void AgentInitializer::createSwitch(
 }
 
 int AgentInitializer::initAgent() {
+  return initAgent(sw_.get());
+}
+
+int AgentInitializer::initAgent(HwSwitch::Callback* callback) {
   auto handler =
       std::shared_ptr<ThriftHandler>(platform()->createHandler(sw_.get()));
   handler->setIdleTimeout(FLAGS_thrift_idle_timeout);
@@ -275,7 +288,7 @@ int AgentInitializer::initAgent() {
   // At this point, we are guaranteed no other agent process will initialize
   // the ASIC because such a process would have crashed attempting to bind to
   // the Thrift port 5909
-  initializer_->start();
+  initializer_->start(callback);
 
   /*
    * Updating stats could be expensive as each update must acquire lock. To
@@ -288,17 +301,19 @@ int AgentInitializer::initAgent() {
   SignalHandler signalHandler(
       eventBase_, sw_.get(), [this]() { stopServices(); });
 
-  XLOG(INFO) << "serving on localhost on port " << FLAGS_port;
+  XLOG(DBG2) << "serving on localhost on port " << FLAGS_port;
   server_->serve();
   return 0;
 }
 
 void AgentInitializer::stopServices() {
+  // stop Thrift server: stop all worker threads and
   // stop accepting new connections
-  server_->stopListening();
-  XLOG(INFO) << "Stopped thrift server listening";
+  XLOG(DBG2) << "Stopping thrift server";
+  server_->stop();
+  XLOG(DBG2) << "Stopped thrift server";
   initializer_->stopFunctionScheduler();
-  XLOG(INFO) << "Stopped stats FunctionScheduler";
+  XLOG(DBG2) << "Stopped stats FunctionScheduler";
   fbossFinalize();
 }
 
@@ -313,7 +328,9 @@ void AgentInitializer::stopAgent(bool setupWarmboot) {
 #endif
 #endif
   } else {
-    sw_->stop(true);
+    auto revertToMinAlpmState = sw_->getPlatform()->getAsic()->isSupported(
+        HwAsic::Feature::ROUTE_PROGRAMMING);
+    sw_->stop(revertToMinAlpmState);
   }
 }
 

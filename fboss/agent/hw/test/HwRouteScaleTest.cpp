@@ -10,7 +10,6 @@
 
 #include "fboss/agent/hw/test/HwTest.h"
 
-#include "fboss/agent/platforms/tests/utils/CreateTestPlatform.h"
 #include "fboss/agent/test/RouteScaleGenerators.h"
 
 #include "fboss/agent/HwSwitch.h"
@@ -32,8 +31,8 @@ class HwRouteScaleTest : public HwTest {
       return;
     }
     auto setup = [this]() {
-      applyNewConfig(
-          utility::onePortPerVlanConfig(getHwSwitch(), masterLogicalPortIds()));
+      applyNewConfig(utility::onePortPerInterfaceConfig(
+          getHwSwitch(), masterLogicalPortIds()));
       auto routeGen = RouteScaleGeneratorT(getProgrammedState());
 
       applyNewState(routeGen.resolveNextHops(

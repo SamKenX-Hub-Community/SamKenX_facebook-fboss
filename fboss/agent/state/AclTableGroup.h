@@ -10,7 +10,6 @@
 #pragma once
 
 #include "fboss/agent/FbossError.h"
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/state/AclMap.h"
 #include "fboss/agent/state/AclTableMap.h"
 #include "fboss/agent/state/NodeBase.h"
@@ -22,80 +21,59 @@
 
 namespace facebook::fboss {
 
-struct AclTableGroupFields {
-  explicit AclTableGroupFields(cfg::AclStage stage) : stage(stage) {}
-  explicit AclTableGroupFields(
-      cfg::AclStage stage,
-      const std::string& name,
-      std::shared_ptr<AclTableMap> aclTableMap)
-      : stage(stage), name(name), aclTableMap(aclTableMap) {}
-
-  template <typename Fn>
-  void forEachChild(Fn) {}
-
-  folly::dynamic toFollyDynamic() const;
-  static AclTableGroupFields fromFollyDynamic(const folly::dynamic& json);
-
-  cfg::AclStage stage;
-  std::string name;
-  std::shared_ptr<AclTableMap> aclTableMap;
-};
+USE_THRIFT_COW(AclTableGroup);
+RESOLVE_STRUCT_MEMBER(
+    AclTableGroup,
+    switch_state_tags::aclTableMap,
+    AclTableMap)
 
 /*
  * AclTableGroup stores state about a group of ACL tables on the switch as well
  * as additional group attribtues.
  */
-class AclTableGroup : public NodeBaseT<AclTableGroup, AclTableGroupFields> {
+class AclTableGroup
+    : public ThriftStructNode<AclTableGroup, state::AclTableGroupFields> {
  public:
+  using BaseT = ThriftStructNode<AclTableGroup, state::AclTableGroupFields>;
+
   explicit AclTableGroup(cfg::AclStage stage);
-  static std::shared_ptr<AclTableGroup> fromFollyDynamic(
-      const folly::dynamic& json) {
-    const auto& fields = AclTableGroupFields::fromFollyDynamic(json);
-    return std::make_shared<AclTableGroup>(fields);
-  }
 
-  static std::shared_ptr<AclTableGroup> fromJson(
-      const folly::fbstring& jsonStr) {
-    return fromFollyDynamic(folly::parseJson(jsonStr));
-  }
+  static std::shared_ptr<AclTableGroup> createDefaultAclTableGroupFromThrift(
+      std::map<std::string, state::AclEntryFields> const& thriftMap);
 
-  folly::dynamic toFollyDynamic() const override {
-    return getFields()->toFollyDynamic();
-  }
-
-  bool operator==(const AclTableGroup& aclTableGroup) const {
-    return getFields()->stage == aclTableGroup.getID() &&
-        *(getFields()->aclTableMap) == *(aclTableGroup.getAclTableMap()) &&
-        getFields()->name == aclTableGroup.getName();
-  }
-
-  bool operator!=(const AclTableGroup& aclTableGroup) const {
-    return !(*this == aclTableGroup);
+  static std::shared_ptr<AclMap> getDefaultAclTableGroup(
+      state::AclTableGroupFields const& aclTableGroupFields) {
+    if (auto aclTableMap = aclTableGroupFields.aclTableMap()) {
+      return AclTableMap::getDefaultAclTableMap(*aclTableMap);
+    } else {
+      XLOG(ERR) << "AclTableGroup missing from warmboot state file";
+      return nullptr;
+    }
   }
 
   cfg::AclStage getID() const {
-    return getFields()->stage;
+    return cref<switch_state_tags::stage>()->cref();
   }
 
   const std::string& getName() const {
-    return getFields()->name;
+    return cref<switch_state_tags::name>()->cref();
   }
 
   void setName(const std::string& name) {
-    writableFields()->name = name;
+    set<switch_state_tags::name>(name);
   }
 
-  std::shared_ptr<AclTableMap> getAclTableMap() const {
-    return getFields()->aclTableMap;
+  std::shared_ptr<const AclTableMap> getAclTableMap() const {
+    return get<switch_state_tags::aclTableMap>();
   }
 
   void setAclTableMap(std::shared_ptr<AclTableMap> aclTableMap) {
-    writableFields()->aclTableMap = aclTableMap;
+    ref<switch_state_tags::aclTableMap>() = std::move(aclTableMap);
   }
 
  private:
   // Inherit the constructors required for clone()
-  using NodeBaseT::NodeBaseT;
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 

@@ -5,6 +5,7 @@
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
+#include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/types.h"
 #include "fboss/lib/phy/ExternalPhy.h"
 #include "fboss/lib/phy/ExternalPhyPortStatsUtils.h"
@@ -32,6 +33,9 @@ class PhySnapshotManager;
 
 class PhyManager {
  public:
+  using PublishPhyCb =
+      std::function<void(std::string&&, std::optional<phy::PhyInfo>&&)>;
+
   explicit PhyManager(const PlatformMapping* platformMapping);
   virtual ~PhyManager();
 
@@ -62,6 +66,8 @@ class PhyManager {
     return numOfSlot_;
   }
 
+  virtual int getPimStartNum() = 0;
+
   /*
    * This function returns the ExternalPhy object for the giving global xphy id
    */
@@ -85,7 +91,8 @@ class PhyManager {
   virtual void programOnePort(
       PortID portId,
       cfg::PortProfileID portProfileId,
-      std::optional<TransceiverInfo> transceiverInfo);
+      std::optional<TransceiverInfo> transceiverInfo,
+      bool needResetDataPath);
 
   // Return programmed profile id for a specific port
   std::optional<cfg::PortProfileID> getProgrammedProfile(PortID portID);
@@ -170,12 +177,12 @@ class PhyManager {
 
   folly::EventBase* getPimEventBase(PimID pimID) const;
 
-  void
+  virtual void
   setPortPrbs(PortID portID, phy::Side side, const phy::PortPrbsState& prbs);
 
-  phy::PortPrbsState getPortPrbs(PortID portID, phy::Side side);
+  virtual phy::PortPrbsState getPortPrbs(PortID portID, phy::Side side);
 
-  std::vector<phy::PrbsLaneStats> getPortPrbsStats(
+  virtual std::vector<phy::PrbsLaneStats> getPortPrbsStats(
       PortID portID,
       phy::Side side);
   void clearPortPrbsStats(PortID portID, phy::Side side);
@@ -202,7 +209,7 @@ class PhyManager {
   bool isPrbsStatsCollectionDone(PortID portID) const;
 
   void publishXphyInfoSnapshots(PortID portID) const;
-  void updateXphyInfo(PortID portID, const phy::PhyInfo& phyInfo);
+  void updateXphyInfo(PortID portID, phy::PhyInfo&& phyInfo);
   std::optional<phy::PhyInfo> getXphyInfo(PortID portID) const;
 
   // returns the default TX settings for phy ports on the given phy.
@@ -217,7 +224,27 @@ class PhyManager {
     return phy::PhyInfo{};
   }
 
+  virtual std::string getPortInfoStr(PortID /* swPort */) {
+    return "getPortInfoStr Not implemented on this platform";
+  }
+
   const std::string& getPortName(PortID portID) const;
+
+  virtual void setPortLoopbackState(
+      PortID /* swPort */,
+      phy::PortComponent /* component */,
+      bool /* setLoopback */) {}
+
+  virtual void setPortAdminState(
+      PortID /* swPort */,
+      phy::PortComponent /* component */,
+      bool /* setAdminUp */) {}
+
+  virtual void gracefulExit() {}
+
+  void setPublishPhyCb(PublishPhyCb publishPhyCb) {
+    publishPhyCb_ = publishPhyCb;
+  }
 
  protected:
   struct PortCacheInfo {
@@ -309,6 +336,17 @@ class PhyManager {
   using XphyMap = std::map<PimID, PimXphyMap>;
   XphyMap xphyMap_;
 
+  // Xphy port related stats and prbs stats
+  struct PortStatsInfo {
+    std::unique_ptr<ExternalPhyPortStatsUtils> stats;
+    std::optional<folly::Future<folly::Unit>> ongoingStatCollection;
+    std::optional<folly::Future<folly::Unit>> ongoingPrbsStatCollection;
+  };
+  using PortStatsRLockedPtr = folly::Synchronized<PortStatsInfo>::RLockedPtr;
+  using PortStatsWLockedPtr = folly::Synchronized<PortStatsInfo>::WLockedPtr;
+  PortStatsRLockedPtr getRLockedStats(PortID portID) const;
+  PortStatsWLockedPtr getWLockedStats(PortID portID) const;
+
  private:
   virtual void createExternalPhy(
       const phy::PhyIDInfo& phyIDInfo,
@@ -327,21 +365,10 @@ class PhyManager {
   // longer than the other to collect stats. Split PortCacheInfo and
   // PortStatsInfo into two const map so that each map doesn't affect the other
   // map performance.
-  // Xphy port related stats and prbs stats
-  struct PortStatsInfo {
-    std::unique_ptr<ExternalPhyPortStatsUtils> stats;
-    std::optional<folly::Future<folly::Unit>> ongoingStatCollection;
-    std::optional<folly::Future<folly::Unit>> ongoingPrbsStatCollection;
-  };
   using PortToStatsInfo = std::unordered_map<
       PortID,
       std::unique_ptr<folly::Synchronized<PortStatsInfo>>>;
   PortToStatsInfo setupPortToStatsInfo(const PlatformMapping* platformMapping);
-
-  using PortStatsRLockedPtr = folly::Synchronized<PortStatsInfo>::RLockedPtr;
-  using PortStatsWLockedPtr = folly::Synchronized<PortStatsInfo>::WLockedPtr;
-  PortStatsRLockedPtr getRLockedStats(PortID portID) const;
-  PortStatsWLockedPtr getWLockedStats(PortID portID) const;
 
   // Update PortStatsInfo::stats
   void updatePortStats(
@@ -386,6 +413,8 @@ class PhyManager {
   static constexpr auto kXphySnapshotIntervalSeconds = 60;
   std::unique_ptr<PhySnapshotManager<kXphySnapshotIntervalSeconds>>
       xphySnapshotManager_;
+
+  PublishPhyCb publishPhyCb_;
 };
 
 } // namespace fboss

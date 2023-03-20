@@ -31,6 +31,7 @@ FBOSS_STRONG_TYPE(sai_object_id_t, DebugCounterSaiId);
 FBOSS_STRONG_TYPE(sai_object_id_t, HashSaiId);
 FBOSS_STRONG_TYPE(sai_object_id_t, HostifTrapGroupSaiId);
 FBOSS_STRONG_TYPE(sai_object_id_t, HostifTrapSaiId);
+FBOSS_STRONG_TYPE(sai_object_id_t, IngressPriorityGroupSaiId);
 FBOSS_STRONG_TYPE(sai_object_id_t, LagSaiId);
 FBOSS_STRONG_TYPE(sai_object_id_t, LagMemberSaiId);
 FBOSS_STRONG_TYPE(sai_object_id_t, MirrorSaiId);
@@ -90,7 +91,8 @@ sai_object_id_t* rawSaiId(SaiId* id) {
 }
 
 using SaiPortDescriptor = BasePortDescriptor;
-using PortDescriptorSaiId = PortDescriptorTemplate<PortSaiId, LagSaiId>;
+using PortDescriptorSaiId =
+    PortDescriptorTemplate<PortSaiId, LagSaiId, SystemPortSaiId>;
 
 } // namespace facebook::fboss
 

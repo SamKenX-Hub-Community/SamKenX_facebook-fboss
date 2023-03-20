@@ -18,7 +18,8 @@ class SaiBcmFujiPlatform : public SaiBcmPlatform {
  public:
   explicit SaiBcmFujiPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
-      folly::MacAddress localMac);
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
   ~SaiBcmFujiPlatform() override;
   HwAsic* getAsic() const override;
   uint32_t numLanesPerCore() const override {
@@ -32,6 +33,10 @@ class SaiBcmFujiPlatform : public SaiBcmPlatform {
   void initLEDs() override {}
 
  private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
   std::unique_ptr<Tomahawk4Asic> asic_;
 };
 

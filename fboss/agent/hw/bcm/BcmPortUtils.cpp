@@ -114,6 +114,8 @@ bcm_port_phy_fec_t phyFecModeToBcmPortPhyFec(phy::FecMode fec) {
       return bcmPortPhyFecRs544;
     case phy::FecMode::RS544_2N:
       return bcmPortPhyFecRs544_2xN;
+    case phy::FecMode::RS545:
+      return bcmPortPhyFecRs545;
   };
   throw facebook::fboss::FbossError(
       "Unsupported fec type: ", apache::thrift::util::enumNameSafe(fec));
@@ -248,30 +250,6 @@ bcm_port_loopback_t fbToBcmLoopbackMode(cfg::PortLoopbackMode inMode) {
   return BCM_PORT_LOOPBACK_NONE;
 }
 
-std::map<phy::DataPlanePhyChip, std::vector<phy::PinConfig>> getCorePinMapping(
-    const PlatformMapping* platformMapping,
-    const std::vector<cfg::Port>& ports) {
-  std::map<phy::DataPlanePhyChip, std::vector<phy::PinConfig>> corePinMapping;
-  const auto& platformPorts = platformMapping->getPlatformPorts();
-  for (auto& port : ports) {
-    auto portID = port.get_logicalID();
-    if (platformPorts.find(portID) == platformPorts.end()) {
-      throw FbossError("Could not find platform port with id ", portID);
-    }
-    auto& platformPortEntry = platformPorts.at(portID);
-    auto profileID = port.get_profileID();
-    if (portID != platformPortEntry.mapping()->get_controllingPort()) {
-      continue;
-    }
-    const auto& chip = platformMapping->getPortIphyChip(PortID(portID));
-    cfg::PlatformPortConfigOverrideFactor factor;
-    factor.chips() = {chip};
-    corePinMapping[chip] = platformMapping->getPortIphyPinConfigs(
-        PlatformPortProfileConfigMatcher(profileID, std::nullopt, factor));
-  }
-  return corePinMapping;
-}
-
 int getBcmPfcDeadlockDetectionTimerGranularity(int deadlockDetectionTimeMsec) {
   /*
    * BCM can configure a value 0-15 with a granularity of 1msec,
@@ -322,9 +300,9 @@ int getAdjustedPfcDeadlockDetectionTimerValue(int deadlockDetectionTimeMsec) {
 }
 
 int getAdjustedPfcDeadlockRecoveryTimerValue(
-    HwAsic::AsicType type,
+    cfg::AsicType type,
     int timerMsec) {
-  if (type == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4) {
+  if (type == cfg::AsicType::ASIC_TYPE_TOMAHAWK4) {
     // should be in multiples of 100ms, min 100ms, max 1500ms
     int adjustedDeadlockRecoveryTimer{0};
     if (timerMsec / 100 == 0) {
@@ -340,24 +318,24 @@ int getAdjustedPfcDeadlockRecoveryTimerValue(
   return timerMsec;
 }
 
-int getDefaultPfcDeadlockDetectionTimer(HwAsic::AsicType type) {
-  if (type == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4) {
+int getDefaultPfcDeadlockDetectionTimer(cfg::AsicType type) {
+  if (type == cfg::AsicType::ASIC_TYPE_TOMAHAWK4) {
     return kDefaultTh4PfcDeadlockDetectionTimer;
-  } else if (type == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3) {
+  } else if (type == cfg::AsicType::ASIC_TYPE_TOMAHAWK3) {
     return kDefaultTh3PfcDeadlockDetectionTimer;
-  } else if (type == HwAsic::AsicType::ASIC_TYPE_FAKE) {
+  } else if (type == cfg::AsicType::ASIC_TYPE_FAKE) {
     return 0;
   }
   throw FbossError(
       "Platform type ", type, " does not support pfc watchdog detection");
 }
 
-int getDefaultPfcDeadlockRecoveryTimer(HwAsic::AsicType type) {
-  if (type == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4) {
+int getDefaultPfcDeadlockRecoveryTimer(cfg::AsicType type) {
+  if (type == cfg::AsicType::ASIC_TYPE_TOMAHAWK4) {
     return kDefaultTh4PfcDeadlockRecoveryTimer;
-  } else if (type == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3) {
+  } else if (type == cfg::AsicType::ASIC_TYPE_TOMAHAWK3) {
     return kDefaultTh3PfcDeadlockRecoveryTimer;
-  } else if (type == HwAsic::AsicType::ASIC_TYPE_FAKE) {
+  } else if (type == cfg::AsicType::ASIC_TYPE_FAKE) {
     return 0;
   }
   throw FbossError(

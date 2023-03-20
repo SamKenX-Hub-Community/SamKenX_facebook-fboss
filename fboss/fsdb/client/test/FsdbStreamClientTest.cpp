@@ -1,7 +1,9 @@
 // (c) Facebook, Inc. and its affiliates. Confidential and proprietary.
 
+#include <gtest/gtest.h>
+
 #include "fboss/fsdb/client/FsdbStreamClient.h"
-#include "fboss/fsdb/Flags.h"
+#include "fboss/fsdb/common/Flags.h"
 #include "fboss/lib/CommonUtils.h"
 
 #include <fb303/ServiceData.h>
@@ -9,11 +11,10 @@
 #include <folly/experimental/coro/AsyncPipe.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/logging/xlog.h>
-#include <gtest/gtest.h>
 #include <algorithm>
 #include <atomic>
 
-namespace facebook::fboss::fsdb::test {
+namespace facebook::fboss::fsdb {
 
 class TestFsdbStreamClient : public FsdbStreamClient {
  public:
@@ -77,16 +78,14 @@ class StreamClientTest : public ::testing::Test {
       bool expectRunning,
       const std::vector<TestFsdbStreamClient*>& clients) const {
 #if FOLLY_HAS_COROUTINES
-    WITH_RETRIES_N(
-        {
-          EXPECT_EVENTUALLY_TRUE(std::all_of(
-              clients.begin(),
-              clients.end(),
-              [expectRunning](const auto& streamClient) {
-                return streamClient->serviceLoopRunning() == expectRunning;
-              }));
-        },
-        kRetries);
+    WITH_RETRIES_N(kRetries, {
+      EXPECT_EVENTUALLY_TRUE(std::all_of(
+          clients.begin(),
+          clients.end(),
+          [expectRunning](const auto& streamClient) {
+            return streamClient->serviceLoopRunning() == expectRunning;
+          }));
+    });
 #endif
   }
   void verifyServiceLoopRunning(bool expectRunning) const {
@@ -101,7 +100,8 @@ class StreamClientTest : public ::testing::Test {
 };
 
 TEST_F(StreamClientTest, connectAndCancel) {
-  streamClient_->setServerToConnect("::1", FLAGS_fsdbPort);
+  streamClient_->setServerOptions(
+      FsdbStreamClient::ServerOptions("::1", FLAGS_fsdbPort));
   auto counterPrefix = streamClient_->getCounterPrefix();
   EXPECT_EQ(counterPrefix, "test_fsdb_client");
   EXPECT_EQ(
@@ -132,4 +132,4 @@ TEST_F(StreamClientTest, multipleStreamClientsOnSameEvb) {
   streamClient2->cancel();
   verifyServiceLoopRunning(false, {streamClient_.get(), streamClient2.get()});
 }
-} // namespace facebook::fboss::fsdb::test
+} // namespace facebook::fboss::fsdb

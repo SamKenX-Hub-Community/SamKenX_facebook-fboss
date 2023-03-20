@@ -26,11 +26,11 @@ inline std::optional<StorageError> parseTraverseResult(
 
 } // namespace detail
 
-template <typename Root>
-class CowStorage : public Storage<Root, CowStorage<Root>> {
+template <typename Root, typename Node = thrift_cow::ThriftStructNode<Root>>
+class CowStorage : public Storage<Root, CowStorage<Root, Node>> {
  public:
-  using Base = Storage<Root, CowStorage<Root>>;
-  using StorageImpl = thrift_cow::ThriftStructNode<Root>;
+  using Base = Storage<Root, CowStorage<Root, Node>>;
+  using StorageImpl = Node;
   using Self = CowStorage<Root>;
   using PathIter = typename Base::PathIter;
   using ExtPathIter = typename Base::ExtPathIter;
@@ -218,6 +218,19 @@ class CowStorage : public Storage<Root, CowStorage<Root>> {
         result = this->remove_impl(rawPath.begin(), rawPath.end());
       }
     }
+    return result;
+  }
+
+  std::optional<StorageError> patch_impl(
+      const fsdb::TaggedOperState& taggedState) {
+    std::optional<StorageError> result;
+    auto rawPath = *taggedState.path()->path();
+    OperState newState;
+    newState.protocol() = *taggedState.state()->protocol();
+    newState.contents() = *taggedState.state()->contents();
+
+    result = this->set_encoded_impl(
+        rawPath.begin(), rawPath.end(), std::move(newState));
     return result;
   }
 

@@ -6,8 +6,6 @@ namespace facebook::fboss::fsdb {
 
 void FsdbStreamClient::resetClient() {}
 
-void FsdbStreamClient::createClient(
-    const std::string& /*ip*/,
-    uint16_t /*port*/) {}
+void FsdbStreamClient::createClient(const ServerOptions& /* options */) {}
 
 } // namespace facebook::fboss::fsdb

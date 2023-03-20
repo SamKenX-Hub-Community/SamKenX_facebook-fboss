@@ -59,14 +59,63 @@ SUBCLASS* NeighborTable<IPADDR, ENTRY, SUBCLASS>::modify(
 }
 
 template <typename IPADDR, typename ENTRY, typename SUBCLASS>
+SUBCLASS* NeighborTable<IPADDR, ENTRY, SUBCLASS>::modify(
+    Interface** interface,
+    std::shared_ptr<SwitchState>* state) {
+  if (!this->isPublished()) {
+    CHECK(!(*state)->isPublished());
+    return boost::polymorphic_downcast<SUBCLASS*>(this);
+  }
+
+  *interface = (*interface)->modify(state);
+  auto newTable = this->clone();
+  (*interface)->setNeighborEntryTable<IPADDR>(newTable->toThrift());
+  return (*interface)->getNeighborEntryTable<IPADDR>().get();
+}
+
+template <typename IPADDR, typename ENTRY, typename SUBCLASS>
+SUBCLASS* NeighborTable<IPADDR, ENTRY, SUBCLASS>::modify(
+    InterfaceID interfaceId,
+    std::shared_ptr<SwitchState>* state) {
+  if (!this->isPublished()) {
+    CHECK(!(*state)->isPublished());
+    return boost::polymorphic_downcast<SUBCLASS*>(this);
+  }
+  // Make clone of table
+  auto newTable = this->clone();
+  // Make clone of interface
+  auto interfacePtr =
+      (*state)->getInterfaces()->getInterface(interfaceId).get();
+  interfacePtr = interfacePtr->modify(state);
+  interfacePtr->setNeighborEntryTable<IPADDR>(newTable->toThrift());
+  return interfacePtr->getNeighborEntryTable<IPADDR>().get();
+}
+
+template <typename IPADDR, typename ENTRY, typename SUBCLASS>
 void NeighborTable<IPADDR, ENTRY, SUBCLASS>::addEntry(
     AddressType ip,
     folly::MacAddress mac,
     PortDescriptor port,
     InterfaceID intfID,
-    NeighborState state) {
+    NeighborState state,
+    std::optional<cfg::AclLookupClass> classID,
+    std::optional<int64_t> encapIndex,
+    bool isLocal) {
   CHECK(!this->isPublished());
-  auto entry = std::make_shared<Entry>(ip, mac, port, intfID, state);
+  state::NeighborEntryFields thrift{};
+  thrift.ipaddress() = ip.str();
+  thrift.mac() = mac.toString();
+  thrift.portId() = port.toThrift();
+  thrift.interfaceId() = intfID;
+  thrift.state() = static_cast<state::NeighborState>(state);
+  if (classID) {
+    thrift.classID() = *classID;
+  }
+  if (encapIndex) {
+    thrift.encapIndex() = *encapIndex;
+  }
+  thrift.isLocal() = isLocal;
+  auto entry = std::make_shared<Entry>(std::move(thrift));
   this->addNode(entry);
 }
 
@@ -74,7 +123,14 @@ template <typename IPADDR, typename ENTRY, typename SUBCLASS>
 void NeighborTable<IPADDR, ENTRY, SUBCLASS>::addEntry(
     const NeighborEntryFields<AddressType>& fields) {
   addEntry(
-      fields.ip, fields.mac, fields.port, fields.interfaceID, fields.state);
+      fields.ip,
+      fields.mac,
+      fields.port,
+      fields.interfaceID,
+      fields.state,
+      fields.classID,
+      fields.encapIndex,
+      fields.isLocal);
 }
 
 template <typename IPADDR, typename ENTRY, typename SUBCLASS>
@@ -83,40 +139,41 @@ void NeighborTable<IPADDR, ENTRY, SUBCLASS>::updateEntry(
     folly::MacAddress mac,
     PortDescriptor port,
     InterfaceID intfID,
-    std::optional<cfg::AclLookupClass> classID) {
-  CHECK(!this->isPublished());
-  auto& nodes = this->writableNodes();
-  auto it = nodes.find(ip);
-  if (it == nodes.end()) {
-    throw FbossError("Neighbor entry for ", ip, " does not exist");
-  }
-  auto entry = it->second->clone();
+    NeighborState state,
+    std::optional<cfg::AclLookupClass> classID,
+    std::optional<int64_t> encapIndex,
+    bool isLocal) {
+  auto entry = this->getNode(ip.str());
+  entry = entry->clone();
   entry->setMAC(mac);
   entry->setPort(port);
   entry->setIntfID(intfID);
-  entry->setState(NeighborState::REACHABLE);
+  entry->setState(state);
   entry->setClassID(classID);
-  it->second = entry;
+  entry->setEncapIndex(encapIndex);
+  entry->setIsLocal(isLocal);
+  this->updateNode(std::move(entry));
 }
 
 template <typename IPADDR, typename ENTRY, typename SUBCLASS>
 void NeighborTable<IPADDR, ENTRY, SUBCLASS>::updateEntry(
-    AddressType ip,
+    AddressType /*ip*/,
     std::shared_ptr<ENTRY> newEntry) {
-  auto& nodes = this->writableNodes();
-  auto it = nodes.find(ip);
-  if (it == nodes.end()) {
-    throw FbossError("Neighbor entry for ", ip, " does not exist");
-  }
-  it->second = newEntry;
-  return;
+  this->updateNode(std::move(newEntry));
 }
 
 template <typename IPADDR, typename ENTRY, typename SUBCLASS>
 void NeighborTable<IPADDR, ENTRY, SUBCLASS>::updateEntry(
     const NeighborEntryFields<AddressType>& fields) {
   updateEntry(
-      fields.ip, fields.mac, fields.port, fields.interfaceID, fields.classID);
+      fields.ip,
+      fields.mac,
+      fields.port,
+      fields.interfaceID,
+      fields.state,
+      fields.classID,
+      fields.encapIndex,
+      fields.isLocal);
 }
 
 template <typename IPADDR, typename ENTRY, typename SUBCLASS>
@@ -124,15 +181,18 @@ void NeighborTable<IPADDR, ENTRY, SUBCLASS>::addPendingEntry(
     IPADDR ip,
     InterfaceID intfID) {
   CHECK(!this->isPublished());
-  auto pendingEntry =
-      std::make_shared<Entry>(ip, intfID, NeighborState::PENDING);
+  state::NeighborEntryFields thrift{};
+  thrift.ipaddress() = ip.str();
+  thrift.interfaceId() = intfID;
+  thrift.state() = state::NeighborState::Pending;
+  auto pendingEntry = std::make_shared<Entry>(std::move(thrift));
   this->addNode(pendingEntry);
 }
 
 template <typename IPADDR, typename ENTRY, typename SUBCLASS>
 void NeighborTable<IPADDR, ENTRY, SUBCLASS>::removeEntry(AddressType ip) {
   CHECK(!this->isPublished());
-  this->removeNode(ip);
+  this->removeNode(ip.str());
 }
 
 } // namespace facebook::fboss

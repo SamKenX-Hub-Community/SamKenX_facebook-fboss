@@ -23,16 +23,12 @@ void FanService::setControlFrequency(uint64_t sec) {
   controlFrequencySec_ = sec;
 }
 
-unsigned int FanService::getControlFrequency() {
+unsigned int FanService::getControlFrequency() const {
   return controlFrequencySec_;
 }
 
-void FanService::setSensorFetchFrequency(uint64_t sec) {
-  sensorFetchFrequencySec_ = sec;
-}
-
-unsigned int FanService::getSensorFetchFrequency() {
-  return sensorFetchFrequencySec_;
+unsigned int FanService::getSensorFetchFrequency() const {
+  return pConfig_->getSensorFetchFrequency();
 }
 
 std::shared_ptr<Bsp> FanService::BspFactory() {

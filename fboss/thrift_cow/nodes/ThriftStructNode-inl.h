@@ -133,9 +133,9 @@ struct ChildInvoke {
 
 } // namespace struct_helpers
 
-template <typename TType>
+template <typename TType, typename Derived = ThriftStructResolver<TType>>
 struct ThriftStructFields {
-  using Self = ThriftStructFields<TType>;
+  using Self = ThriftStructFields<TType, Derived>;
   using Info = apache::thrift::reflect_struct<TType>;
   using CowType = FieldsType;
   using ThriftType = TType;
@@ -145,7 +145,7 @@ struct ThriftStructFields {
   using Members = typename Info::members;
 
   // Extracting useful common types out of each member via Traits.h
-  using MemberTypes = fatal::transform<Members, ExtractStructFields>;
+  using MemberTypes = fatal::transform<Members, ExtractStructFields<Derived>>;
 
   // This is our ultimate storage type, which is effectively a
   // std::tuple with syntactic sugar for accessing based on
@@ -173,6 +173,16 @@ struct ThriftStructFields {
           std::false_type>,
       fatal::get_type::name,
       fatal::get_type::type>;
+
+  template <typename Name>
+  using MemberFor = typename fatal::find<
+      Members,
+      Name,
+      std::enable_if_t<
+          fatal::contains<Members, Name, fatal::get_type::name>::value,
+          std::false_type>,
+      fatal::get_type::name,
+      fatal::get_identity>;
 
   template <typename Name>
   using IsChildNode =
@@ -358,19 +368,24 @@ struct ThriftStructFields {
   NamedMemberTypes storage_;
 };
 
-template <typename TType>
+template <typename TType, typename Resolver = ThriftStructResolver<TType>>
 class ThriftStructNode
-    : public NodeBaseT<ThriftStructNode<TType>, ThriftStructFields<TType>> {
+    : public NodeBaseT<
+          typename Resolver::type,
+          ThriftStructFields<TType, typename Resolver::type>> {
  public:
-  using Self = ThriftStructNode<TType>;
-  using Fields = ThriftStructFields<TType>;
+  using Self = ThriftStructNode<TType, Resolver>;
+  using Derived = typename Resolver::type;
+  using Fields = ThriftStructFields<TType, Derived>;
   using ThriftType = typename Fields::ThriftType;
-  using BaseT = NodeBaseT<ThriftStructNode<TType>, Fields>;
+  using BaseT = NodeBaseT<Derived, Fields>;
   using CowType = NodeType;
   using TC = typename Fields::TC;
   using PathIter = typename std::vector<std::string>::const_iterator;
 
   using BaseT::BaseT;
+
+  ThriftStructNode() : BaseT(ThriftType{}) {}
 
   TType toThrift() const {
     return this->getFields()->toThrift();
@@ -432,6 +447,17 @@ class ThriftStructNode
     return this->getFields()->template cref<Name>();
   }
 
+  // prefer safe_ref/safe_cref for safe access
+  template <typename Name>
+  auto safe_ref() {
+    return detail::ref(this->writableFields()->template ref<Name>());
+  }
+
+  template <typename Name>
+  auto safe_cref() const {
+    return detail::cref(this->getFields()->template cref<Name>());
+  }
+
   template <typename Name, typename... Args>
   auto& constructMember(Args&&... args) {
     return this->writableFields()->template constructMember<Name>(
@@ -449,7 +475,7 @@ class ThriftStructNode
   }
 
   template <typename Name>
-  void modify() {
+  auto& modify() {
     DCHECK(!this->isPublished());
 
     auto& child = this->template ref<Name>();
@@ -463,6 +489,15 @@ class ThriftStructNode
     } else {
       this->template constructMember<Name>();
     }
+    return this->template ref<Name>();
+  }
+
+  template <typename Name>
+  static auto& modify(std::shared_ptr<Derived>* node) {
+    auto newNode = ((*node)->isPublished()) ? (*node)->clone() : *node;
+    auto& name = newNode->template modify<Name>();
+    node->swap(newNode);
+    return name;
   }
 
   void modify(const std::string& token) {
@@ -473,7 +508,7 @@ class ThriftStructNode
         });
   }
 
-  static void modify(std::shared_ptr<Self>* node, std::string token) {
+  static void modify(std::shared_ptr<Derived>* node, std::string token) {
     auto newNode = ((*node)->isPublished()) ? (*node)->clone() : *node;
     newNode->modify(token);
     node->swap(newNode);
@@ -483,7 +518,7 @@ class ThriftStructNode
    * Visitors by string path
    */
   static ThriftTraverseResult
-  modifyPath(std::shared_ptr<Self>* root, PathIter begin, PathIter end) {
+  modifyPath(std::shared_ptr<Derived>* root, PathIter begin, PathIter end) {
     // first clone root if needed
     auto newRoot = ((*root)->isPublished()) ? (*root)->clone() : *root;
 
@@ -509,7 +544,7 @@ class ThriftStructNode
   }
 
   static ThriftTraverseResult
-  removePath(std::shared_ptr<Self>* root, PathIter begin, PathIter end) {
+  removePath(std::shared_ptr<Derived>* root, PathIter begin, PathIter end) {
     if (begin == end) {
       return ThriftTraverseResult::OK;
     }
@@ -557,6 +592,14 @@ class ThriftStructNode
       const {
     return PathVisitor<TC>::visit(
         *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
+  }
+
+  bool operator==(const Self& that) const {
+    return this->toThrift() == that.toThrift();
+  }
+
+  bool operator!=(const Self& that) const {
+    return !(*this == that);
   }
 
  private:

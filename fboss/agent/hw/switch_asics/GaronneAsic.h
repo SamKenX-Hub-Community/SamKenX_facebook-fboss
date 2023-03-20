@@ -8,9 +8,11 @@
 namespace facebook::fboss {
 
 class GaronneAsic : public TajoAsic {
+ public:
+  using TajoAsic::TajoAsic;
   bool isSupported(Feature) const override;
-  AsicType getAsicType() const override {
-    return AsicType::ASIC_TYPE_GARONNE;
+  cfg::AsicType getAsicType() const override {
+    return cfg::AsicType::ASIC_TYPE_GARONNE;
   }
   phy::DataPlanePhyChipType getDataPlanePhyChipType() const override {
     return phy::DataPlanePhyChipType::IPHY;
@@ -18,14 +20,14 @@ class GaronneAsic : public TajoAsic {
   cfg::PortSpeed getMaxPortSpeed() const override {
     return cfg::PortSpeed::HUNDREDG;
   }
-  std::set<cfg::StreamType> getQueueStreamTypes(bool /* cpu */) const override {
-    return {cfg::StreamType::UNICAST};
-  }
+  std::set<cfg::StreamType> getQueueStreamTypes(
+      cfg::PortType portType) const override;
   int getDefaultNumPortQueues(cfg::StreamType streamType, bool /*cpu*/)
       const override {
     switch (streamType) {
       case cfg::StreamType::ALL:
       case cfg::StreamType::MULTICAST:
+      case cfg::StreamType::FABRIC_TX:
         throw FbossError("no queue exist for this stream type");
       case cfg::StreamType::UNICAST:
         return 8;
@@ -94,6 +96,9 @@ class GaronneAsic : public TajoAsic {
   }
   uint32_t getStaticQueueLimitBytes() const override {
     return 21000 * getPacketBufferUnitSize();
+  }
+  uint32_t getNumMemoryBuffers() const override {
+    return 1;
   }
 };
 

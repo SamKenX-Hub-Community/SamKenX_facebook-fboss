@@ -94,11 +94,10 @@ TerminalSession::TerminalSession(
   folly::checkUnixError(
       ret, "Failed to set new terminal settings on PTY slave");
 
-  oldStreams_.reserve(streams.size());
   for (const auto& stream : streams) {
-    XLOG(INFO) << "Redirect stream to PTY slave: " << stream.fd();
+    XLOG(DBG2) << "Redirect stream to PTY slave: " << stream.fd();
     // Save old stream (OWNING File objects!)
-    oldStreams_.emplace_back(stream.dup());
+    fd2oldStreams_.insert({stream.fd(), stream.dup()});
     // Set the pty slave as the stream
     dup2(ptySlave.file, stream);
   }
@@ -106,11 +105,16 @@ TerminalSession::TerminalSession(
 
 TerminalSession::~TerminalSession() noexcept {
   try {
-    for (auto& stream : oldStreams_) {
-      // Don't close the stream when we are done
-      int fd = stream.release();
+    // wait 100ms for additional diag output, so as to avoid
+    // potential offending write() during dup2() that might
+    // cause pty fd got stuck
+    /* sleep override */
+    usleep(100 * 1000);
+    fflush(stdout);
+    for (auto& fd2stream : fd2oldStreams_) {
       // Restore the old streams
-      dup2(stream, folly::File(fd));
+      dup2(fd2stream.second, folly::File(fd2stream.first));
+      XLOG(DBG2) << "Restore stream to standard std fd " << fd2stream.first;
     }
   } catch (const std::system_error& e) {
     XLOG(ERR) << "Failed to reset terminal parameters: " << e.what();
@@ -128,7 +132,7 @@ void DiagShellClientState::publishOutput(const std::string& output) {
 
 void DiagShellClientState::completeStream() {
   std::move(publisher_).complete();
-  XLOG(INFO) << "Completed Stream on " << clientAddrAndPort_;
+  XLOG(DBG2) << "Completed Stream on " << clientAddrAndPort_;
 }
 } // namespace detail
 
@@ -151,17 +155,23 @@ std::unique_ptr<Repl> DiagShell::makeRepl() const {
     case PlatformMode::FUJI:
     case PlatformMode::ELBERT:
     case PlatformMode::DARWIN:
-      return std::make_unique<SaiRepl>(hw_->getSwitchId());
+    case PlatformMode::MERU400BIU:
+    case PlatformMode::MERU400BIA:
+    case PlatformMode::MERU400BFU:
+    case PlatformMode::MONTBLANC:
+      return std::make_unique<SaiRepl>(hw_->getSaiSwitchId());
     case PlatformMode::WEDGE400C:
     case PlatformMode::WEDGE400C_SIM:
+    case PlatformMode::WEDGE400C_VOQ:
+    case PlatformMode::WEDGE400C_FABRIC:
     case PlatformMode::CLOUDRIPPER:
+    case PlatformMode::CLOUDRIPPER_VOQ:
+    case PlatformMode::CLOUDRIPPER_FABRIC:
     case PlatformMode::LASSEN:
     case PlatformMode::SANDIA:
       return std::make_unique<PythonRepl>(ptys_->file.fd());
     case PlatformMode::FAKE_WEDGE:
     case PlatformMode::FAKE_WEDGE40:
-    case PlatformMode::MAKALU:
-    case PlatformMode::KAMET:
       throw FbossError("Shell not supported for fake platforms");
   }
   CHECK(0) << " Should never get here";
@@ -174,6 +184,8 @@ void DiagShell::initTerminal() {
     repl_ = makeRepl();
     ts_.reset(new detail::TerminalSession(*ptys_, repl_->getStreams()));
     repl_->run();
+  } else if (!ts_) {
+    ts_.reset(new detail::TerminalSession(*ptys_, repl_->getStreams()));
   }
 }
 
@@ -201,6 +213,13 @@ bool DiagShell::tryConnect() {
 
 void DiagShell::disconnect() {
   try {
+    // TODO: look into restore stdin/stdout after session closed for PythonRepl.
+    // Currrently, the following sessions from diag_shell_client on tajo
+    // switches might got stuck if terminal session is reset.
+    if (hw_->getPlatform()->getAsic()->getAsicVendor() ==
+        HwAsic::AsicVendor::ASIC_VENDOR_BCM) {
+      ts_.reset();
+    }
     diagShellLock_.unlock();
   } catch (const std::system_error& ex) {
     XLOG(WARNING) << "Trying to disconnect when it was never connected";
@@ -281,7 +300,7 @@ std::string StreamingDiagShellServer::start(
 }
 
 void StreamingDiagShellServer::markResetPublisher() {
-  XLOG(INFO) << "Marked to reset diag shell client states";
+  XLOG(DBG2) << "Marked to reset diag shell client states";
   shouldResetPublisher_ = true;
 }
 
@@ -298,7 +317,7 @@ void StreamingDiagShellServer::consumeInput(
 }
 
 void StreamingDiagShellServer::resetPublisher() {
-  XLOG(INFO) << "Resetting diag shell client state";
+  XLOG(DBG2) << "Resetting diag shell client state";
   auto locked = publisher_.lock();
   if (!shouldResetPublisher_) {
     return;
@@ -313,7 +332,7 @@ void StreamingDiagShellServer::resetPublisher() {
   shouldResetPublisher_ = false;
   locked->reset();
   disconnect();
-  XLOG(INFO) << "Ready to accept new clients";
+  XLOG(DBG2) << "Ready to accept new clients";
 }
 
 // TODO: Log command output to Scuba
@@ -358,20 +377,24 @@ std::string DiagCmdServer::getDelimiterDiagCmd(const std::string& UUID) const {
     case PlatformMode::FUJI:
     case PlatformMode::ELBERT:
     case PlatformMode::DARWIN:
+    case PlatformMode::MERU400BIU:
+    case PlatformMode::MERU400BIA:
+    case PlatformMode::MERU400BFU:
+    case PlatformMode::MONTBLANC:
       return UUID + "\n";
     case PlatformMode::WEDGE400C:
     case PlatformMode::WEDGE400C_SIM:
+    case PlatformMode::WEDGE400C_VOQ:
+    case PlatformMode::WEDGE400C_FABRIC:
     case PlatformMode::CLOUDRIPPER:
+    case PlatformMode::CLOUDRIPPER_VOQ:
+    case PlatformMode::CLOUDRIPPER_FABRIC:
     case PlatformMode::LASSEN:
     case PlatformMode::SANDIA:
       return folly::to<std::string>("print('", UUID, "')\n");
     case PlatformMode::FAKE_WEDGE:
     case PlatformMode::FAKE_WEDGE40:
       throw FbossError("Shell not supported for fake platforms");
-    case PlatformMode::MAKALU:
-      throw FbossError("Shell not supported for Makalu platforms");
-    case PlatformMode::KAMET:
-      throw FbossError("Shell not supported for Kamet platforms");
   }
   CHECK(0) << " Should never get here";
   return "";
@@ -391,6 +414,10 @@ std::string& DiagCmdServer::cleanUpOutput(
     case PlatformMode::FUJI:
     case PlatformMode::ELBERT:
     case PlatformMode::DARWIN:
+    case PlatformMode::MERU400BIU:
+    case PlatformMode::MERU400BIA:
+    case PlatformMode::MERU400BFU:
+    case PlatformMode::MONTBLANC:
       // Clean up the back of the string
       if (!output.empty() && !input.empty()) {
         std::string shell = "drivshell>";
@@ -409,18 +436,18 @@ std::string& DiagCmdServer::cleanUpOutput(
       return output;
     case PlatformMode::WEDGE400C:
     case PlatformMode::WEDGE400C_SIM:
+    case PlatformMode::WEDGE400C_VOQ:
+    case PlatformMode::WEDGE400C_FABRIC:
     case PlatformMode::LASSEN:
     case PlatformMode::SANDIA:
       return output;
     case PlatformMode::CLOUDRIPPER:
+    case PlatformMode::CLOUDRIPPER_VOQ:
+    case PlatformMode::CLOUDRIPPER_FABRIC:
       throw FbossError("Shell not supported for cloud ripper platform");
     case PlatformMode::FAKE_WEDGE:
     case PlatformMode::FAKE_WEDGE40:
       throw FbossError("Shell not supported for fake platforms");
-    case PlatformMode::MAKALU:
-      throw FbossError("Shell not supported for Makalu platforms");
-    case PlatformMode::KAMET:
-      throw FbossError("Shell not supported for Kamet platforms");
   }
   CHECK(0) << " Should never get here";
   return output;

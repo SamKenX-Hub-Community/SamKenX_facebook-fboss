@@ -85,6 +85,8 @@ phy::VCOFrequency BcmPlatform::getVCOFrequency(
       FOLLY_FALLTHROUGH;
     case cfg::PortSpeed::FIFTYG:
       FOLLY_FALLTHROUGH;
+    case cfg::PortSpeed::FIFTYTHREEPOINTONETWOFIVEG:
+      FOLLY_FALLTHROUGH;
     case cfg::PortSpeed::TWENTYFIVEG:
       switch (fecMode) {
         case phy::FecMode::RS544:
@@ -97,6 +99,8 @@ phy::VCOFrequency BcmPlatform::getVCOFrequency(
           FOLLY_FALLTHROUGH;
         case phy::FecMode::CL91:
           FOLLY_FALLTHROUGH;
+        case phy::FecMode::RS545:
+          FOLLY_FALLTHROUGH;
         case phy::FecMode::RS528:
           return phy::VCOFrequency::VCO_25_78125GHZ;
       }
@@ -108,6 +112,7 @@ phy::VCOFrequency BcmPlatform::getVCOFrequency(
       return phy::VCOFrequency::VCO_20_625GHZ;
     case cfg::PortSpeed::GIGE:
       FOLLY_FALLTHROUGH;
+    case cfg::PortSpeed::EIGHTHUNDREDG:
     case cfg::PortSpeed::DEFAULT:
       return phy::VCOFrequency::UNKNOWN;
   }

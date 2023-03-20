@@ -8,14 +8,11 @@
  *
  */
 
-#include <fboss/agent/state/ArpResponseEntry.h>
-#include "fboss/agent/test/TestUtils.h"
-
 #include "fboss/agent/state/ArpEntry.h"
 #include "fboss/agent/state/NdpEntry.h"
-#include "fboss/agent/state/NeighborEntry.h"
-#include "fboss/agent/state/NeighborResponseTable.h"
 #include "fboss/agent/state/Vlan.h"
+
+#include "fboss/agent/test/TestUtils.h"
 
 #include <gtest/gtest.h>
 
@@ -30,10 +27,8 @@ using folly::MacAddress;
 
 template <typename NeighborEntryT>
 void serializeTest(const NeighborEntryT& entry) {
-  auto serialized = entry.toFollyDynamic();
-  auto entryBack = NeighborEntryT::fromFollyDynamic(serialized);
-
-  EXPECT_EQ(entry, *entryBack);
+  auto entryBack = NeighborEntryT(entry.toThrift());
+  EXPECT_EQ(entry.toThrift(), entryBack.toThrift());
 }
 
 TEST(ArpEntry, serialize) {
@@ -43,10 +38,10 @@ TEST(ArpEntry, serialize) {
       PortDescriptor(PortID(1)),
       InterfaceID(10),
       NeighborState::REACHABLE,
-      std::nullopt,
-      42,
+      std::optional<cfg::AclLookupClass>(std::nullopt),
+      std::optional<int64_t>(42),
       false);
-  validateThriftyMigration(*entry);
+  validateNodeSerialization(*entry);
   serializeTest(*entry);
 }
 
@@ -57,10 +52,10 @@ TEST(NdpEntry, serialize) {
       PortDescriptor(PortID(10)),
       InterfaceID(10),
       NeighborState::REACHABLE,
-      std::nullopt,
-      42,
+      std::optional<cfg::AclLookupClass>(std::nullopt),
+      std::optional<int64_t>(42),
       false);
-  validateThriftyMigration(*entry);
+  validateNodeSerialization(*entry);
   serializeTest(*entry);
 }
 
@@ -79,7 +74,6 @@ TEST(ArpTable, serialize) {
       InterfaceID(11),
       NeighborState::PENDING);
 
-  validateThriftyMigration(table);
   serializeTest(table);
 }
 
@@ -98,7 +92,6 @@ TEST(NdpTable, serialize) {
       InterfaceID(11),
       NeighborState::PENDING);
 
-  validateThriftyMigration(table);
   serializeTest(table);
 }
 
@@ -108,8 +101,8 @@ TEST(NeighborResponseEntry, serialize) {
       MacAddress("01:01:01:01:01:01"),
       InterfaceID(0));
 
-  auto serialized = entry->toFollyDynamic();
-  auto entryBack = ArpResponseEntry::fromFollyDynamic(serialized);
+  auto serialized = entry->toThrift();
+  auto entryBack = std::make_shared<ArpResponseEntry>(serialized);
 
   EXPECT_TRUE(*entry == *entryBack);
 }
@@ -120,7 +113,7 @@ TEST(NeighborResponseTableTest, modify) {
        mac2 = MacAddress("01:01:01:01:01:02");
 
   auto state = std::make_shared<SwitchState>();
-  auto vlan = std::make_shared<Vlan>(VlanID(2001), "vlan1");
+  auto vlan = std::make_shared<Vlan>(VlanID(2001), std::string("vlan1"));
   auto arpResponseTable = std::make_shared<ArpResponseTable>();
   arpResponseTable->setEntry(ip1, mac1, InterfaceID(0));
   vlan->setArpResponseTable(arpResponseTable);

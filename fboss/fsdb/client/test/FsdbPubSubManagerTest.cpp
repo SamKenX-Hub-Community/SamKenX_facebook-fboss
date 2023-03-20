@@ -1,18 +1,23 @@
 // (c) Facebook, Inc. and its affiliates. Confidential and proprietary.
 
+#include <gtest/gtest.h>
+
+#define FsdbPubSubManager_TEST_FRIENDS \
+  FRIEND_TEST(PubSubManagerTest, passEvbOrNot);
+
 #include "fboss/fsdb/client/FsdbPubSubManager.h"
-#include "fboss/fsdb/Flags.h"
+#include "fboss/fsdb/common/Flags.h"
 #include "fboss/lib/CommonUtils.h"
 
 #include <folly/experimental/coro/AsyncGenerator.h>
 #include <folly/experimental/coro/AsyncPipe.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/logging/xlog.h>
-#include <gtest/gtest.h>
+
 #include <algorithm>
 #include <atomic>
 
-namespace facebook::fboss::fsdb::test {
+namespace facebook::fboss::fsdb {
 void stateChangeCb(
     FsdbStreamClient::State /*old*/,
     FsdbStreamClient::State /*new*/) {}
@@ -110,14 +115,14 @@ TEST_F(PubSubManagerTest, addRemoveSubscriptions) {
   // Dup stat delta subscription should throw
   EXPECT_THROW(addStatDeltaSubscription({"foo"}), std::runtime_error);
   EXPECT_EQ(pubSubManager_.numSubscriptions(), 3);
-  pubSubManager_.removeStateDeltaSubscription({});
+  pubSubManager_.removeStateDeltaSubscription(std::vector<std::string>{});
   EXPECT_EQ(pubSubManager_.numSubscriptions(), 2);
   addStateDeltaSubscription({});
   // Same subscripton path, different host
   addStateDeltaSubscription({"foo"}, "::2");
   EXPECT_EQ(pubSubManager_.numSubscriptions(), 4);
   // remove non existent state subscription. No effect
-  pubSubManager_.removeStatePathSubscription({});
+  pubSubManager_.removeStatePathSubscription(std::vector<std::string>{});
   EXPECT_EQ(pubSubManager_.numSubscriptions(), 4);
 
   // Add state, stat subscription for same path, host as delta
@@ -133,4 +138,30 @@ TEST_F(PubSubManagerTest, addRemoveSubscriptions) {
   EXPECT_EQ(pubSubManager_.numSubscriptions(), 8);
 }
 
-} // namespace facebook::fboss::fsdb::test
+TEST_F(PubSubManagerTest, passEvbOrNot) {
+  // local thread manager
+  auto& localThreadManager = pubSubManager_;
+
+  // create manager with client evb pass through
+  auto externalThread = std::make_unique<folly::ScopedEventBaseThread>();
+  auto externalThreadManager = std::make_unique<FsdbPubSubManager>(
+      "externalThreadMgr",
+      externalThread->getEventBase(),
+      externalThread->getEventBase(),
+      externalThread->getEventBase(),
+      externalThread->getEventBase());
+
+  // external event base manager won't spawn local threads
+  EXPECT_EQ(externalThreadManager->reconnectEvbThread_, nullptr);
+  EXPECT_EQ(externalThreadManager->subscriberEvbThread_, nullptr);
+  EXPECT_EQ(externalThreadManager->statsPublisherStreamEvbThread_, nullptr);
+  EXPECT_EQ(externalThreadManager->statePublisherStreamEvbThread_, nullptr);
+
+  // local event base manager will have local threads
+  EXPECT_NE(localThreadManager.reconnectEvbThread_, nullptr);
+  EXPECT_NE(localThreadManager.subscriberEvbThread_, nullptr);
+  EXPECT_NE(localThreadManager.statsPublisherStreamEvbThread_, nullptr);
+  EXPECT_NE(localThreadManager.statePublisherStreamEvbThread_, nullptr);
+}
+
+} // namespace facebook::fboss::fsdb

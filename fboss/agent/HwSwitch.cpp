@@ -28,7 +28,10 @@ DEFINE_int32(
     60,
     "Update watermark stats interval in seconds");
 
-DEFINE_bool(enable_exact_match, false, "enable init of exact match table");
+DEFINE_bool(
+    flowletSwitchingEnable,
+    false,
+    "Flag to turn on flowlet switching for DLB");
 
 namespace facebook::fboss {
 
@@ -56,7 +59,7 @@ void HwSwitch::switchRunStateChanged(SwitchRunState newState) {
   if (runState_ != newState) {
     switchRunStateChangedImpl(newState);
     runState_ = newState;
-    XLOG(INFO) << " HwSwitch run state changed to: "
+    XLOG(DBG2) << " HwSwitch run state changed to: "
                << switchRunStateStr(runState_);
   }
 }
@@ -73,5 +76,13 @@ void HwSwitch::updateStats(SwitchStats* switchStats) {
 uint32_t HwSwitch::generateDeterministicSeed(LoadBalancerID loadBalancerID) {
   return generateDeterministicSeed(
       loadBalancerID, getPlatform()->getLocalMac());
+}
+
+void HwSwitch::gracefulExit(
+    folly::dynamic& follySwitchState,
+    state::WarmbootState& thriftSwitchState) {
+  if (getPlatform()->getAsic()->isSupported(HwAsic::Feature::WARMBOOT)) {
+    gracefulExitImpl(follySwitchState, thriftSwitchState);
+  }
 }
 } // namespace facebook::fboss

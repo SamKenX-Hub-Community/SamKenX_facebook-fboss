@@ -58,15 +58,15 @@ class HwProdInvariantsTest : public HwLinkStateDependentTest {
     // If we're passed a config, there's a high probability that it's a prod
     // config and the ports are not in loopback mode.
     for (auto& port : *config.ports()) {
-      port.loopbackMode() = cfg::PortLoopbackMode::MAC;
+      port.loopbackMode() = getAsic()->desiredLoopbackMode();
     }
 
     return config;
   }
 
   virtual cfg::SwitchConfig initConfigHelper() const {
-    auto cfg =
-        utility::onePortPerVlanConfig(getHwSwitch(), masterLogicalPortIds());
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
     utility::addProdFeaturesToConfig(cfg, getHwSwitch());
     return cfg;
   }
@@ -230,6 +230,7 @@ class HwProdInvariantsMmuLosslessTest : public HwProdInvariantsTest {
   void SetUp() override {
     FLAGS_mmu_lossless_mode = true;
     FLAGS_qgroup_guarantee_enable = true;
+    FLAGS_skip_buffer_reservation = true;
 
     HwLinkStateDependentTest::SetUp();
     prodInvariants_ = std::make_unique<HwProdRtswInvariantHelper>(
@@ -253,8 +254,7 @@ class HwProdInvariantsMmuLosslessTest : public HwProdInvariantsTest {
   }
 
   MacAddress dstMac() const {
-    return utility::getInterfaceMac(
-        getProgrammedState(), utility::firstVlanID(getProgrammedState()));
+    return utility::getFirstInterfaceMac(getProgrammedState());
   }
 
   void sendTrafficInLoop() {

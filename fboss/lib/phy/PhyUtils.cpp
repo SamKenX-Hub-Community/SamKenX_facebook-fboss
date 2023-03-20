@@ -13,12 +13,31 @@ bool isReedSolomonFec(phy::FecMode fec) {
     case phy::FecMode::RS528:
     case phy::FecMode::RS544:
     case phy::FecMode::RS544_2N:
+    case phy::FecMode::RS545:
       return true;
     case phy::FecMode::CL74:
     case phy::FecMode::NONE:
       return false;
   }
   return false;
+}
+
+uint8_t reedSolomonFecLanes(cfg::PortSpeed speed) {
+  switch (speed) {
+    case cfg::PortSpeed::TWENTYFIVEG:
+      return 1;
+    case cfg::PortSpeed::FIFTYG:
+    case cfg::PortSpeed::FIFTYTHREEPOINTONETWOFIVEG:
+      return 2;
+    case cfg::PortSpeed::HUNDREDG:
+      return 4;
+    case cfg::PortSpeed::TWOHUNDREDG:
+      return 8;
+    case cfg::PortSpeed::FOURHUNDREDG:
+      return 16;
+    default:
+      return 0;
+  }
 }
 
 double
@@ -63,6 +82,62 @@ void updateCorrectedBitsAndPreFECBer(
       *fecInfo.correctedBits() - *oldRsFecInfo.correctedBits();
   fecInfo.preFECBer() =
       utility::ber(correctedBitsDelta, speed, timeDeltaInSeconds);
+}
+
+void updateSignalDetectChangedCount(
+    int changedCount,
+    int lane,
+    phy::LaneInfo& curr,
+    phy::PmdInfo& prev) {
+  auto prevChangedCount = 0;
+  auto it = prev.lanes_ref()->find(lane);
+  if (it != prev.lanes_ref()->end()) {
+    prevChangedCount =
+        prev.lanes_ref()[lane].signalDetectChangedCount_ref().value_or(0);
+  }
+  curr.signalDetectChangedCount_ref() = changedCount + prevChangedCount;
+}
+
+void updateCdrLockChangedCount(
+    int changedCount,
+    int lane,
+    phy::LaneInfo& curr,
+    phy::PmdInfo& prev) {
+  auto prevChangedCount = 0;
+  auto it = prev.lanes_ref()->find(lane);
+  if (it != prev.lanes_ref()->end()) {
+    prevChangedCount =
+        prev.lanes_ref()[lane].cdrLockChangedCount_ref().value_or(0);
+  }
+  curr.cdrLockChangedCount_ref() = changedCount + prevChangedCount;
+}
+
+void updateSignalDetectChangedCount(
+    int changedCount,
+    int lane,
+    phy::LaneStats& curr,
+    phy::PmdStats& prev) {
+  auto prevChangedCount = 0;
+  auto it = prev.lanes_ref()->find(lane);
+  if (it != prev.lanes_ref()->end()) {
+    prevChangedCount =
+        prev.lanes_ref()[lane].signalDetectChangedCount_ref().value_or(0);
+  }
+  curr.signalDetectChangedCount_ref() = changedCount + prevChangedCount;
+}
+
+void updateCdrLockChangedCount(
+    int changedCount,
+    int lane,
+    phy::LaneStats& curr,
+    phy::PmdStats& prev) {
+  auto prevChangedCount = 0;
+  auto it = prev.lanes_ref()->find(lane);
+  if (it != prev.lanes_ref()->end()) {
+    prevChangedCount =
+        prev.lanes_ref()[lane].cdrLockChangedCount_ref().value_or(0);
+  }
+  curr.cdrLockChangedCount_ref() = changedCount + prevChangedCount;
 }
 
 } // namespace facebook::fboss::utility

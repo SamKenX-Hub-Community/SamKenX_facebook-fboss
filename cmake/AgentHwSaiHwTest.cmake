@@ -35,7 +35,21 @@ target_link_libraries(sai_switch_ensemble
   sai_traced_api
 )
 
+add_library(sai_phy_capabilities
+  fboss/agent/hw/sai/hw_test/PhyCapabilities.cpp
+)
+
+target_link_libraries(sai_phy_capabilities
+  sai_switch
+)
+
 set_target_properties(sai_switch_ensemble PROPERTIES COMPILE_FLAGS
+  "-DSAI_VER_MAJOR=${SAI_VER_MAJOR} \
+  -DSAI_VER_MINOR=${SAI_VER_MINOR}  \
+  -DSAI_VER_RELEASE=${SAI_VER_RELEASE}"
+)
+
+set_target_properties(sai_phy_capabilities PROPERTIES COMPILE_FLAGS
   "-DSAI_VER_MAJOR=${SAI_VER_MAJOR} \
   -DSAI_VER_MINOR=${SAI_VER_MINOR}  \
   -DSAI_VER_RELEASE=${SAI_VER_RELEASE}"
@@ -139,11 +153,13 @@ function(BUILD_SAI_TEST SAI_IMPL_NAME SAI_IMPL_ARG)
     fboss/agent/hw/sai/hw_test/HwTestAqmUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestCoppUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestEcmpUtils.cpp
+    fboss/agent/hw/sai/hw_test/HwTestFabricUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestNeighborUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestMirrorUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestMplsUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestPacketTrapEntry.cpp
     fboss/agent/hw/sai/hw_test/HwTestPtpTcUtils.cpp
+    fboss/agent/hw/sai/hw_test/HwTestTeFlowUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestTrunkUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestPortUtils.cpp
     fboss/agent/hw/sai/hw_test/HwTestQosUtils.cpp
@@ -164,6 +180,7 @@ function(BUILD_SAI_TEST SAI_IMPL_NAME SAI_IMPL_ARG)
     -Wl,--whole-archive
     ${SAI_IMPL_ARG}
     sai_switch_ensemble
+    sai_phy_capabilities
     hw_switch_test
     hw_test_main
     -Wl,--no-whole-archive
@@ -187,7 +204,12 @@ function(BUILD_SAI_TEST SAI_IMPL_NAME SAI_IMPL_ARG)
 
 endfunction()
 
+if(BUILD_SAI_FAKE)
 BUILD_SAI_TEST("fake" fake_sai)
+install(
+  TARGETS
+  sai_test-fake-${SAI_VER_SUFFIX})
+endif()
 
 # If libsai_impl is provided, build sai tests linking with it
 find_library(SAI_IMPL sai_impl)

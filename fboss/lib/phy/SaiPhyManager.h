@@ -82,7 +82,8 @@ class SaiPhyManager : public PhyManager {
   void programOnePort(
       PortID portId,
       cfg::PortProfileID portProfileId,
-      std::optional<TransceiverInfo> transceiverInfo) override;
+      std::optional<TransceiverInfo> transceiverInfo,
+      bool needResetDataPath) override;
 
   template <typename platformT, typename xphychipT>
   void initializeSlotPhysImpl(PimID pimID);
@@ -90,7 +91,6 @@ class SaiPhyManager : public PhyManager {
   PortOperState macsecGetPhyLinkInfo(PortID swPort);
   phy::PhyInfo getPhyInfo(PortID swPort) override;
   void updateAllXphyPortsStats() override;
-  std::string getSaiPortInfo(PortID swPort);
 
   bool getSdkState(const std::string& fileName) override;
 
@@ -98,6 +98,39 @@ class SaiPhyManager : public PhyManager {
       const std::vector<std::string>& portList,
       bool macsecDesired,
       bool dropUnencrypted) override;
+
+  void setPortPrbs(
+      PortID portID,
+      phy::Side side,
+      const phy::PortPrbsState& prbs) override;
+
+  phy::PortPrbsState getPortPrbs(PortID portID, phy::Side side) override;
+
+  std::vector<phy::PrbsLaneStats> getPortPrbsStats(
+      PortID portID,
+      phy::Side side) override;
+
+  void setPortLoopbackState(
+      PortID swPort,
+      phy::PortComponent component,
+      bool setLoopback) override {
+    setSaiPortLoopbackState(swPort, component, setLoopback);
+  }
+
+  void setPortAdminState(
+      PortID swPort,
+      phy::PortComponent component,
+      bool setAdminUp) override {
+    setSaiPortAdminState(swPort, component, setAdminUp);
+  }
+
+  std::string getPortInfoStr(PortID swPort) override {
+    return getSaiPortInfo(swPort);
+  }
+
+  void xphyPortStateToggle(PortID swPort, phy::Side side);
+
+  void gracefulExit() override;
 
  protected:
   void addSaiPlatform(
@@ -167,6 +200,24 @@ class SaiPhyManager : public PhyManager {
   std::unique_ptr<ExternalPhyPortStatsUtils> createExternalPhyPortStats(
       PortID portID) override;
 
+  virtual bool isPortCreateAllowed(
+      GlobalXphyID /* globalXphyId */,
+      const phy::PhyPortConfig& /* portCfg */) {
+    return true;
+  }
+
+  void setSaiPortLoopbackState(
+      PortID swPort,
+      phy::PortComponent component,
+      bool setLoopback);
+
+  void setSaiPortAdminState(
+      PortID swPort,
+      phy::PortComponent component,
+      bool setAdminUp);
+
+  std::string getSaiPortInfo(PortID swPort);
+
   // Due to SaiPhyManager usually has more than one phy, and each phy has its
   // own SaiHwPlatform, which needs a local mac address. As local mac address
   // will be the same mac address for the running system, all these phys and
@@ -195,18 +246,20 @@ void SaiPhyManager::initializeSlotPhysImpl(PimID pimID) {
       auto credoF104 = static_cast<xphychipT*>(getExternalPhy(phy.first));
       // Set CredoF104's customized switch attributes before calling init
       saiPlatform->setSwitchAttributes(credoF104->getSwitchAttributes());
+      cfg::AgentConfig config;
+      config.sw()->switchSettings()->switchType() = cfg::SwitchType::PHY;
       saiPlatform->init(
-          nullptr /* No AgentConfig needed */,
+          std::make_unique<AgentConfig>(config, ""),
           0 /* No switch featured needed */);
 
       // Now call HwSwitch to create the switch object in hardware
       auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
       saiSwitch->init(credoF104, true /* failHwCallsOnWarmboot */);
-      credoF104->setSwitchId(saiSwitch->getSwitchId());
+      credoF104->setSwitchId(saiSwitch->getSaiSwitchId());
       credoF104->dump();
       XLOG(DBG2)
           << "Finished initializing phy of global phyId:" << phy.first
-          << ", switchId:" << saiSwitch->getSwitchId() << " took "
+          << ", switchId:" << saiSwitch->getSaiSwitchId() << " took "
           << duration_cast<milliseconds>(steady_clock::now() - begin).count()
           << "ms";
     }

@@ -3,7 +3,6 @@
 #include <gflags/gflags.h>
 #include <chrono>
 
-#include "fboss/agent/platforms/wedge/WedgePlatformInit.h"
 #include "fboss/agent/test/soak_tests/SoakTest.h"
 
 DEFINE_int32(soak_loops, -1, "Number of soak test loops to run");
@@ -40,10 +39,10 @@ uint64_t SoakTest::SoakTimeStrToSeconds(std::string timeStr) {
 bool SoakTest::RunLoops(SoakLoopArgs* args) {
   uint64_t SoakTimeSec;
   if (FLAGS_soak_loops > 0) {
-    XLOG(INFO) << " SoakTest::RunLoops: will run for " << FLAGS_soak_loops
+    XLOG(DBG2) << " SoakTest::RunLoops: will run for " << FLAGS_soak_loops
                << " loops.";
   } else {
-    XLOG(INFO) << " SoakTest::RunLoops: will run for " << FLAGS_soak_time
+    XLOG(DBG2) << " SoakTest::RunLoops: will run for " << FLAGS_soak_time
                << ".";
     SoakTimeSec = SoakTimeStrToSeconds(FLAGS_soak_time);
   }
@@ -71,14 +70,14 @@ bool SoakTest::RunLoops(SoakLoopArgs* args) {
       }
     }
 
-    XLOG(INFO) << " SoakTest::RunLoops: loopIdx = " << loopIdx;
+    XLOG(DBG2) << " SoakTest::RunLoops: loopIdx = " << loopIdx;
     ret = RunOneLoop(args);
   }
 
   timeCurr = std::chrono::system_clock::now();
   secPassed = std::chrono::duration_cast<seconds>(timeCurr - timeStart);
 
-  XLOG(INFO) << " SoakTest::RunLoops: Done " << loopIdx << " loops, in "
+  XLOG(DBG2) << " SoakTest::RunLoops: Done " << loopIdx << " loops, in "
              << secPassed.count() << " seconds.";
 
   return ret;

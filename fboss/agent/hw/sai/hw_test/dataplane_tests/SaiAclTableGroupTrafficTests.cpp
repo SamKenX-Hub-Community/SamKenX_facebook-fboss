@@ -33,8 +33,10 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
         getProgrammedState(), RouterID(0));
   }
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::onePortPerVlanConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC);
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode());
 
     utility::addAclTableGroup(
         &cfg, cfg::AclStage::INGRESS, utility::getAclTableGroupName());
@@ -166,6 +168,7 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
             neighborMac,
             PortDescriptor(masterLogicalPortIds()[0]),
             kIntfID,
+            NeighborState::REACHABLE,
             classID);
 
       } else {
@@ -173,7 +176,8 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
             ip,
             neighborMac,
             PortDescriptor(masterLogicalPortIds()[0]),
-            kIntfID);
+            kIntfID,
+            NeighborState::REACHABLE);
       }
     }
 
@@ -293,7 +297,7 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
      */
     for (auto [qid, beforePkts] : beforeQueueOutPkts) {
       auto pktsOnQueue = afterQueueOutPkts[qid] - beforePkts;
-      XLOG(INFO) << "TestType: " << testType << " Pkts on queue : " << qid
+      XLOG(DBG2) << "TestType: " << testType << " Pkts on queue : " << qid
                  << " pkts: " << pktsOnQueue;
       if (qid == 0) {
         EXPECT_GE(pktsOnQueue, 1);
@@ -327,10 +331,28 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
   }
 
   void verifyMultipleAclTablesHelper(bool frontPanel) {
-    ASSERT_TRUE(HwTest::isSupported(HwAsic::Feature::MULTIPLE_ACL_TABLES));
+    bool multipleAclTableSupport =
+        HwTest::isSupported(HwAsic::Feature::MULTIPLE_ACL_TABLES);
+#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+    multipleAclTableSupport = false;
+#endif
+    ASSERT_TRUE(multipleAclTableSupport);
 
     auto setup = [this]() {
+      /*
+       * Tajo Asic needs a key profile to be set which is supposed to be a
+       * superset of all the qualifiers/action types of all the tables. If key
+       * profile is absent, the first table's attributes will be taken as the
+       * key profile. Hence, the first table is always set with the superset of
+       * qualifiers. addTtlQualifier is used in Tajo SDK versions which support
+       * Multi ACL table to add the superset of qualifiers/action types in first
+       * table
+       */
+      bool addTtlQualifier = false;
       resolveNeigborAndProgramRoutes(*helper_, kEcmpWidth);
+#if defined(TAJO_SDK_VERSION_1_58_0) || defined(TAJO_SDK_VERSION_1_62_0)
+      addTtlQualifier = true;
+#endif
 
       auto state1 = addResolvedNeighborWithClassID<folly::IPAddressV4>(
           this->getProgrammedState());
@@ -340,7 +362,8 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
       if (isSupported()) {
         auto newCfg{initialConfig()};
         utility::addQueuePerHostQueueConfig(&newCfg);
-        utility::addQueuePerHostAclTables(&newCfg, 1 /*priority*/);
+        utility::addQueuePerHostAclTables(
+            &newCfg, 1 /*priority*/, addTtlQualifier);
         utility::addTtlAclTable(&newCfg, 2 /*priority*/);
         applyNewConfig(newCfg);
       }
@@ -404,11 +427,11 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
     sendAllPacketshelper<AddrT>(dstIP, frontPanel, utility::kIcpDscp());
     auto [afterDscpAclPkts, afterTtlAclPkts] = pktCounterHelper();
 
-    XLOG(INFO) << "TestType: " << testType;
-    XLOG(INFO) << "Before ICP pkts: " << beforeDscpAclPkts
+    XLOG(DBG2) << "TestType: " << testType;
+    XLOG(DBG2) << "Before ICP pkts: " << beforeDscpAclPkts
                << " Intermediate ICP pkts: " << intermediateDscpAclPkts
                << " After ICP pkts: " << afterDscpAclPkts;
-    XLOG(INFO) << "Before Ttl pkts: " << beforeTtlAclPkts
+    XLOG(DBG2) << "Before Ttl pkts: " << beforeTtlAclPkts
                << " Intermediate Ttl pkts: " << intermediateTtlAclPkts
                << " After Ttl pkts: " << afterTtlAclPkts;
 
@@ -453,10 +476,23 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
   }
 
   void verifyDscpTtlAclTablesHelper(bool frontPanel) {
-    ASSERT_TRUE(HwTest::isSupported(HwAsic::Feature::MULTIPLE_ACL_TABLES));
+    bool multipleAclTableSupport =
+        HwTest::isSupported(HwAsic::Feature::MULTIPLE_ACL_TABLES);
+#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+    multipleAclTableSupport = false;
+#endif
+    ASSERT_TRUE(multipleAclTableSupport);
 
     auto setup = [this]() {
+      /*
+       * Refer to the detailed comment in setup of verifyMultipleAclTablesHelper
+       * for the reason behind this flag
+       */
+      bool addTtlQualifier = false;
       resolveNeigborAndProgramRoutes(*helper_, kEcmpWidth);
+#if defined(TAJO_SDK_VERSION_1_58_0) || defined(TAJO_SDK_VERSION_1_62_0)
+      addTtlQualifier = true;
+#endif
 
       auto state1 = addResolvedNeighborWithClassID<folly::IPAddressV4>(
           this->getProgrammedState());
@@ -466,7 +502,7 @@ class SaiAclTableGroupTrafficTest : public HwLinkStateDependentTest {
       if (isSupported()) {
         auto newCfg{initialConfig()};
         utility::addOlympicQosMaps(newCfg);
-        utility::addDscpAclTable(&newCfg, 1 /*priority*/);
+        utility::addDscpAclTable(&newCfg, 1 /*priority*/, addTtlQualifier);
         utility::addTtlAclTable(&newCfg, 2);
         applyNewConfig(newCfg);
       }

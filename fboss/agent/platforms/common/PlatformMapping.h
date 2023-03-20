@@ -14,6 +14,8 @@
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
 #include "fboss/qsfp_service/if/gen-cpp2/transceiver_types.h"
 
+DECLARE_string(platform_mapping_override_path);
+
 namespace facebook {
 namespace fboss {
 
@@ -71,6 +73,7 @@ class PlatformMapping {
  public:
   PlatformMapping() {}
   explicit PlatformMapping(const std::string& jsonPlatformMappingStr);
+  explicit PlatformMapping(const cfg::PlatformMapping& mapping);
   virtual ~PlatformMapping() = default;
 
   cfg::PlatformMapping toThrift() const;
@@ -141,6 +144,9 @@ class PlatformMapping {
       std::optional<cfg::PlatformPortConfigOverrideFactor>& /* factor */)
       const {}
 
+  std::map<phy::DataPlanePhyChip, std::vector<phy::PinConfig>>
+  getCorePinMapping(const std::vector<cfg::Port>& ports) const;
+
  protected:
   std::map<int32_t, cfg::PlatformPortEntry> platformPorts_;
   std::vector<cfg::PlatformPortProfileConfigEntry> platformSupportedProfiles_;
@@ -152,6 +158,7 @@ class PlatformMapping {
       cfg::PortProfileID profileID) const;
 
  private:
+  void init(const cfg::PlatformMapping& mapping);
   // Forbidden copy constructor and assignment operator
   PlatformMapping(PlatformMapping const&) = delete;
   PlatformMapping& operator=(PlatformMapping const&) = delete;

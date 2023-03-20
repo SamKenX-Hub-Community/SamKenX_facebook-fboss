@@ -27,24 +27,19 @@
 // Coroutine BlockWait headerfile
 #include <folly/experimental/coro/BlockingWait.h>
 
-// Includes for using raw thriftclient
-#include <folly/SocketAddress.h>
-#include <folly/Subprocess.h>
-#include <folly/futures/Future.h>
-#include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/EventBase.h>
-#include <folly/io/async/SSLContext.h>
 #include <folly/system/Shell.h>
-#include <thrift/lib/cpp2/async/HeaderClientChannel.h>
-#include "fboss/lib/thrift_service_client/ThriftServiceClient.h"
 #include "fboss/platform/fan_service/HelperFunction.h"
 
-int runShellCmd(const std::string& cmd);
+#include "fboss/fsdb/client/FsdbPubSubManager.h"
+#include "fboss/platform/fan_service/FsdbSensorSubscriber.h"
+#include "fboss/platform/sensor_service/if/gen-cpp2/sensor_service_types.h"
 
 namespace facebook::fboss::platform {
 
 class Bsp {
  public:
+  Bsp();
   virtual ~Bsp();
   // getSensorData: Get sensor data from either cache or direct access
   virtual void getSensorData(
@@ -72,6 +67,13 @@ class Bsp {
   virtual float readSysfs(std::string path) const;
   virtual bool initializeQsfpService();
   static apache::thrift::RpcOptions getRpcOptions();
+
+  FsdbSensorSubscriber* fsdbSensorSubscriber() {
+    return fsdbSensorSubscriber_.get();
+  }
+  void getSensorDataThrift(
+      std::shared_ptr<ServiceConfig> pServiceConfig,
+      std::shared_ptr<SensorData> pSensorData);
 
  protected:
   // replaceAllString : String replace helper function
@@ -114,9 +116,6 @@ class Bsp {
 
   // Private Methods
   // Various handlers to fetch sensor data from Thrift / Utility / Rest / Sysfs
-  void getSensorDataThrift(
-      std::shared_ptr<ServiceConfig> pServiceConfig,
-      std::shared_ptr<SensorData> pSensorData);
   void getSensorDataThriftWithSensorList(
       std::shared_ptr<ServiceConfig> pServiceConfig,
       std::shared_ptr<SensorData> pSensorData,
@@ -138,5 +137,11 @@ class Bsp {
       uint64_t& currentQsfpSvcTimestamp,
       const std::map<int32_t, TransceiverInfo>& cacheTable,
       OpticEntry* opticData);
+
+  std::unique_ptr<FsdbSensorSubscriber> fsdbSensorSubscriber_;
+  std::unique_ptr<fsdb::FsdbPubSubManager> fsdbPubSubMgr_;
+  folly::Synchronized<
+      std::map<std::string, fboss::platform::sensor_service::SensorData>>
+      subscribedSensorData;
 };
 } // namespace facebook::fboss::platform

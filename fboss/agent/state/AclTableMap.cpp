@@ -11,8 +11,12 @@
 #include "fboss/agent/state/AclMap.h"
 
 #include "fboss/agent/state/NodeMap-defs.h"
-#include "fboss/agent/state/NodeMapDelta-defs.h"
+
 #include "fboss/agent/state/SwitchState.h"
+
+namespace {
+constexpr auto kAclTable1 = "AclTable1";
+}
 
 namespace facebook::fboss {
 
@@ -20,6 +24,24 @@ AclTableMap::AclTableMap() {}
 
 AclTableMap::~AclTableMap() {}
 
-FBOSS_INSTANTIATE_NODE_MAP(AclTableMap, AclTableMapTraits);
+std::shared_ptr<AclTableMap> AclTableMap::createDefaultAclTableMapFromThrift(
+    std::map<std::string, state::AclEntryFields> const& thriftMap) {
+  auto aclTableMap = std::make_shared<AclTableMap>();
+  aclTableMap->addNode(AclTable::createDefaultAclTableFromThrift(thriftMap));
+  return aclTableMap;
+}
+
+std::shared_ptr<AclMap> AclTableMap::getDefaultAclTableMap(
+    std::map<std::string, state::AclTableFields> const& thriftMap) {
+  if (thriftMap.find(kAclTable1) != thriftMap.end()) {
+    auto aclTable = thriftMap.at(kAclTable1);
+    return AclTable::getDefaultAclTable(aclTable);
+  } else {
+    XLOG(ERR) << "AclTableMap missing from warmboot state file";
+    return nullptr;
+  }
+}
+
+template class ThriftMapNode<AclTableMap, AclTableMapTraits>;
 
 } // namespace facebook::fboss

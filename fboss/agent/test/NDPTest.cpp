@@ -66,7 +66,8 @@ const int kSubportCount = 2;
 cfg::SwitchConfig createSwitchConfig(
     seconds raInterval,
     seconds ndpTimeout,
-    bool createAggPort = false) {
+    bool createAggPort = false,
+    std::optional<std::string> routerAddress = std::nullopt) {
   // Create a thrift config to use
   cfg::SwitchConfig config;
   config.vlans()->resize(2);
@@ -100,15 +101,19 @@ cfg::SwitchConfig createSwitchConfig(
   *config.interfaces()[0].vlanID() = 5;
   config.interfaces()[0].name() = "PrimaryInterface";
   config.interfaces()[0].mtu() = 9000;
-  config.interfaces()[0].ipAddresses()->resize(5);
+  config.interfaces()[0].ipAddresses()->resize(6);
   config.interfaces()[0].ipAddresses()[0] = "10.164.4.10/24";
   config.interfaces()[0].ipAddresses()[1] = "10.164.4.1/24";
   config.interfaces()[0].ipAddresses()[2] = "10.164.4.2/24";
   config.interfaces()[0].ipAddresses()[3] = "2401:db00:2110:3004::/64";
   config.interfaces()[0].ipAddresses()[4] = "2401:db00:2110:3004::000a/64";
+  config.interfaces()[0].ipAddresses()[5] = "fe80::face:b00c/64";
   config.interfaces()[0].ndp() = cfg::NdpConfig();
   *config.interfaces()[0].ndp()->routerAdvertisementSeconds() =
       raInterval.count();
+  if (routerAddress) {
+    config.interfaces()[0].ndp()->routerAddress() = *routerAddress;
+  }
   *config.interfaces()[1].intfID() = 4321;
   *config.interfaces()[1].vlanID() = 1;
   config.interfaces()[1].name() = "DefaultHWInterface";
@@ -420,8 +425,10 @@ class NdpTest : public ::testing::Test {
  public:
   unique_ptr<HwTestHandle> setupTestHandle(
       seconds raInterval = seconds(0),
-      seconds ndpInterval = seconds(0)) {
-    auto config = createSwitchConfig(raInterval, ndpInterval);
+      seconds ndpInterval = seconds(0),
+      std::optional<std::string> routerAddress = std::nullopt) {
+    auto config =
+        createSwitchConfig(raInterval, ndpInterval, false, routerAddress);
 
     *config.maxNeighborProbes() = 1;
     *config.staleEntryInterval() = 1;
@@ -457,6 +464,7 @@ class NdpTest : public ::testing::Test {
   }
 
  protected:
+  void validateRouterAdv(std::optional<std::string> configuredRouterIp);
   SwSwitch* sw_;
 };
 
@@ -655,9 +663,13 @@ TEST_F(NdpTest, TriggerSolicitation) {
       sw, IPAddressV6("2401:db00:2110:3004::2"), VlanID(5));
 }
 
-TEST_F(NdpTest, RouterAdvertisement) {
+void NdpTest::validateRouterAdv(std::optional<std::string> configuredRouterIp) {
   seconds raInterval(1);
-  auto config = createSwitchConfig(raInterval, seconds(0));
+  auto config =
+      createSwitchConfig(raInterval, seconds(0), false, configuredRouterIp);
+  auto routerAdvSrcIp = configuredRouterIp
+      ? folly::IPAddressV6(*configuredRouterIp)
+      : MockPlatform::getMockLinkLocalIp6();
   // Add an interface with a /128 mask, to make sure it isn't included
   // in the generated RA packets.
   config.interfaces()[0].ipAddresses()->push_back(
@@ -673,19 +685,6 @@ TEST_F(NdpTest, RouterAdvertisement) {
       {IPAddressV6("fe80::"), 64},
   };
   CounterCache counters(sw);
-  // Multicast router advertisement use switched api
-  EXPECT_SWITCHED_PKT(
-      sw,
-      "router advertisement",
-      checkRouterAdvert(
-          MockPlatform::getMockLocalMac(),
-          MockPlatform::getMockLinkLocalIp6(),
-          MacAddress("33:33:00:00:00:01"),
-          IPAddressV6("ff02::1"),
-          VlanID(5),
-          intfConfig->getNdpConfig(),
-          9000,
-          expectedPrefixes));
 
   // Send the router solicitation packet
   EXPECT_OUT_OF_PORT_PKT(
@@ -693,11 +692,11 @@ TEST_F(NdpTest, RouterAdvertisement) {
       "router advertisement",
       checkRouterAdvert(
           MockPlatform::getMockLocalMac(),
-          MockPlatform::getMockLinkLocalIp6(),
+          routerAdvSrcIp,
           MacAddress("02:05:73:f9:46:fc"),
           IPAddressV6("2401:db00:2110:1234::1:0"),
           VlanID(5),
-          intfConfig->getNdpConfig(),
+          intfConfig->getNdpConfig()->toThrift(),
           9000,
           expectedPrefixes),
       PortID(1),
@@ -739,11 +738,11 @@ TEST_F(NdpTest, RouterAdvertisement) {
       "router advertisement",
       checkRouterAdvert(
           MockPlatform::getMockLocalMac(),
-          MockPlatform::getMockLinkLocalIp6(),
+          routerAdvSrcIp,
           MacAddress("02:ab:73:f9:46:fc"),
           IPAddressV6("2401:db00:2110:1234::1:0"),
           VlanID(5),
-          intfConfig->getNdpConfig(),
+          intfConfig->getNdpConfig()->toThrift(),
           9000,
           expectedPrefixes),
       PortID(1),
@@ -784,28 +783,44 @@ TEST_F(NdpTest, RouterAdvertisement) {
   // interval.  Schedule a timeout to wake us up after the interval has
   // expired.  Using the background EventBase to run the timeout ensures that
   // it will always run after the RA timeout has fired.
-  std::promise<bool> done;
-  auto* evb = sw->getBackgroundEvb();
-  evb->runInEventBaseThread(
-      [&]() { evb->tryRunAfterDelay([&]() { done.set_value(true); }, 1010); });
-  done.get_future().wait();
-  // We send RA packets just before switch controller shutdown,
+  // We also send RA packets just before switch controller shutdown,
   // so expect RA packet.
+
   // Multicast router advertisement use switched api
-  EXPECT_SWITCHED_PKT(
+  EXPECT_MANY_SWITCHED_PKTS(
       sw,
       "router advertisement",
       checkRouterAdvert(
           MockPlatform::getMockLocalMac(),
-          MockPlatform::getMockLinkLocalIp6(),
+          routerAdvSrcIp,
           MacAddress("33:33:00:00:00:01"),
           IPAddressV6("ff02::1"),
           VlanID(5),
-          intfConfig->getNdpConfig(),
+          intfConfig->getNdpConfig()->toThrift(),
           9000,
           expectedPrefixes));
+  std::promise<bool> done;
+  auto* evb = sw->getBackgroundEvb();
+  evb->runInEventBaseThread([&]() {
+    evb->tryRunAfterDelay([&]() { done.set_value(true); }, 1010 /*ms*/);
+  });
+  done.get_future().wait();
   counters.update();
   EXPECT_GT(counters.value("PrimaryInterface.router_advertisements.sum"), 0);
+}
+
+TEST_F(NdpTest, RouterAdvertisement) {
+  validateRouterAdv(std::nullopt);
+}
+
+TEST_F(NdpTest, BrokenRouterAdvConfig) {
+  seconds raInterval(1);
+  auto config = createSwitchConfig(raInterval, seconds(0), false, "2::2");
+  EXPECT_THROW(createTestHandle(&config), FbossError);
+}
+
+TEST_F(NdpTest, RouterAdvConfigWithRouterAddress) {
+  validateRouterAdv("fe80::face:b00c");
 }
 
 TEST_F(NdpTest, receiveNeighborAdvertisementUnsolicited) {

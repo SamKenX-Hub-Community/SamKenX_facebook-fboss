@@ -279,17 +279,23 @@ class BcmPort {
       folly::StringPiece statName,
       bcm_stat_val_t type,
       int64_t* portStatVal);
+  void updateMultiStat(
+      std::chrono::seconds now,
+      std::vector<folly::StringPiece> statKeys,
+      bcm_stat_val_t* types,
+      std::vector<int64_t*> portStatVals,
+      uint8_t statsCount);
   void updateFecStats(std::chrono::seconds now, HwPortStats& curPortStats);
   void removePortStat(folly::StringPiece statKey);
   void removePortPfcStatsLocked(
       const BcmPort::PortStatsWLockedPtr& lockedPortStatsPtr,
       const std::shared_ptr<Port>& swPort,
-      std::optional<std::vector<PfcPriority>> priorities);
+      Port::PfcPriorityList priorities);
   void reinitPortPfcStats(const std::shared_ptr<Port>& swPort);
   void updatePortPfcStats(
       std::chrono::seconds now,
       HwPortStats& curPortStats,
-      std::optional<std::vector<PfcPriority>> pfcPriorities);
+      Port::PfcPriorityList pfcPriorities);
   std::string getPfcPriorityStatsKey(
       folly::StringPiece statKey,
       PfcPriority priority);

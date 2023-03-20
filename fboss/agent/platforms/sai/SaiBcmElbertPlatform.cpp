@@ -17,14 +17,20 @@ namespace facebook::fboss {
 
 SaiBcmElbertPlatform::SaiBcmElbertPlatform(
     std::unique_ptr<PlatformProductInfo> productInfo,
-    folly::MacAddress localMac)
+    folly::MacAddress localMac,
+    const std::string& platformMappingStr)
     : SaiBcmPlatform(
           std::move(productInfo),
-          std::make_unique<ElbertPlatformMapping>(),
-          localMac) {
-  asic_ = std::make_unique<Tomahawk4Asic>();
-}
+          std::make_unique<ElbertPlatformMapping>(platformMappingStr),
+          localMac) {}
 
+void SaiBcmElbertPlatform::setupAsic(
+    cfg::SwitchType switchType,
+    std::optional<int64_t> switchId,
+    std::optional<cfg::Range64> systemPortRange) {
+  asic_ =
+      std::make_unique<Tomahawk4Asic>(switchType, switchId, systemPortRange);
+}
 HwAsic* SaiBcmElbertPlatform::getAsic() const {
   return asic_.get();
 }

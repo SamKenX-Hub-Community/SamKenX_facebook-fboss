@@ -26,6 +26,7 @@ class SaiWedge400CPlatformPort : public SaiTajoPlatformPort {
       std::shared_ptr<Port> /*oldPort*/) override {}
 
  private:
+  std::pair<int32_t, int32_t> getFirstLaneAndChip() const;
   FbDomFpga::LedColor getLedState(bool up, bool adminUp) const;
   void setLedStatus(FbDomFpga::LedColor state) const;
   FbDomFpga::LedColor currentLedState_;

@@ -12,7 +12,6 @@
 
 #include "fboss/agent/ArpHandler.h"
 #include "fboss/agent/FbossHwUpdateError.h"
-#include "fboss/agent/Main.h"
 #include "fboss/agent/NeighborUpdater.h"
 #include "fboss/agent/PortStats.h"
 #include "fboss/agent/SwitchStats.h"
@@ -106,7 +105,8 @@ TEST_F(SwSwitchTest, TestStateNonCoalescing) {
   auto verifyReachableCnt = [kVlan1, this](int expectedReachableNbrCnt) {
     auto getReachableCount = [](auto nbrTable) {
       auto reachableCnt = 0;
-      for (const auto entry : *nbrTable) {
+      for (auto iter : std::as_const(*nbrTable)) {
+        auto entry = iter.second;
         if (entry->getState() == NeighborState::REACHABLE) {
           ++reachableCnt;
         }
@@ -172,7 +172,7 @@ TEST_F(SwSwitchTest, VerifyIsValidStateUpdate) {
   auto stateV1 = stateV0->clone();
   auto aclMap1 = stateV1->getAcls()->modify(&stateV1);
 
-  auto aclEntry0 = std::make_shared<AclEntry>(0, "acl0");
+  auto aclEntry0 = std::make_shared<AclEntry>(0, std::string("acl0"));
   aclEntry0->setDscp(0x24);
   aclMap1->addNode(aclEntry0);
 
@@ -184,7 +184,7 @@ TEST_F(SwSwitchTest, VerifyIsValidStateUpdate) {
   auto stateV2 = stateV0->clone();
   auto aclMap2 = stateV2->getAcls()->modify(&stateV2);
 
-  auto aclEntry1 = std::make_shared<AclEntry>(0, "acl1");
+  auto aclEntry1 = std::make_shared<AclEntry>(0, std::string("acl1"));
   aclMap2->addNode(aclEntry1);
 
   stateV2->publish();
@@ -194,8 +194,10 @@ TEST_F(SwSwitchTest, VerifyIsValidStateUpdate) {
   // PortQueue with valid WRED probability
   auto stateV3 = stateV0->clone();
   auto portMap0 = stateV3->getPorts()->modify(&stateV3);
-
-  auto port0 = std::make_shared<Port>(PortID(0), "port0");
+  state::PortFields portFields0;
+  portFields0.portId() = PortID(0);
+  portFields0.portName() = "port0";
+  auto port0 = std::make_shared<Port>(std::move(portFields0));
   auto portQueue0 = std::make_shared<PortQueue>(static_cast<uint8_t>(0));
   cfg::ActiveQueueManagement aqm0;
   cfg::LinearQueueCongestionDetection lqcd0;
@@ -205,7 +207,8 @@ TEST_F(SwSwitchTest, VerifyIsValidStateUpdate) {
   aqm0.detection()->linear_ref() = lqcd0;
   aqm0.behavior() = cfg::QueueCongestionBehavior::EARLY_DROP;
   portQueue0->resetAqms({aqm0});
-  port0->resetPortQueues({portQueue0});
+  std::vector<std::shared_ptr<PortQueue>> portQueues = {portQueue0};
+  port0->resetPortQueues(portQueues);
   portMap0->addPort(port0);
 
   stateV3->publish();
@@ -215,8 +218,10 @@ TEST_F(SwSwitchTest, VerifyIsValidStateUpdate) {
   // PortQueue with invalid ECN probability
   auto stateV4 = stateV0->clone();
   auto portMap1 = stateV4->getPorts()->modify(&stateV4);
-
-  auto port1 = std::make_shared<Port>(PortID(1), "port1");
+  state::PortFields portFields1;
+  portFields1.portId() = PortID(1);
+  portFields1.portName() = "port1";
+  auto port1 = std::make_shared<Port>(std::move(portFields1));
   auto portQueue1 = std::make_shared<PortQueue>(static_cast<uint8_t>(1));
   cfg::ActiveQueueManagement aqm1;
   cfg::LinearQueueCongestionDetection lqcd1;
@@ -226,7 +231,8 @@ TEST_F(SwSwitchTest, VerifyIsValidStateUpdate) {
   aqm1.detection()->linear_ref() = lqcd1;
   aqm1.behavior() = cfg::QueueCongestionBehavior::ECN;
   portQueue1->resetAqms({aqm1});
-  port1->resetPortQueues({portQueue1});
+  portQueues = {portQueue1};
+  port1->resetPortQueues(portQueues);
   portMap1->addPort(port1);
 
   stateV4->publish();

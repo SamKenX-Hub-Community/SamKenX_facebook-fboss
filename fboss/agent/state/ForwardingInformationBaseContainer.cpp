@@ -21,98 +21,24 @@ constexpr auto kVrf{"vrf"};
 
 namespace facebook::fboss {
 
-ForwardingInformationBaseContainerFields::
-    ForwardingInformationBaseContainerFields(RouterID vrf)
-    : vrf(vrf) {
-  fibV4 = std::make_shared<ForwardingInformationBaseV4>();
-  fibV6 = std::make_shared<ForwardingInformationBaseV6>();
-}
-
-folly::dynamic ForwardingInformationBaseContainerFields::toFollyDynamicLegacy()
-    const {
-  folly::dynamic json = folly::dynamic::object;
-  json[kVrf] = static_cast<int>(vrf);
-  json[kFibV4] = fibV4->toFollyDynamicLegacy();
-  json[kFibV6] = fibV6->toFollyDynamicLegacy();
-  return json;
-}
-
-ForwardingInformationBaseContainerFields
-ForwardingInformationBaseContainerFields::fromFollyDynamicLegacy(
-    const folly::dynamic& dyn) {
-  auto vrf = static_cast<RouterID>(dyn[kVrf].asInt());
-  ForwardingInformationBaseContainerFields fields{vrf};
-  fields.fibV4 =
-      ForwardingInformationBaseV4::fromFollyDynamicLegacy(dyn[kFibV4]);
-  fields.fibV6 =
-      ForwardingInformationBaseV6::fromFollyDynamicLegacy(dyn[kFibV6]);
-  return fields;
-}
-
-state::FibContainerFields ForwardingInformationBaseContainerFields::toThrift()
-    const {
-  state::FibContainerFields fields{};
-  fields.vrf() = vrf;
-  fields.fibV4() = fibV4->toThrift();
-  fields.fibV6() = fibV6->toThrift();
-  return fields;
-}
-
-ForwardingInformationBaseContainerFields
-ForwardingInformationBaseContainerFields::fromThrift(
-    state::FibContainerFields const& fields) {
-  auto vrf = static_cast<RouterID>(*fields.vrf());
-  auto fibContainer = ForwardingInformationBaseContainerFields(vrf);
-  fibContainer.fibV4 = ForwardingInformationBaseV4::fromThrift(*fields.fibV4());
-  fibContainer.fibV6 = ForwardingInformationBaseV6::fromThrift(*fields.fibV6());
-  return fibContainer;
-}
-
-folly::dynamic ForwardingInformationBaseContainerFields::migrateToThrifty(
-    folly::dynamic const& dyn) {
-  folly::dynamic newDyn = folly::dynamic::object;
-  newDyn[kVrf] = dyn[kVrf].asInt();
-  newDyn[kFibV4] = ForwardingInformationBaseV4::migrateToThrifty(dyn[kFibV4]);
-  newDyn[kFibV6] = ForwardingInformationBaseV6::migrateToThrifty(dyn[kFibV6]);
-  return newDyn;
-}
-
-void ForwardingInformationBaseContainerFields::migrateFromThrifty(
-    folly::dynamic& dyn) {
-  ForwardingInformationBaseV4::migrateFromThrifty(dyn[kFibV4]);
-  ForwardingInformationBaseV6::migrateFromThrifty(dyn[kFibV6]);
-}
-
 ForwardingInformationBaseContainer::ForwardingInformationBaseContainer(
-    RouterID vrf)
-    : ThriftyBaseT(vrf) {}
+    RouterID vrf) {
+  set<switch_state_tags::vrf>(vrf);
+}
 
 ForwardingInformationBaseContainer::~ForwardingInformationBaseContainer() {}
 
 RouterID ForwardingInformationBaseContainer::getID() const {
-  return getFields()->vrf;
+  return RouterID(get<switch_state_tags::vrf>()->cref());
 }
 
 const std::shared_ptr<ForwardingInformationBaseV4>&
 ForwardingInformationBaseContainer::getFibV4() const {
-  return getFields()->fibV4;
+  return this->cref<switch_state_tags::fibV4>();
 }
 const std::shared_ptr<ForwardingInformationBaseV6>&
 ForwardingInformationBaseContainer::getFibV6() const {
-  return getFields()->fibV6;
-}
-
-std::shared_ptr<ForwardingInformationBaseContainer>
-ForwardingInformationBaseContainer::fromFollyDynamicLegacy(
-    const folly::dynamic& json) {
-  auto fields =
-      ForwardingInformationBaseContainerFields::fromFollyDynamicLegacy(json);
-  return std::make_shared<ForwardingInformationBaseContainer>(fields);
-}
-
-folly::dynamic ForwardingInformationBaseContainer::toFollyDynamicLegacy()
-    const {
-  return getFields()->toFollyDynamicLegacy();
+  return this->cref<switch_state_tags::fibV6>();
 }
 
 ForwardingInformationBaseContainer* ForwardingInformationBaseContainer::modify(
@@ -131,8 +57,8 @@ ForwardingInformationBaseContainer* ForwardingInformationBaseContainer::modify(
   return rtn;
 }
 
-template class NodeBaseT<
+template class ThriftStructNode<
     ForwardingInformationBaseContainer,
-    ForwardingInformationBaseContainerFields>;
+    state::FibContainerFields>;
 
 } // namespace facebook::fboss

@@ -38,59 +38,20 @@ constexpr auto kIsStateSyncDisabled = "isStateSyncDisabled";
 
 namespace facebook::fboss {
 
-InterfaceFields InterfaceFields::fromFollyDynamic(const folly::dynamic& json) {
-  auto intfFields = InterfaceFields(
-      InterfaceID(json[kInterfaceId].asInt()),
-      RouterID(json[kRouterId].asInt()),
-      VlanID(json[kVlanId].asInt()),
-      json[kName].asString(),
-      MacAddress(json[kMac].asString()),
-      json[kMtu].asInt(),
-      json.getDefault(kIsVirtual, false).asBool(),
-      json.getDefault(kIsStateSyncDisabled, false).asBool());
-  for (const auto& addr : json[kAddresses]) {
-    auto cidr = IPAddress::createNetwork(
-        addr.asString(),
-        -1 /*use /32 for v4 and /128 for v6*/,
-        false /*don't apply mask*/);
-    intfFields.writableData().addresses()->emplace(
-        cidr.first.str(), cidr.second);
-  }
-  intfFields.writableData().ndpConfig() =
-      apache::thrift::SimpleJSONSerializer::deserialize<cfg::NdpConfig>(
-          toJson(json[kNdpConfig]));
-  return intfFields;
-}
-
-folly::dynamic InterfaceFields::toFollyDynamic() const {
-  folly::dynamic intf = folly::dynamic::object;
-  intf[kInterfaceId] = *data().interfaceId();
-  intf[kRouterId] = *data().routerId();
-  intf[kVlanId] = *data().vlanId();
-  intf[kName] = *data().name();
-  // fix
-  intf[kMac] = to<string>(folly::MacAddress::fromNBO(*data().mac()));
-  // fix?
-  intf[kMtu] = to<string>(*data().mtu());
-  // fix?
-  intf[kIsVirtual] = to<string>(*data().isVirtual());
-  // fix?
-  intf[kIsStateSyncDisabled] = to<string>(*data().isStateSyncDisabled());
-  std::vector<folly::dynamic> addresses;
-  addresses.reserve(data().addresses()->size());
-  for (auto const& [ipStr, mask] : *data().addresses()) {
-    addresses.emplace_back(ipStr + "/" + folly::to<string>(mask));
-  }
-  intf[kAddresses] = folly::dynamic(addresses.begin(), addresses.end());
-  string ndpCfgJson;
-  apache::thrift::SimpleJSONSerializer::serialize(
-      *data().ndpConfig(), &ndpCfgJson);
-  intf[kNdpConfig] = folly::parseJson(ndpCfgJson);
-  return intf;
-}
-
 std::optional<folly::CIDRNetwork> Interface::getAddressToReach(
     const folly::IPAddress& dest) const {
+  auto getAddressToReachFn = [this, &dest](auto addresses) {
+    std::optional<folly::CIDRNetwork> reachableBy;
+    for (const auto& [ipStr, mask] : addresses) {
+      auto cidr = folly::CIDRNetwork(ipStr, mask);
+      if (dest.inSubnet(cidr.first, cidr.second)) {
+        reachableBy = cidr;
+        break;
+      }
+    }
+    return reachableBy;
+  };
+
   /*
    * Preserving old behavior for mitigation of S289408
    * Prior to migrating InterfaceFields to native thrift
@@ -131,17 +92,41 @@ std::optional<folly::CIDRNetwork> Interface::getAddressToReach(
    *  we are reverting to old behavior so as to not
    *  couple our release with their rollout.
    */
-  for (const auto& [ipStr, mask] : getAddresses()) {
-    auto cidr = folly::CIDRNetwork(ipStr, mask);
-    if (dest.inSubnet(cidr.first, cidr.second)) {
-      return cidr;
+  if (!routerAddress()) {
+    return getAddressToReachFn(getAddressesCopy());
+  } else {
+    /*
+     * If RA router address is configured, use MAC derived LL if it can
+     * reach destination address. This is to allow hitless roll back of
+     * this config. Consider, w/o this config we used to use MAC derived
+     * LL in RA advertisements. This address would then get used as default
+     * GW address for v6 traffic and get resolved. When we start using
+     * a configured address (say fe80::face:b00c), this address will no longer
+     * be resolved. And if we undo this RA.routerAddress config (rollback case)
+     * we may get a brief blip in connectivity while the default GW is resolved.
+     */
+    folly::CIDRNetwork linkLocalCidr{
+        folly::IPAddressV6(folly::IPAddressV6::LINK_LOCAL, getMac()), 64};
+    if (dest.inSubnet(linkLocalCidr.first, linkLocalCidr.second)) {
+      return linkLocalCidr;
     }
+    // No longer need special case behavior since with routerAddress configured
+    // we would have unified v4 and v6 GW addresses
+    return getAddressToReachFn(getAddressesCopy());
   }
   return std::nullopt;
 }
 
 bool Interface::canReachAddress(const folly::IPAddress& dest) const {
   return getAddressToReach(dest).has_value();
+}
+
+std::optional<SystemPortID> Interface::getSystemPortID() const {
+  std::optional<SystemPortID> sysPort;
+  if (getType() == cfg::InterfaceType::SYSTEM_PORT) {
+    sysPort = SystemPortID(static_cast<int>(getID()));
+  }
+  return sysPort;
 }
 
 bool Interface::isIpAttached(
@@ -158,6 +143,19 @@ bool Interface::isIpAttached(
   return intf->canReachAddress(ip);
 }
 
-template class NodeBaseT<Interface, InterfaceFields>;
+Interface* Interface::modify(std::shared_ptr<SwitchState>* state) {
+  if (!isPublished()) {
+    CHECK(!(*state)->isPublished());
+    return this;
+  }
+
+  InterfaceMap* interfaces = (*state)->getInterfaces()->modify(state);
+  auto newInterface = clone();
+  auto* ptr = newInterface.get();
+  interfaces->updateInterface(std::move(newInterface));
+  return ptr;
+}
+
+template class ThriftStructNode<Interface, state::InterfaceFields>;
 
 } // namespace facebook::fboss

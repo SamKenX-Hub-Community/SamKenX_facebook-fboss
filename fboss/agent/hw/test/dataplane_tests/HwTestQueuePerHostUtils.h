@@ -63,7 +63,7 @@ void verifyQueuePerHostMapping(
     HwSwitch* hwSwitch,
     std::shared_ptr<SwitchState> swState,
     const std::vector<PortID>& portIds,
-    VlanID vlanId,
+    std::optional<VlanID> vlanId,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddress& srcIp,
@@ -74,7 +74,7 @@ void verifyQueuePerHostMapping(
 void verifyQueuePerHostMapping(
     const HwSwitch* hwSwitch,
     HwSwitchEnsemble* ensemble,
-    VlanID vlanId,
+    std::optional<VlanID> vlanId,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddress& srcIp,
@@ -89,7 +89,7 @@ void verifyQueuePerHostMapping(
     HwSwitch* hwSwitch,
     std::shared_ptr<SwitchState> swState,
     const std::vector<PortID>& portIds,
-    VlanID vlanId,
+    std::optional<VlanID> vlanId,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddress& srcIp,
@@ -108,7 +108,16 @@ void updateRoutesClassID(
         std::optional<cfg::AclLookupClass>>& routePrefix2ClassID,
     RouteUpdateWrapper* updater);
 
+void addTtlAclEntry(cfg::SwitchConfig* config, const std::string& aclTableName);
 void addTtlAclTable(cfg::SwitchConfig* config, int16_t priority);
-void addQueuePerHostAclTables(cfg::SwitchConfig* config, int16_t priority);
+void deleteTtlCounters(cfg::SwitchConfig* config);
+void addQueuePerHostAclEntry(
+    cfg::SwitchConfig* config,
+    const std::string& aclTableName);
+void addQueuePerHostAclTables(
+    cfg::SwitchConfig* config,
+    int16_t priority,
+    bool addTtlQualifier);
+void deleteQueuePerHostMatchers(cfg::SwitchConfig* config);
 
 } // namespace facebook::fboss::utility

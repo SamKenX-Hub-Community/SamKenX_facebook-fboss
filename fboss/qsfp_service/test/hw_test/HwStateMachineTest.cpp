@@ -31,6 +31,10 @@ class HwStateMachineTest : public HwTest {
     getHwQsfpEnsemble()->getWedgeManager()->getTransceiversInfo(
         presentTcvrs, std::make_unique<std::vector<int32_t>>());
 
+    auto agentConfig = getHwQsfpEnsemble()->getWedgeManager()->getAgentConfig();
+    auto cabledTransceivers = utility::legacyTransceiverIds(
+        utility::getCabledPortTranceivers(*agentConfig, getHwQsfpEnsemble()));
+
     // Get all transceivers from platform mapping
     const auto& chips = getHwQsfpEnsemble()->getPlatformMapping()->getChips();
     for (const auto& chip : chips) {
@@ -40,7 +44,11 @@ class HwStateMachineTest : public HwTest {
       auto id = *chip.second.physicalID();
       if (auto tcvrIt = presentTcvrs.find(id);
           tcvrIt != presentTcvrs.end() && *tcvrIt->second.present()) {
-        presentTransceivers_.push_back(TransceiverID(id));
+        if (std::find(
+                cabledTransceivers.begin(), cabledTransceivers.end(), id) !=
+            cabledTransceivers.end()) {
+          presentTransceivers_.push_back(TransceiverID(id));
+        }
       } else {
         absentTransceivers_.push_back(TransceiverID(id));
       }
@@ -365,7 +373,7 @@ TEST_F(HwStateMachineTest, CheckTransceiverRemediated) {
     wedgeMgr->setOverrideAgentPortStatusForTesting(
         false /* up */, true /* enabled */);
     // Make sure all enabled transceiver should go through:
-    // XPHY_PORTS_PROGRAMMED -> TRANSCEIVER_PROGRAMMED
+    // XPHY_PORTS_PROGRAMMED -> TRANSCEIVER_READY -> TRANSCEIVER_PROGRAMMED
     std::unordered_map<TransceiverID, std::queue<TransceiverStateMachineState>>
         expectedStates;
     for (auto id : getPresentTransceivers()) {
@@ -378,6 +386,8 @@ TEST_F(HwStateMachineTest, CheckTransceiverRemediated) {
         tcvrExpectedStates.push(
             TransceiverStateMachineState::XPHY_PORTS_PROGRAMMED);
         tcvrExpectedStates.push(
+            TransceiverStateMachineState::TRANSCEIVER_READY);
+        tcvrExpectedStates.push(
             TransceiverStateMachineState::TRANSCEIVER_PROGRAMMED);
       }
       expectedStates.emplace(id, std::move(tcvrExpectedStates));
@@ -387,12 +397,12 @@ TEST_F(HwStateMachineTest, CheckTransceiverRemediated) {
     // refresh not work as expected. Adding enough retries to make sure that we
     // at least can meet all `expectedStates` after 10 times.
     WITH_RETRIES_N_TIMED(
+        10 /* retries */,
+        std::chrono::milliseconds(10000) /* msBetweenRetry */,
         EXPECT_EVENTUALLY_TRUE(refreshStateMachinesTillMeetAllStates(
             expectedStates,
             true /* isRemediated */,
-            false /* isAgentColdboot */)),
-        10 /* retries */,
-        std::chrono::milliseconds(10000) /* msBetweenRetry */);
+            false /* isAgentColdboot */)));
   };
   verifyAcrossWarmBoots([]() {}, verify);
 }
@@ -408,7 +418,7 @@ TEST_F(HwStateMachineTest, CheckAgentConfigChanged) {
       bool hasXphy = (wedgeMgr->getPhyManager() != nullptr);
       // All tcvrs should go through no matter present or absent
       // IPHY_PORTS_PROGRAMMED -> XPHY_PORTS_PROGRAMMED ->
-      // TRANSCEIVER_PROGRAMMED
+      // -> TRANSCEIVER_READY -> TRANSCEIVER_PROGRAMMED
       auto prepareExpectedStates = [hasXphy]() {
         std::queue<TransceiverStateMachineState> tcvrExpectedStates;
         tcvrExpectedStates.push(
@@ -417,6 +427,8 @@ TEST_F(HwStateMachineTest, CheckAgentConfigChanged) {
           tcvrExpectedStates.push(
               TransceiverStateMachineState::XPHY_PORTS_PROGRAMMED);
         }
+        tcvrExpectedStates.push(
+            TransceiverStateMachineState::TRANSCEIVER_READY);
         tcvrExpectedStates.push(
             TransceiverStateMachineState::TRANSCEIVER_PROGRAMMED);
         return tcvrExpectedStates;
@@ -443,10 +455,10 @@ TEST_F(HwStateMachineTest, CheckAgentConfigChanged) {
       // current refresh not work as expected. Adding enough retries to make
       // sure that we at least can meet all `expectedStates` after 10 times.
       WITH_RETRIES_N_TIMED(
-          EXPECT_EVENTUALLY_TRUE(refreshStateMachinesTillMeetAllStates(
-              expectedStates, false /* isRemediated */, isAgentColdboot)),
           10 /* retries */,
-          std::chrono::milliseconds(10000) /* msBetweenRetry */);
+          std::chrono::milliseconds(10000) /* msBetweenRetry */,
+          EXPECT_EVENTUALLY_TRUE(refreshStateMachinesTillMeetAllStates(
+              expectedStates, false /* isRemediated */, isAgentColdboot)));
     };
 
     // First verify warmboot config change

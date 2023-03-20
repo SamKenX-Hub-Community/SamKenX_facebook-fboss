@@ -40,7 +40,8 @@ class PortManagerTest : public ManagerTestBase {
       const SaiPortHandle* handle,
       bool enabled,
       sai_uint32_t mtu = 9412,
-      bool ptpTcEnable = false) {
+      bool ptpTcEnable = false,
+      bool isDrained = false) {
     // Check SaiPortApi perspective
     auto& portApi = saiApiTable->portApi();
     auto saiId = handle->port->adapterKey();
@@ -50,6 +51,9 @@ class PortManagerTest : public ManagerTestBase {
     SaiPortTraits::Attributes::FecMode fecMode;
     SaiPortTraits::Attributes::InternalLoopbackMode ilbMode;
     SaiPortTraits::Attributes::Mtu mtuAttribute;
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+    SaiPortTraits::Attributes::FabricIsolate fabricIsolateAttribute;
+#endif
     auto gotAdminState = portApi.getAttribute(saiId, adminStateAttribute);
     EXPECT_EQ(enabled, gotAdminState);
     auto gotLanes = portApi.getAttribute(saiId, hwLaneListAttribute);
@@ -73,6 +77,10 @@ class PortManagerTest : public ManagerTestBase {
     EXPECT_NE(gotPtpMode, SAI_PORT_PTP_MODE_TWO_STEP_TIMESTAMP);
     EXPECT_EQ(
         ptpTcEnable, (gotPtpMode == SAI_PORT_PTP_MODE_SINGLE_STEP_TIMESTAMP));
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+    auto gotDrainState = portApi.getAttribute(saiId, fabricIsolateAttribute);
+    EXPECT_EQ(gotDrainState, isDrained);
+#endif
   }
 
   void checkPortSerdes(SaiPortSerdes* serdes, PortSaiId portId) {
@@ -104,23 +112,37 @@ class PortManagerTest : public ManagerTestBase {
     SaiPortTraits::Attributes::HwLaneList lanes(ls);
     SaiPortTraits::Attributes::Speed speed{static_cast<int>(portSpeed)};
     SaiPortTraits::CreateAttributes a {
-      lanes, speed, adminState, std::nullopt, std::nullopt, std::nullopt,
+      lanes, speed, adminState, std::nullopt,
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+          std::nullopt, std::nullopt,
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+          std::nullopt, // Port Fabric Isolate
+#endif
           std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
-          std::nullopt, std::nullopt, std::nullopt,
+          std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
           std::nullopt, // Ingress Mirror Session
           std::nullopt, // Egress Mirror Session
           std::nullopt, // Ingress Sample Packet
           std::nullopt, // Egress Sample Packet
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
           std::nullopt, // Ingress mirror sample session
           std::nullopt, // Egress mirror sample session
-#endif
           std::nullopt, // Ingress macsec acl
           std::nullopt, // Egress macsec acl
           std::nullopt, // System Port Id
           std::nullopt, // PTP Mode
           std::nullopt, // PFC Mode
           std::nullopt, // PFC Priorities
+#if !defined(TAJO_SDK)
+          std::nullopt, // PFC Rx Priorities
+          std::nullopt, // PFC Tx Priorities
+#endif
+          std::nullopt, // TC to Priority Group map
+          std::nullopt, // PFC Priority to Queue map
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+          std::nullopt, // Inter Frame Gap
+#endif
+          std::nullopt, // Link Training Enable
     };
     return portApi.create<SaiPortTraits>(a, 0);
   }
@@ -233,6 +255,19 @@ TEST_F(PortManagerTest, changePortAdminState) {
   checkPort(swPort->getID(), handle, false);
 }
 
+TEST_F(PortManagerTest, changePortDrainState) {
+  std::shared_ptr<Port> swPort = makePort(p0);
+  saiManagerTable->portManager().addPort(swPort);
+  swPort->setPortDrainState(cfg::PortDrainState::DRAINED);
+  EXPECT_THROW(
+      saiManagerTable->portManager().changePort(swPort, swPort), FbossError);
+  swPort->setPortType(cfg::PortType::FABRIC_PORT);
+  swPort->setPortDrainState(cfg::PortDrainState::DRAINED);
+  saiManagerTable->portManager().changePort(swPort, swPort);
+  auto handle = saiManagerTable->portManager().getPortHandle(swPort->getID());
+  checkPort(swPort->getID(), handle, true, 9412, false, true);
+}
+
 TEST_F(PortManagerTest, changePortMtu) {
   std::shared_ptr<Port> swPort = makePort(p0);
   saiManagerTable->portManager().addPort(swPort);
@@ -283,7 +318,7 @@ TEST_F(PortManagerTest, portConsolidationAddPort) {
 void checkCounterExport(
     const std::string& portName,
     ExpectExport expectExport) {
-  for (auto statKey : HwPortFb303Stats::kPortStatKeys()) {
+  for (auto statKey : HwPortFb303Stats("dummy").kPortStatKeys()) {
     switch (expectExport) {
       case ExpectExport::EXPORT:
         EXPECT_TRUE(facebook::fbData->getStatMap()->contains(
@@ -300,7 +335,7 @@ void checkCounterExport(
 TEST_F(PortManagerTest, changePortNameAndCheckCounters) {
   std::shared_ptr<Port> swPort = makePort(p0);
   saiManagerTable->portManager().addPort(swPort);
-  for (auto statKey : HwPortFb303Stats::kPortStatKeys()) {
+  for (auto statKey : HwPortFb303Stats("dummy").kPortStatKeys()) {
     EXPECT_TRUE(facebook::fbData->getStatMap()->contains(
         HwPortFb303Stats::statName(statKey, swPort->getName())));
   }
@@ -319,7 +354,7 @@ TEST_F(PortManagerTest, updateStats) {
   saiManagerTable->portManager().updateStats(swPort->getID());
   auto portStat =
       saiManagerTable->portManager().getLastPortStat(swPort->getID());
-  for (auto statKey : HwPortFb303Stats::kPortStatKeys()) {
+  for (auto statKey : HwPortFb303Stats("dummy").kPortStatKeys()) {
     EXPECT_EQ(
         portStat->getCounterLastIncrement(
             HwPortFb303Stats::statName(statKey, swPort->getName())),
@@ -409,7 +444,8 @@ TEST_F(PortManagerTest, swPortFromAttributes) {
   auto& portMgr = saiManagerTable->portManager();
   portMgr.addPort(swPort);
   auto attrs = portMgr.attributesFromSwPort(swPort);
-  auto newPort = portMgr.swPortFromAttributes(attrs, PortSaiId(1));
+  auto newPort =
+      portMgr.swPortFromAttributes(attrs, PortSaiId(1), cfg::SwitchType::NPU);
   EXPECT_EQ(attrs, portMgr.attributesFromSwPort(newPort));
 }
 

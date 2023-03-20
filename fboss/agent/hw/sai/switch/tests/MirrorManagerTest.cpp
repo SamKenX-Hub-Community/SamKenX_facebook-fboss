@@ -7,6 +7,7 @@
  *  of patent rights can be found in the PATENTS file in the same directory.
  *
  */
+#include <optional>
 #include "fboss/agent/hw/sai/switch/SaiMirrorManager.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/tests/ManagerTestBase.h"
@@ -29,7 +30,10 @@ class MirrorManagerTest : public ManagerTestBase {
   void createLocalMirror(
       std::string mirrorId = "mirror1",
       PortID portId = PortID(1)) {
-    auto mirror = std::make_shared<Mirror>(mirrorId, portId, std::nullopt);
+    auto mirror = std::make_shared<Mirror>(
+        mirrorId,
+        std::make_optional<PortID>(portId),
+        std::optional<folly::IPAddress>());
     saiManagerTable->mirrorManager().addMirror(mirror);
   }
 
@@ -46,7 +50,12 @@ class MirrorManagerTest : public ManagerTestBase {
       uint32_t udpSrcPort = 1246,
       uint32_t udpDstPort = 7962) {
     auto mirror = std::make_shared<Mirror>(
-        mirrorId, portId, dstIp, srcIp, std::nullopt, tos);
+        mirrorId,
+        std::make_optional<PortID>(portId),
+        std::make_optional<folly::IPAddress>(dstIp),
+        std::make_optional<folly::IPAddress>(srcIp),
+        std::optional<TunnelUdpPorts>(),
+        tos);
     auto mirrorTunnel = type == SAI_MIRROR_SESSION_TYPE_ENHANCED_REMOTE
         ? MirrorTunnel{srcIp, dstIp, srcMac, dstMac, ttl}
         : MirrorTunnel{
@@ -118,7 +127,6 @@ class MirrorManagerTest : public ManagerTestBase {
     EXPECT_EQ(gotTtl, ttl);
   }
 
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
   void checkSflowMirror(
       std::string mirrorId = "mirror1",
       PortID portId = PortID(1),
@@ -166,7 +174,6 @@ class MirrorManagerTest : public ManagerTestBase {
         mirrorSaiId, SaiSflowMirrorTraits::Attributes::UdpDstPort{});
     EXPECT_EQ(gotUdpDstPort, udpDstPort);
   }
-#endif
 };
 
 TEST_F(MirrorManagerTest, createLocalMirror) {
@@ -189,8 +196,10 @@ TEST_F(MirrorManagerTest, removeMirror) {
   std::string mirrorId = "mirror1";
   std::shared_ptr<Port> swPort1 = makePort(p1);
   saiManagerTable->portManager().addPort(swPort1);
-  auto mirror =
-      std::make_shared<Mirror>(mirrorId, swPort1->getID(), std::nullopt);
+  auto mirror = std::make_shared<Mirror>(
+      mirrorId,
+      std::make_optional<PortID>(swPort1->getID()),
+      std::optional<folly::IPAddress>());
   saiManagerTable->mirrorManager().addMirror(mirror);
   saiManagerTable->mirrorManager().removeMirror(mirror);
   EXPECT_THROW(
@@ -207,13 +216,11 @@ TEST_F(MirrorManagerTest, createErspanMirror) {
 }
 
 TEST_F(MirrorManagerTest, createSflowMirror) {
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
   std::string mirrorId = "mirror1";
   std::shared_ptr<Port> swPort1 = makePort(p1);
   saiManagerTable->portManager().addPort(swPort1);
   createTunnelMirror(SAI_MIRROR_SESSION_TYPE_SFLOW, mirrorId, PortID(p1.id));
   checkSflowMirror(mirrorId, PortID(p1.id));
-#endif
 }
 
 TEST_F(MirrorManagerTest, portMirroring) {
@@ -236,7 +243,6 @@ TEST_F(MirrorManagerTest, portMirroring) {
 }
 
 TEST_F(MirrorManagerTest, portMirroringAndSampling) {
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
   std::string mirrorId1 = "mirror1";
   std::shared_ptr<Port> swPort1 = makePort(p0);
   saiManagerTable->portManager().addPort(swPort1);
@@ -265,5 +271,4 @@ TEST_F(MirrorManagerTest, portMirroringAndSampling) {
       portHandle->port->adapterKey(),
       SaiPortTraits::Attributes::IngressSampleMirrorSession{});
   EXPECT_EQ(gotSampleMirrorSaiIdList[0], mirrorHandle->adapterKey());
-#endif
 }

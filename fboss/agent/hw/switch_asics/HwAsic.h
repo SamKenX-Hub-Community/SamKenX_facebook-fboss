@@ -5,26 +5,16 @@
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 
 namespace facebook::fboss {
-#define ASIC_TYPE_LIST      \
-  {                         \
-      ASIC_TYPE_FAKE,       \
-      ASIC_TYPE_MOCK,       \
-      ASIC_TYPE_TRIDENT2,   \
-      ASIC_TYPE_TOMAHAWK,   \
-      ASIC_TYPE_TOMAHAWK3,  \
-      ASIC_TYPE_TOMAHAWK4,  \
-      ASIC_TYPE_ELBERT_8DD, \
-      ASIC_TYPE_EBRO,       \
-      ASIC_TYPE_GARONNE,    \
-      ASIC_TYPE_SANDIA_PHY, \
-      ASIC_TYPE_INDUS,      \
-      ASIC_TYPE_BEAS,       \
-  };
 
 class HwAsic {
  public:
+  HwAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange,
+      std::unordered_set<cfg::SwitchType> supportedModes = {
+          cfg::SwitchType::NPU});
   enum class Feature {
-    HOSTTABLE_FOR_HOSTROUTES,
     SPAN,
     ERSPANv4,
     ERSPANv6,
@@ -34,7 +24,6 @@ class HwAsic {
     MPLS_ECMP,
     SAI_MPLS_QOS,
     HASH_FIELDS_CUSTOMIZATION,
-    QUEUE,
     ECN,
     L3_QOS,
     QOS_MAP_GLOBAL,
@@ -105,17 +94,46 @@ class HwAsic {
     PMD_RX_LOCK_STATUS,
     PMD_RX_SIGNAL_DETECT,
     SAI_FEC_COUNTERS,
-    VOQ_MODE,
-    FABRIC_MODE,
     SAI_PORT_ERR_STATUS,
     EXACT_MATCH,
     ROUTE_PROGRAMMING,
     ECMP_HASH_V4,
     ECMP_HASH_V6,
     FEC_CORRECTED_BITS,
+    MEDIA_TYPE,
+    FEC,
+    RX_FREQUENCY_PPM,
+    FABRIC_PORTS,
+    ECMP_MEMBER_WIDTH_INTROSPECTION,
+    FABRIC_PORT_MTU,
+    SAI_FIRMWARE_PATH,
+    EXTENDED_FEC,
+    LINK_TRAINING,
+    SAI_RX_REASON_COUNTER,
+    SAI_MPLS_INSEGMENT,
+    RESERVED_ENCAP_INDEX_RANGE,
+    VOQ,
+    RECYCLE_PORTS,
+    XPHY_PORT_STATE_TOGGLE,
+    SAI_PORT_GET_PMD_LANES,
+    FABRIC_TX_QUEUES,
+    SAI_PORT_VCO_CHANGE,
+    SAI_TTL0_PACKET_FORWARD_ENABLE,
+    WARMBOOT,
+    SHARED_INGRESS_EGRESS_BUFFER_POOL,
+    ROUTE_METADATA,
+    DLB,
+    P4_WARMBOOT,
+    IN_PAUSE_INCREMENTS_DISCARDS,
+    FEC_AM_LOCK_STATUS,
+    PCS_RX_LINK_STATUS,
+    TC_TO_QUEUE_QOS_MAP_ON_SYSTEM_PORT,
+    SAI_CONFIGURE_SIX_TAP,
+    UDF_HASH_FIELD_QUERY,
+    SAI_SAMPLEPACKET_TRAP,
+    PORT_FABRIC_ISOLATE,
+    QUEUE_ECN_COUNTER,
   };
-
-  enum class AsicType ASIC_TYPE_LIST;
 
   enum class AsicMode {
     ASIC_MODE_SIM,
@@ -130,10 +148,15 @@ class HwAsic {
     ASIC_VENDOR_MOCK,
     ASIC_VENDOR_FAKE,
   };
-
   virtual ~HwAsic() {}
+  static std::unique_ptr<HwAsic> makeAsic(
+      cfg::AsicType asicType,
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchID,
+      std::optional<cfg::Range64> systemPortRange);
   virtual bool isSupported(Feature) const = 0;
-  virtual AsicType getAsicType() const = 0;
+  virtual cfg::AsicType getAsicType() const = 0;
+  std::string getAsicTypeStr() const;
   virtual AsicVendor getAsicVendor() const = 0;
   virtual AsicMode getAsicMode() const {
     return AsicMode::ASIC_MODE_HW;
@@ -141,7 +164,8 @@ class HwAsic {
   virtual phy::DataPlanePhyChipType getDataPlanePhyChipType() const = 0;
   virtual std::string getVendor() const = 0;
   virtual cfg::PortSpeed getMaxPortSpeed() const = 0;
-  virtual std::set<cfg::StreamType> getQueueStreamTypes(bool cpu) const = 0;
+  virtual std::set<cfg::StreamType> getQueueStreamTypes(
+      cfg::PortType portType) const = 0;
   virtual int getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
       const = 0;
   virtual uint32_t getMaxLabelStackDepth() const = 0;
@@ -218,7 +242,7 @@ class HwAsic {
 
   virtual std::optional<uint32_t> getPortSerdesPreemphasis() const = 0;
 
-  static std::vector<AsicType> getAllHwAsicList();
+  static std::vector<cfg::AsicType> getAllHwAsicList();
 
   virtual uint32_t getMaxVariableWidthEcmpSize() const = 0;
 
@@ -230,6 +254,44 @@ class HwAsic {
       cfg::MMUScalingFactor scalingFactor) const = 0;
 
   virtual uint32_t getStaticQueueLimitBytes() const = 0;
+
+  virtual cfg::Range64 getReservedEncapIndexRange() const;
+
+  virtual uint32_t getNumMemoryBuffers() const = 0;
+
+  cfg::SwitchType getSwitchType() const {
+    return switchType_;
+  }
+  std::optional<uint64_t> getSwitchId() const {
+    return switchId_;
+  }
+  std::optional<cfg::Range64> getSystemPortRange() const {
+    return systemPortRange_;
+  }
+
+  cfg::StreamType getDefaultStreamType() const {
+    return defaultStreamType_;
+  }
+
+  void setDefaultStreamType(cfg::StreamType streamType) {
+    defaultStreamType_ = streamType;
+  }
+  struct RecyclePortInfo {
+    uint32_t coreId;
+    uint32_t corePortIndex;
+    uint32_t speedMbps;
+  };
+
+  virtual RecyclePortInfo getRecyclePortInfo() const;
+
+ protected:
+  static cfg::Range64 makeRange(int64_t min, int64_t max);
+
+ private:
+  cfg::SwitchType switchType_;
+  std::optional<int64_t> switchId_;
+  std::optional<cfg::Range64> systemPortRange_;
+  cfg::StreamType defaultStreamType_{cfg::StreamType::ALL};
 };
 
 } // namespace facebook::fboss

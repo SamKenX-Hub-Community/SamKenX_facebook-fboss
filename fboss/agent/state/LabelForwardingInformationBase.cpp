@@ -2,7 +2,6 @@
 
 #include "fboss/agent/state/LabelForwardingInformationBase.h"
 #include <fboss/agent/state/LabelForwardingEntry.h>
-#include "fboss/agent/rib/RoutingInformationBase.h"
 #include "fboss/agent/state/NodeMap-defs.h"
 #include "fboss/agent/state/RouteNextHopEntry.h"
 #include "fboss/agent/state/SwitchState.h"
@@ -27,35 +26,23 @@ LabelForwardingInformationBase::~LabelForwardingInformationBase() {}
 
 const std::shared_ptr<LabelForwardingEntry>&
 LabelForwardingInformationBase::getLabelForwardingEntry(Label labelFib) const {
-  return getNode(labelFib);
+  return getNode(labelFib.value());
 }
 
 std::shared_ptr<LabelForwardingEntry>
 LabelForwardingInformationBase::getLabelForwardingEntryIf(
     Label labelFib) const {
-  return getNodeIf(labelFib);
+  return getNodeIf(labelFib.value());
 }
 
 // Save entries in old format till code to parse new format is in prod
-std::shared_ptr<LabelForwardingInformationBase>
-LabelForwardingInformationBase::fromFollyDynamicLegacy(
-    const folly::dynamic& json) {
-  auto labelFib = std::make_shared<LabelForwardingInformationBase>();
-  if (json.isNull()) {
-    return labelFib;
-  }
-  for (const auto& entry : json[kEntries]) {
-    labelFib->addNode(labelEntryFromFollyDynamic(entry));
-  }
-  return labelFib;
-}
 
 std::shared_ptr<LabelForwardingEntry>
 LabelForwardingInformationBase::labelEntryFromFollyDynamic(
     folly::dynamic entry) {
   std::shared_ptr<LabelForwardingEntry> labelEntry;
   if (entry.find(kIncomingLabel) != entry.items().end()) {
-    labelEntry = fromFollyDynamicOldFormat(entry);
+    XLOG(FATAL) << "unsupported dynamic format";
   } else {
     labelEntry = LabelForwardingEntry::fromFollyDynamic(entry);
   }
@@ -63,31 +50,6 @@ LabelForwardingInformationBase::labelEntryFromFollyDynamic(
     noRibToRibEntryConvertor(labelEntry);
   }
   return labelEntry;
-}
-
-std::shared_ptr<LabelForwardingEntry>
-LabelForwardingInformationBase::fromFollyDynamicOldFormat(folly::dynamic json) {
-  auto topLabel = static_cast<MplsLabel>(json[kIncomingLabel].asInt());
-  auto entry = std::make_shared<LabelForwardingEntry>(topLabel);
-  auto labelNextHopsByClient = LabelNextHopsByClient::fromFollyDynamicLegacy(
-      json[kLabelNextHopsByClient]);
-  for (const auto& clientEntry : labelNextHopsByClient) {
-    entry->update(
-        clientEntry.first, RouteNextHopEntry::fromThrift(clientEntry.second));
-  }
-  entry->setResolved(
-      LabelNextHopEntry::fromFollyDynamicLegacy(json[kLabelNextHop]));
-  return entry;
-}
-
-folly::dynamic LabelForwardingInformationBase::toFollyDynamicOldFormat(
-    std::shared_ptr<LabelForwardingEntry> entry) {
-  folly::dynamic json = folly::dynamic::object;
-  json[kIncomingLabel] = static_cast<int>(entry->getID().value());
-  json[kLabelNextHop] = entry->getForwardInfo().toFollyDynamicLegacy();
-  json[kLabelNextHopsByClient] =
-      entry->getEntryForClients().toFollyDynamicLegacy();
-  return json;
 }
 
 // when rib is enabled, the client entries are stored as received
@@ -100,19 +62,20 @@ void LabelForwardingInformationBase::noRibToRibEntryConvertor(
     std::shared_ptr<LabelForwardingEntry>& entry) {
   CHECK(!entry->isPublished());
   // cache fwdinfo before modifying the route
-  auto fwd = entry->getForwardInfo();
+  const auto& fwd = entry->getForwardInfo();
 
   if (fwd.getAction() == LabelNextHopEntry::Action::DROP ||
       fwd.getAction() == LabelNextHopEntry::Action::TO_CPU) {
     return;
   }
+  auto entries = entry->cref<switch_state_tags::nexthopsmulti>()->clone();
   // only interface routes and v6 ll routes will have interface id
   for (auto& clientEntry : entry->getEntryForClients()) {
     if (clientEntry.first == ClientID::INTERFACE_ROUTE) {
       continue;
     }
     RouteNextHopSet nhSet;
-    auto rNHE = RouteNextHopEntry::fromThrift(clientEntry.second);
+    const auto& rNHE = *clientEntry.second;
     for (auto& nh : rNHE.getNextHopSet()) {
       const auto& addr = nh.addr();
       if (addr.isV6() && addr.isLinkLocal()) {
@@ -122,10 +85,11 @@ void LabelForwardingInformationBase::noRibToRibEntryConvertor(
             nh.addr(), nh.weight(), nh.labelForwardingAction()));
       }
     }
-    entry->update(
+    entries->update(
         clientEntry.first,
         RouteNextHopEntry(nhSet, rNHE.getAdminDistance(), rNHE.getCounterID()));
   }
+  entry->ref<switch_state_tags::nexthopsmulti>() = entries;
   entry->setResolved(fwd);
 }
 
@@ -150,16 +114,16 @@ LabelForwardingInformationBase* LabelForwardingInformationBase::programLabel(
                << " nhops: " << nextHopsStr << " nhop count:" << nexthopCount
                << " in label forwarding information base for client:"
                << static_cast<int>(client);
-    auto newEntry = std::make_shared<LabelForwardingEntry>(
-        label, client, LabelNextHopEntry(std::move(nexthops), distance));
+    auto newEntry =
+        std::make_shared<LabelForwardingEntry>(LabelForwardingEntry::makeThrift(
+            label, client, LabelNextHopEntry(std::move(nexthops), distance)));
     resolve(newEntry);
     writableLabelFib->addNode(newEntry);
   } else {
     auto* entryToUpdate = modifyLabelEntry(state, entry);
     entryToUpdate->update(
         client, LabelNextHopEntry(std::move(nexthops), distance));
-    entryToUpdate->setResolved(
-        RouteNextHopEntry::fromThrift(*entryToUpdate->getBestEntry().second));
+    entryToUpdate->setResolved(*entryToUpdate->getBestEntry().second);
     XLOG(DBG2) << "updated label:" << label.value() << " nhops: " << nextHopsStr
                << "nhop count:" << nexthopCount
                << " in label forwarding information base for client:"
@@ -190,8 +154,7 @@ LabelForwardingInformationBase* LabelForwardingInformationBase::unprogramLabel(
     XLOG(DBG2) << "Purging empty forwarding entry for label:" << label.value();
     writableLabelFib->removeNode(entry);
   } else {
-    auto entryThrift = entryToUpdate->getBestEntry().second;
-    entryToUpdate->setResolved(RouteNextHopEntry::fromThrift(*entryThrift));
+    entryToUpdate->setResolved(*(entryToUpdate->getBestEntry().second));
   }
   return writableLabelFib;
 }
@@ -201,21 +164,19 @@ LabelForwardingInformationBase::purgeEntriesForClient(
     std::shared_ptr<SwitchState>* state,
     ClientID client) {
   auto* writableLabelFib = modify(state);
-  auto iter = writableLabelFib->writableNodes().begin();
-  while (iter != writableLabelFib->writableNodes().end()) {
+  auto iter = writableLabelFib->begin();
+  while (iter != writableLabelFib->end()) {
     auto entry = iter->second;
     if (entry->getEntryForClient(client)) {
       auto entryToModify = modifyLabelEntry(state, entry);
       entryToModify->delEntryForClient(client);
       if (entryToModify->getEntryForClients().isEmpty()) {
         XLOG(DBG1) << "Purging empty forwarding entry for label:"
-                   << entry->getID().label();
-        iter = writableLabelFib->writableNodes().erase(iter);
+                   << entry->getID();
+        iter = writableLabelFib->erase(iter);
         continue;
       } else {
-        auto entryThrift = RouteNextHopEntry::fromThrift(
-            *(entryToModify->getBestEntry().second));
-        entryToModify->setResolved(entryThrift);
+        entryToModify->setResolved(*(entryToModify->getBestEntry().second));
       }
     }
     ++iter;
@@ -230,7 +191,7 @@ LabelForwardingInformationBase* LabelForwardingInformationBase::modify(
     return this;
   }
 
-  auto newFib = clone();
+  auto newFib = this->clone();
   auto* ptr = newFib.get();
   (*state)->resetLabelForwardingInformationBase(std::move(newFib));
   return ptr;
@@ -279,8 +240,8 @@ LabelForwardingEntry* LabelForwardingInformationBase::modifyLabelEntry(
   return ptr;
 }
 
-FBOSS_INSTANTIATE_NODE_MAP(
+template class ThriftMapNode<
     LabelForwardingInformationBase,
-    LabelForwardingRoute);
+    LabelForwardingInformationBaseTraits>;
 
 } // namespace facebook::fboss

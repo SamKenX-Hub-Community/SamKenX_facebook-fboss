@@ -16,8 +16,10 @@ namespace facebook::fboss {
 class SaiQPHRollbackTest : public SaiRollbackTest {
  public:
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::onePortPerVlanConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC);
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode());
     if (isSupported(HwAsic::Feature::L3_QOS)) {
       utility::addQueuePerHostQueueConfig(&cfg);
       utility::addQueuePerHostAcls(&cfg);

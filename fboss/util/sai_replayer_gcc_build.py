@@ -7,6 +7,8 @@
 # and builds sai replayer logs using GCC.
 #
 # For example:
+# If SAI SDK, native SDK and PHY libs are built separately as
+# different libs -
 # python3 sai_replayer_gcc_build.py --sai_replayer_log sai_replayer.log
 #                                   --sai_headers /path/to/sai/inc/
 #                                   --sai_lib /path/to/libsai.a
@@ -15,6 +17,12 @@
 #                                   --brcm_epdm_lib /path/to/libepdm.a
 #                                   --protobuf_lib /path/to/libprotobuf.a
 #                                   --yaml_lib /path/to/libyaml.a
+#
+# If SAI SDK, native SDK and PHY libs are built together and linked as
+# one static lib (e.g libsai_impl.a) -
+# python3 sai_replayer_gcc_build.py --sai_replayer_log sai_replayer.log
+#                                   --sai_headers /path/to/sai/inc/
+#                                   --sai_lib /path/to/libsai_impl.a
 
 import argparse
 import os
@@ -25,6 +33,7 @@ HEADERS = """#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unordered_map>
+#include <vector>
 
 extern "C" {
 #include <sai.h>
@@ -76,10 +85,10 @@ def main():
     )
     psr.add_argument("--sai_headers", required=True, type=str)
     psr.add_argument("--sai_lib", required=True, type=str)
-    psr.add_argument("--brcm_lib", required=True, type=str)
-    psr.add_argument("--brcm_phymode_lib", required=True, type=str)
-    psr.add_argument("--brcm_epdm_lib", required=True, type=str)
-    psr.add_argument("--protobuf_lib", required=True, type=str)
+    psr.add_argument("--brcm_lib", required=False, type=str)
+    psr.add_argument("--brcm_phymode_lib", required=False, type=str)
+    psr.add_argument("--brcm_epdm_lib", required=False, type=str)
+    psr.add_argument("--protobuf_lib", required=False, type=str)
     psr.add_argument(
         "--yaml_lib",
         required=False,

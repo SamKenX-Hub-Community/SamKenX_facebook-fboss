@@ -5,6 +5,7 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <array>
 #include <cstring>
 #include <iostream>
 #include <unordered_map>
@@ -39,7 +40,7 @@ const std::unordered_map<int, speed_t> kSpeedMap = {
 
 void UARTDevice::open() {
   Device::open();
-  setAttribute(true, baudrate_);
+  setAttribute(true, baudrate_, parity_);
 }
 
 void AspeedRS485Device::open() {
@@ -56,20 +57,39 @@ void AspeedRS485Device::open() {
   ioctl(TIOCSRS485, &rs485Conf);
 }
 
-void UARTDevice::setAttribute(bool readEnable, int baudrate) {
+void UARTDevice::setAttribute(bool readEnable, int baudrate, Parity parity) {
   struct termios tio {};
   cfsetspeed(&tio, kSpeedMap.at(baudrate));
-  tio.c_cflag |= PARENB;
+  switch (parity) {
+    case Parity::EVEN:
+      tio.c_cflag |= PARENB;
+      tio.c_cflag &= ~PARODD;
+      tio.c_iflag |= INPCK;
+      break;
+    case Parity::ODD:
+      tio.c_cflag |= PARENB;
+      tio.c_cflag |= PARODD;
+      tio.c_iflag |= INPCK;
+      break;
+    case Parity::NONE:
+      tio.c_cflag &= ~PARENB;
+      tio.c_iflag &= ~INPCK;
+      break;
+    default:
+      logInfo << "Invalid parity value" << std::endl;
+      break;
+  }
   tio.c_cflag |= CLOCAL;
   tio.c_cflag |= CS8;
   if (readEnable) {
     tio.c_cflag |= CREAD;
   }
-  tio.c_iflag |= INPCK;
   tio.c_cc[VMIN] = 1;
   tio.c_cc[VTIME] = 0;
 
-  if (tcsetattr(deviceFd_, TCSANOW, &tio)) {
+  // Use TCSAFLUSH to force all data to be flushed.
+  // We should only be doing this in between reads and writes anyways.
+  if (tcsetattr(deviceFd_, TCSAFLUSH, &tio)) {
     throw std::runtime_error("Setting attribute failed");
   }
 }
@@ -89,6 +109,11 @@ void AspeedRS485Device::waitWrite() {
   }
 }
 
+void UARTDevice::write(const uint8_t* buf, size_t len) {
+  ::tcflush(deviceFd_, TCIOFLUSH);
+  Device::write(buf, len);
+}
+
 void AspeedRS485Device::write(const uint8_t* buf, size_t len) {
   // Write with read disabled. Hence we need to do this
   // as fast as possible. So, muck around with the priorities
@@ -97,7 +122,7 @@ void AspeedRS485Device::write(const uint8_t* buf, size_t len) {
   sp.sched_priority = 50;
   pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
   readDisable();
-  Device::write(buf, len);
+  UARTDevice::write(buf, len);
   waitWrite();
   readEnable();
   pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
@@ -105,7 +130,7 @@ void AspeedRS485Device::write(const uint8_t* buf, size_t len) {
 
 void LocalEchoUARTDevice::write(const uint8_t* buf, size_t len) {
   const int txTimeoutMs = 100;
-  Device::write(buf, len);
+  UARTDevice::write(buf, len);
   std::array<uint8_t, 256> txCheckBuf;
   size_t readBytes = read(txCheckBuf.data(), len, txTimeoutMs);
   if (readBytes != len) {

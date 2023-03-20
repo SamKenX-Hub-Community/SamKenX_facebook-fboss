@@ -165,23 +165,27 @@ void HwProdInvariantHelper::verifyDscpToQueueMapping() {
 void HwProdInvariantHelper::verifySafeDiagCmds() {
   std::set<std::string> diagCmds;
   switch (ensemble_->getAsic()->getAsicType()) {
-    case HwAsic::AsicType::ASIC_TYPE_FAKE:
-    case HwAsic::AsicType::ASIC_TYPE_MOCK:
-    case HwAsic::AsicType::ASIC_TYPE_EBRO:
-    case HwAsic::AsicType::ASIC_TYPE_GARONNE:
-    case HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD:
-    case HwAsic::AsicType::ASIC_TYPE_SANDIA_PHY:
-    case HwAsic::AsicType::ASIC_TYPE_INDUS:
-    case HwAsic::AsicType::ASIC_TYPE_BEAS:
+    case cfg::AsicType::ASIC_TYPE_FAKE:
+    case cfg::AsicType::ASIC_TYPE_MOCK:
+    case cfg::AsicType::ASIC_TYPE_EBRO:
+    case cfg::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
+    case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
+    case cfg::AsicType::ASIC_TYPE_JERICHO2:
+    case cfg::AsicType::ASIC_TYPE_RAMON:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
       break;
 
-    case HwAsic::AsicType::ASIC_TYPE_TRIDENT2:
+    case cfg::AsicType::ASIC_TYPE_TRIDENT2:
       diagCmds = validated_shell_commands_constants::TD2_TESTED_CMDS();
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK:
+      break;
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
       diagCmds = validated_shell_commands_constants::TH_TESTED_CMDS();
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3:
+      break;
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
       diagCmds = validated_shell_commands_constants::TH3_TESTED_CMDS();
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4:
+      break;
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
       diagCmds = validated_shell_commands_constants::TH4_TESTED_CMDS();
       break;
   }
@@ -217,8 +221,7 @@ void HwProdInvariantHelper::disableTtl() {
 
 void HwProdInvariantHelper::verifyQueuePerHostMapping(bool dscpMarkingTest) {
   auto vlanId = utility::firstVlanID(getProgrammedState());
-  auto intfMac =
-      utility::getInterfaceMac(ensemble_->getProgrammedState(), vlanId);
+  auto intfMac = utility::getFirstInterfaceMac(ensemble_->getProgrammedState());
   auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO());
 
   // if DscpMarkingTest is set, send unmarked packet matching DSCP marking ACL,

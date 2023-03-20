@@ -34,10 +34,10 @@ namespace facebook::fboss {
 class HwPacketSendTest : public HwLinkStateDependentTest {
  protected:
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::oneL3IntfConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], cfg::PortLoopbackMode::MAC);
-    utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
-    utility::addCpuQueueConfig(cfg, getAsic());
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode());
     return cfg;
   }
   HwSwitchEnsemble::Features featuresDesired() const override {
@@ -77,7 +77,7 @@ class HwPacketSendReceiveTest : public HwLinkStateDependentTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds().back(),
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
     utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
     utility::addCpuQueueConfig(cfg, getAsic());
     return cfg;
@@ -114,7 +114,7 @@ class HwPacketSendReceiveLagTest : public HwPacketSendReceiveTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
     utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
     utility::addCpuQueueConfig(cfg, getAsic());
     std::vector<int32_t> ports{
@@ -142,7 +142,7 @@ class HwPacketFloodTest : public HwLinkStateDependentTest {
   }
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::oneL3IntfNPortConfig(
-        getHwSwitch(), getLogicalPortIDs(), cfg::PortLoopbackMode::MAC);
+        getHwSwitch(), getLogicalPortIDs(), getAsic()->desiredLoopbackMode());
     utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
     utility::addCpuQueueConfig(cfg, getAsic());
     return cfg;
@@ -160,7 +160,7 @@ class HwPacketFloodTest : public HwLinkStateDependentTest {
                               : *portStatsBefore[portId].outBroadcastPkts_();
       auto packetsAfter = v6 ? *portStatsAfter[portId].outMulticastPkts_()
                              : *portStatsAfter[portId].outBroadcastPkts_();
-      XLOG(INFO) << "port id: " << portId << " before pkts:" << packetsBefore
+      XLOG(DBG2) << "port id: " << portId << " before pkts:" << packetsBefore
                  << ", after pkts:" << packetsAfter
                  << ", before bytes:" << *portStatsBefore[portId].outBytes_()
                  << ", after bytes:" << *portStatsAfter[portId].outBytes_();
@@ -168,7 +168,7 @@ class HwPacketFloodTest : public HwLinkStateDependentTest {
           *portStatsBefore[portId].outBytes_()) {
         return false;
       }
-      if (getAsic()->getAsicType() != HwAsic::AsicType::ASIC_TYPE_EBRO) {
+      if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO) {
         if (packetsAfter <= packetsBefore) {
           return false;
         }
@@ -181,9 +181,10 @@ class HwPacketFloodTest : public HwLinkStateDependentTest {
 TEST_F(HwPacketSendTest, LldpToFrontPanelOutOfPort) {
   auto setup = [=]() {};
   auto verify = [=]() {
-    auto portStatsBefore = getLatestPortStats(masterLogicalPortIds()[0]);
-    auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto portStatsBefore =
+        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
+    auto vlanId = utility::firstVlanID(initialConfig());
+    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
     auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
     auto payLoadSize = 256;
     auto txPacket = utility::makeEthTxPacket(
@@ -196,9 +197,10 @@ TEST_F(HwPacketSendTest, LldpToFrontPanelOutOfPort) {
     // vlan tag should be removed
     auto pktLengthSent = EthHdr::SIZE + payLoadSize;
     getHwSwitchEnsemble()->ensureSendPacketOutOfPort(
-        std::move(txPacket), masterLogicalPortIds()[0], std::nullopt);
-    auto portStatsAfter = getLatestPortStats(masterLogicalPortIds()[0]);
-    XLOG(INFO) << "Lldp Packet:"
+        std::move(txPacket), masterLogicalInterfacePortIds()[0], std::nullopt);
+    auto portStatsAfter =
+        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
+    XLOG(DBG2) << "Lldp Packet:"
                << " before pkts:" << *portStatsBefore.outMulticastPkts_()
                << ", after pkts:" << *portStatsAfter.outMulticastPkts_()
                << ", before bytes:" << *portStatsBefore.outBytes_()
@@ -206,7 +208,7 @@ TEST_F(HwPacketSendTest, LldpToFrontPanelOutOfPort) {
     EXPECT_EQ(
         pktLengthSent,
         *portStatsAfter.outBytes_() - *portStatsBefore.outBytes_());
-    if (getAsic()->getAsicType() != HwAsic::AsicType::ASIC_TYPE_EBRO) {
+    if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO) {
       EXPECT_EQ(
           1,
           *portStatsAfter.outMulticastPkts_() -
@@ -219,9 +221,10 @@ TEST_F(HwPacketSendTest, LldpToFrontPanelOutOfPort) {
 TEST_F(HwPacketSendTest, LldpToFrontPanelWithBufClone) {
   auto setup = [=]() {};
   auto verify = [=]() {
-    auto portStatsBefore = getLatestPortStats(masterLogicalPortIds()[0]);
-    auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto portStatsBefore =
+        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
+    auto vlanId = utility::firstVlanID(initialConfig());
+    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
     auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
     auto payLoadSize = 256;
     auto numPkts = 20;
@@ -240,13 +243,16 @@ TEST_F(HwPacketSendTest, LldpToFrontPanelWithBufClone) {
       txPacket->buf()->cloneInto(*buf);
       bufs.push_back(buf);
       getHwSwitchEnsemble()->ensureSendPacketOutOfPort(
-          std::move(txPacket), masterLogicalPortIds()[0], std::nullopt);
+          std::move(txPacket),
+          masterLogicalInterfacePortIds()[0],
+          std::nullopt);
     }
     for (auto buf : bufs) {
       delete buf;
     }
-    auto portStatsAfter = getLatestPortStats(masterLogicalPortIds()[0]);
-    XLOG(INFO) << "Lldp Packet:"
+    auto portStatsAfter =
+        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
+    XLOG(DBG2) << "Lldp Packet:"
                << " before pkts:" << *portStatsBefore.outMulticastPkts_()
                << ", after pkts:" << *portStatsAfter.outMulticastPkts_()
                << ", before bytes:" << *portStatsBefore.outBytes_()
@@ -255,7 +261,7 @@ TEST_F(HwPacketSendTest, LldpToFrontPanelWithBufClone) {
     EXPECT_EQ(
         pktLengthSent,
         *portStatsAfter.outBytes_() - *portStatsBefore.outBytes_());
-    if (getAsic()->getAsicType() != HwAsic::AsicType::ASIC_TYPE_EBRO) {
+    if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO) {
       EXPECT_EQ(
           numPkts,
           *portStatsAfter.outMulticastPkts_() -
@@ -268,9 +274,10 @@ TEST_F(HwPacketSendTest, LldpToFrontPanelWithBufClone) {
 TEST_F(HwPacketSendTest, ArpRequestToFrontPanelPortSwitched) {
   auto setup = [=]() {};
   auto verify = [=]() {
-    auto portStatsBefore = getLatestPortStats(masterLogicalPortIds()[0]);
-    auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto portStatsBefore =
+        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
+    auto vlanId = utility::firstVlanID(initialConfig());
+    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
     auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
     auto randomIP = folly::IPAddressV4("1.1.1.5");
     auto txPacket = utility::makeARPTxPacket(
@@ -283,14 +290,15 @@ TEST_F(HwPacketSendTest, ArpRequestToFrontPanelPortSwitched) {
         ARP_OPER::ARP_OPER_REQUEST,
         std::nullopt);
     getHwSwitchEnsemble()->ensureSendPacketSwitched(std::move(txPacket));
-    auto portStatsAfter = getLatestPortStats(masterLogicalPortIds()[0]);
-    XLOG(INFO) << "ARP Packet:"
+    auto portStatsAfter =
+        getLatestPortStats(masterLogicalInterfacePortIds()[0]);
+    XLOG(DBG2) << "ARP Packet:"
                << " before pkts:" << *portStatsBefore.outBroadcastPkts_()
                << ", after pkts:" << *portStatsAfter.outBroadcastPkts_()
                << ", before bytes:" << *portStatsBefore.outBytes_()
                << ", after bytes:" << *portStatsAfter.outBytes_();
     EXPECT_NE(0, *portStatsAfter.outBytes_() - *portStatsBefore.outBytes_());
-    if (getAsic()->getAsicType() != HwAsic::AsicType::ASIC_TYPE_EBRO) {
+    if (getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_EBRO) {
       EXPECT_EQ(
           1,
           *portStatsAfter.outBroadcastPkts_() -
@@ -304,8 +312,8 @@ TEST_F(HwPacketSendTest, PortTxEnableTest) {
   auto setup = [=]() {};
   auto verify = [=]() {
     constexpr auto kNumPacketsToSend{100};
-    auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto vlanId = utility::firstVlanID(initialConfig());
+    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
     auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
 
     auto sendTcpPkts = [=](int numPacketsToSend) {
@@ -330,7 +338,7 @@ TEST_F(HwPacketSendTest, PortTxEnableTest) {
             255,
             std::vector<uint8_t>(kPayLoadLen, 0xff));
         getHwSwitch()->sendPacketOutOfPortSync(
-            std::move(txPacket), masterLogicalPortIds()[0]);
+            std::move(txPacket), masterLogicalInterfacePortIds()[0]);
       }
     };
 
@@ -343,24 +351,26 @@ TEST_F(HwPacketSendTest, PortTxEnableTest) {
     };
 
     // Disable TX on port
-    utility::setPortTxEnable(getHwSwitch(), masterLogicalPortIds()[0], false);
+    utility::setPortTxEnable(
+        getHwSwitch(), masterLogicalInterfacePortIds()[0], false);
 
-    auto portStatsT0 = getLatestPortStats(masterLogicalPortIds()[0]);
+    auto portStatsT0 = getLatestPortStats(masterLogicalInterfacePortIds()[0]);
     sendTcpPkts(kNumPacketsToSend);
     // We don't know how many packets will get out, wait for atleast 1.
-    waitForTxDoneOnPort(masterLogicalPortIds()[0], 1, portStatsT0);
+    waitForTxDoneOnPort(masterLogicalInterfacePortIds()[0], 1, portStatsT0);
 
-    auto portStatsT1 = getLatestPortStats(masterLogicalPortIds()[0]);
+    auto portStatsT1 = getLatestPortStats(masterLogicalInterfacePortIds()[0]);
     /*
      * Most platforms would allow some packets to be TXed even after TX
      * disable is set. But after the initial set of packets TX, no further
      * TX happens, verify the same.
      */
     sendTcpPkts(kNumPacketsToSend);
-    auto portStatsT2 = getLatestPortStats(masterLogicalPortIds()[0]);
+    auto portStatsT2 = getLatestPortStats(masterLogicalInterfacePortIds()[0]);
 
     // Enable TX on port, and wait for a while for packets to TX
-    utility::setPortTxEnable(getHwSwitch(), masterLogicalPortIds()[0], true);
+    utility::setPortTxEnable(
+        getHwSwitch(), masterLogicalInterfacePortIds()[0], true);
     /*
      * For most platforms where TX disable will not drop traffic, will have
      * the out count increment. However, there are implementations like in
@@ -369,9 +379,9 @@ TEST_F(HwPacketSendTest, PortTxEnableTest) {
      * or drop counts to increment, if neither, return after a timeout.
      */
     waitForTxDoneOnPort(
-        masterLogicalPortIds()[0], kNumPacketsToSend * 2, portStatsT0);
+        masterLogicalInterfacePortIds()[0], kNumPacketsToSend * 2, portStatsT0);
 
-    auto portStatsT3 = getLatestPortStats(masterLogicalPortIds()[0]);
+    auto portStatsT3 = getLatestPortStats(masterLogicalInterfacePortIds()[0]);
     XLOG(DBG0) << "Expected number of packets to be TXed: "
                << kNumPacketsToSend * 2;
     XLOG(DBG0) << "Delta packets during test, T0:T1 -> "
@@ -504,7 +514,7 @@ TEST_F(HwPacketFloodTest, NdpFloodTest) {
         break;
       }
       std::this_thread::sleep_for(1s);
-      XLOG(INFO) << " Retrying ... ";
+      XLOG(DBG2) << " Retrying ... ";
     }
     EXPECT_TRUE(suceess);
   };

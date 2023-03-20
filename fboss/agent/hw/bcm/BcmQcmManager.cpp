@@ -67,7 +67,7 @@ int BcmQcmManager::getQcmFlowGroupId() {
 }
 
 void BcmQcmManager::stopQcmFirmware() {
-  XLOG(INFO) << "[QCM] Firmware stop ..";
+  XLOG(DBG2) << "[QCM] Firmware stop ..";
   BcmFwLoader::stopFirmware(hw_);
 
   auto rv = bcm_cosq_burst_monitor_detach(hw_->getUnit());
@@ -75,7 +75,7 @@ void BcmQcmManager::stopQcmFirmware() {
 }
 
 void BcmQcmManager::initQcmFirmware() {
-  XLOG(INFO) << "[QCM] Firmware load ..";
+  XLOG(DBG2) << "[QCM] Firmware load ..";
   BcmFwLoader::loadFirmware(hw_, hw_->getPlatform()->getAsic());
 
   auto rv = bcm_cosq_burst_monitor_init(hw_->getUnit());
@@ -143,7 +143,7 @@ void BcmQcmManager::initExactMatchGroupCreate() {
     bcmCheckError(rv, "bcm_field_group_config_create failed");
 
     exactMatchGroups_[pipe] = gcfg.group;
-    XLOG(INFO) << "Em groups pipe " << pipe
+    XLOG(DBG2) << "Em groups pipe " << pipe
                << " populated with group: " << gcfg.group;
   }
 }
@@ -202,7 +202,7 @@ void BcmQcmManager::createAndAttachStats(const int ifpEntry) {
   bcmCheckError(rv, "Statistics attach failed");
 
   ifpEntryToStatMap_[ifpEntry] = stat_id;
-  XLOG(INFO) << "ifpEntry=" << ifpEntry << ", stat_id=" << stat_id;
+  XLOG(DBG2) << "ifpEntry=" << ifpEntry << ", stat_id=" << stat_id;
 }
 
 void BcmQcmManager::setupPortsForMonitoring(const Port2QosQueueIdMap& portMap) {
@@ -223,7 +223,7 @@ BcmQcmManager::BcmQcmManager(BcmSwitch* hw)
     : hw_(hw), qcmCollector_(new BcmQcmCollector(hw, this)) {}
 
 BcmQcmManager::~BcmQcmManager() {
-  XLOG(INFO) << "Destroying Qcm Manager";
+  XLOG(DBG2) << "Destroying Qcm Manager";
   stop();
   // reset collector
   qcmCollector_.reset();
@@ -282,7 +282,7 @@ void BcmQcmManager::stop() {
   if (!qcmInitDone_) {
     return;
   }
-  XLOG(INFO) << "Stopping QCM ..";
+  XLOG(DBG2) << "Stopping QCM ..";
   resetBurstMonitor();
   if (qcmCollector_) {
     qcmCollector_->stop();
@@ -317,7 +317,7 @@ int BcmQcmManager::createFlowGroup() {
       hw_->getUnit(), options, &flow_group_id, &flow_group_info);
   bcmCheckError(rv, "Failed in bcm_flowtracker_group_create");
 
-  XLOG(INFO) << "Flow group created for gruop_id: " << flow_group_id;
+  XLOG(DBG2) << "Flow group created for gruop_id: " << flow_group_id;
   return BCM_E_NONE;
 }
 
@@ -325,7 +325,7 @@ void BcmQcmManager::flowLimitSet(int flowLimit) {
   auto rv = bcm_flowtracker_group_flow_limit_set(
       hw_->getUnit(), kQcmFlowGroupId /* flow_group_id */, flowLimit);
   bcmCheckError(rv, "bcm_flowtracker_group_flow_limit_set failed");
-  XLOG(INFO, "bcmFlowLimitSet done");
+  XLOG(DBG2, "bcmFlowLimitSet done");
 }
 
 int BcmQcmManager::createIfpEntry(int port, bool createStats) {
@@ -406,7 +406,7 @@ void BcmQcmManager::setTrackingParams() {
       kBcmFlowTrackerParamsVec.size(),
       trackingParamsArray);
   bcmCheckError(rv, "bcm_flowtracker_group_tracking_params_set failed");
-  XLOG(INFO) << "bcmSetTrackingParams done, rv " << rv;
+  XLOG(DBG2) << "bcmSetTrackingParams done, rv " << rv;
 }
 
 uint32_t BcmQcmManager::getLearnedFlowCount() {
@@ -452,13 +452,14 @@ QosQueueIds BcmQcmManager::getQosQueueIds(
   // QCM queues to be monitored comes from config
   // Today QCM will monitor icp, silver, gold, bronze queues on the port
   // (olympic qos model) or upto first 5 queues if queue_per_host is enabled.
-  const auto& port2QosQueueIdMap = qcmCfg->getPort2QosQueueIdMap();
+  const auto& port2QosQueueIdMap =
+      std::as_const(*qcmCfg->getPort2QosQueueIdMap());
   auto iter = port2QosQueueIdMap.find(portId);
   if (iter == port2QosQueueIdMap.end()) {
     XLOG(ERR) << "Unable to find QosQueueIds for port: " << portId;
     return {};
   }
-  return iter->second;
+  return iter->second->toThrift();
 }
 
 // find the candidate ports needed for monitoring
@@ -534,10 +535,11 @@ void BcmQcmManager::processQcmConfigChanged(
 // in programming (as qcm ports are limited)
 void BcmQcmManager::setupConfiguredPortsForMonitoring(
     const std::shared_ptr<SwitchState>& swState,
-    const std::vector<int32_t>& qcmPortList) {
+    auto* qcmPortList) {
   Port2QosQueueIdMap candidatePortMap{};
-  for (const auto& port : qcmPortList) {
-    candidatePortMap[port] = getQosQueueIds(swState->getQcmCfg(), port);
+  for (auto port : *qcmPortList) {
+    candidatePortMap[port->cref()] =
+        getQosQueueIds(swState->getQcmCfg(), port->cref());
   }
   updateQcmMonitoredPortsIfNeeded(candidatePortMap);
 }
@@ -568,7 +570,7 @@ void BcmQcmManager::init(const std::shared_ptr<SwitchState>& swState) {
   if (!isQcmSupported(hw_)) {
     return;
   }
-  XLOG(INFO) << "[QCM] Start Init";
+  XLOG(DBG2) << "[QCM] Start Init";
 
   qcmCfg_ = swState->getQcmCfg();
   initQcmFirmware();
@@ -600,11 +602,12 @@ void BcmQcmManager::init(const std::shared_ptr<SwitchState>& swState) {
 
   // Configured ports get priority in monitoring
   // these are the uplnk ports today, but can be configured differently
-  setupConfiguredPortsForMonitoring(swState, qcmCfg_->getMonitorQcmPortList());
+  setupConfiguredPortsForMonitoring(
+      swState, qcmCfg_->getMonitorQcmPortList().get());
   /* create collector */
   qcmCollector_->init(swState);
 
   qcmInitDone_ = true;
-  XLOG(INFO) << "[QCM] Init done";
+  XLOG(DBG2) << "[QCM] Init done";
 }
 } // namespace facebook::fboss

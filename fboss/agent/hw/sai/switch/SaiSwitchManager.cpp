@@ -36,10 +36,17 @@ DEFINE_uint32(
     1,
     "Counter refresh interval in seconds. Set it to 0 to fetch stats from HW");
 
+DEFINE_bool(
+    skip_setting_src_mac,
+    false,
+    "Flag to indicate whether to skip setting source mac in Sai switch during wb");
+
 namespace {
 using namespace facebook::fboss;
 sai_hash_algorithm_t toSaiHashAlgo(cfg::HashingAlgorithm algo) {
   switch (algo) {
+    case cfg::HashingAlgorithm::CRC:
+      return SAI_HASH_ALGORITHM_CRC;
     case cfg::HashingAlgorithm::CRC16_CCITT:
       return SAI_HASH_ALGORITHM_CRC_CCITT;
     case cfg::HashingAlgorithm::CRC32_LO:
@@ -65,24 +72,26 @@ SaiSwitchManager::SaiSwitchManager(
     cfg::SwitchType switchType,
     std::optional<int64_t> switchId)
     : managerTable_(managerTable), platform_(platform) {
+  int64_t swId = switchId.value_or(0);
   if (bootType == BootType::WARM_BOOT) {
     // Extract switch adapter key and create switch only with the mandatory
     // init attribute (warm boot path)
     auto& switchApi = SaiApiTable::getInstance()->switchApi();
     auto newSwitchId = switchApi.create<SaiSwitchTraits>(
-        platform->getSwitchAttributes(true, switchType, switchId),
-        0 /* switch id; ignored */);
+        platform->getSwitchAttributes(true, switchType, switchId), swId);
     // Load all switch attributes
     switch_ = std::make_unique<SaiSwitchObj>(newSwitchId);
-    switch_->setOptionalAttribute(
-        SaiSwitchTraits::Attributes::SrcMac{platform->getLocalMac()});
+    if (!FLAGS_skip_setting_src_mac) {
+      switch_->setOptionalAttribute(
+          SaiSwitchTraits::Attributes::SrcMac{platform->getLocalMac()});
+    }
     switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::MacAgingTime{
         platform->getDefaultMacAgingTime()});
   } else {
     switch_ = std::make_unique<SaiSwitchObj>(
         std::monostate(),
         platform->getSwitchAttributes(false, switchType, switchId),
-        0 /* fake switch id; ignored */);
+        swId);
 
     const auto& asic = platform_->getAsic();
     if (asic->isSupported(HwAsic::Feature::ECMP_HASH_V4)) {
@@ -96,8 +105,7 @@ SaiSwitchManager::SaiSwitchManager(
     resetLoadBalancer<SaiSwitchTraits::Attributes::LagHashV6>();
 #endif
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
-    if (asic->isSupported(HwAsic::Feature::ECMP_HASH_V4) ||
-        asic->isSupported(HwAsic::Feature::ECMP_HASH_V6)) {
+    if (asic->isSupported(HwAsic::Feature::ECMP_MEMBER_WIDTH_INTROSPECTION)) {
       auto maxEcmpCount = SaiApiTable::getInstance()->switchApi().getAttribute(
           switch_->adapterKey(),
           SaiSwitchTraits::Attributes::MaxEcmpMemberCount{});
@@ -110,8 +118,7 @@ SaiSwitchManager::SaiSwitchManager(
   if (platform_->getAsic()->isSupported(HwAsic::Feature::CPU_PORT)) {
     initCpuPort();
   }
-  isMplsQosSupported_ =
-      platform_->getAsic()->isSupported(HwAsic::Feature::SAI_MPLS_QOS);
+  isMplsQosSupported_ = isMplsQoSMapSupported();
 }
 
 void SaiSwitchManager::initCpuPort() {
@@ -209,16 +216,20 @@ SaiHashTraits::CreateAttributes SaiSwitchManager::getProgrammedHashAttr() {
       SaiApiTable::getInstance()->hashApi().getAttribute(
           HashSaiId{programmedHash.value().value()},
           SaiHashTraits::Attributes::NativeHashFieldList{});
-  auto programmedUDFGroupList =
-      SaiApiTable::getInstance()->hashApi().getAttribute(
-          HashSaiId{programmedHash.value().value()},
-          SaiHashTraits::Attributes::UDFGroupList{});
-
   if (!programmedNativeHashFieldList.empty()) {
     nativeHashFieldList = programmedNativeHashFieldList;
   }
-  if (!programmedUDFGroupList.empty()) {
-    udfGroupList = programmedUDFGroupList;
+
+  if (platform_->getAsic()->isSupported(
+          HwAsic::Feature::UDF_HASH_FIELD_QUERY)) {
+    auto programmedUDFGroupList =
+        SaiApiTable::getInstance()->hashApi().getAttribute(
+            HashSaiId{programmedHash.value().value()},
+            SaiHashTraits::Attributes::UDFGroupList{});
+
+    if (!programmedUDFGroupList.empty()) {
+      udfGroupList = programmedUDFGroupList;
+    }
   }
 
   return hashCreateAttrs;
@@ -265,32 +276,49 @@ void SaiSwitchManager::addOrUpdateEcmpLoadBalancer(
     const std::shared_ptr<LoadBalancer>& newLb) {
   programEcmpLoadBalancerParams(newLb->getSeed(), newLb->getAlgorithm());
 
-  if (newLb->getIPv4Fields().size()) {
+  if (newLb->getIPv4Fields().begin() != newLb->getIPv4Fields().end()) {
     // v4 ECMP
     auto programmedLoadBalancer =
         getProgrammedHashAttr<SaiSwitchTraits::Attributes::EcmpHashV4>();
 
     cfg::Fields v4EcmpHashFields;
-    v4EcmpHashFields.ipv4Fields()->insert(
-        newLb->getIPv4Fields().begin(), newLb->getIPv4Fields().end());
-    v4EcmpHashFields.transportFields()->insert(
-        newLb->getTransportFields().begin(), newLb->getTransportFields().end());
+    std::for_each(
+        newLb->getIPv4Fields().begin(),
+        newLb->getIPv4Fields().end(),
+        [&v4EcmpHashFields](const auto& entry) {
+          v4EcmpHashFields.ipv4Fields()->insert(entry->cref());
+        });
+    std::for_each(
+        newLb->getTransportFields().begin(),
+        newLb->getTransportFields().end(),
+        [&v4EcmpHashFields](const auto& entry) {
+          v4EcmpHashFields.transportFields()->insert(entry->cref());
+        });
     ecmpV4Hash_ = managerTable_->hashManager().getOrCreate(v4EcmpHashFields);
 
     // Set the new ecmp v4 hash attribute on switch obj
     setLoadBalancer<SaiSwitchTraits::Attributes::EcmpHashV4>(
         ecmpV4Hash_, programmedLoadBalancer);
   }
-  if (newLb->getIPv6Fields().size()) {
+  if (newLb->getIPv6Fields().begin() != newLb->getIPv6Fields().end()) {
     // v6 ECMP
     auto programmedLoadBalancer =
         getProgrammedHashAttr<SaiSwitchTraits::Attributes::EcmpHashV6>();
 
     cfg::Fields v6EcmpHashFields;
-    v6EcmpHashFields.ipv6Fields()->insert(
-        newLb->getIPv6Fields().begin(), newLb->getIPv6Fields().end());
-    v6EcmpHashFields.transportFields()->insert(
-        newLb->getTransportFields().begin(), newLb->getTransportFields().end());
+    std::for_each(
+        newLb->getIPv6Fields().begin(),
+        newLb->getIPv6Fields().end(),
+        [&v6EcmpHashFields](const auto& entry) {
+          v6EcmpHashFields.ipv6Fields()->insert(entry->cref());
+        });
+
+    std::for_each(
+        newLb->getTransportFields().begin(),
+        newLb->getTransportFields().end(),
+        [&v6EcmpHashFields](const auto& entry) {
+          v6EcmpHashFields.transportFields()->insert(entry->cref());
+        });
     ecmpV6Hash_ = managerTable_->hashManager().getOrCreate(v6EcmpHashFields);
 
     // Set the new ecmp v6 hash attribute on switch obj
@@ -318,32 +346,46 @@ void SaiSwitchManager::addOrUpdateLagLoadBalancer(
     XLOG(WARN) << "Skip programming SAI_LAG_HASH, feature not supported ";
     return;
   }
-#if defined(SAI_VERSION_5_1_0_3_ODP)
-  XLOG(WARN)
-      << "Skip programming SAI_LAG_HASH, feature not supported before 7.0";
-  return;
-#endif
   programLagLoadBalancerParams(newLb->getSeed(), newLb->getAlgorithm());
 
-  if (newLb->getIPv4Fields().size()) {
+  if (newLb->getIPv4Fields().begin() != newLb->getIPv4Fields().end()) {
     // v4 LAG
     cfg::Fields v4LagHashFields;
-    v4LagHashFields.ipv4Fields()->insert(
-        newLb->getIPv4Fields().begin(), newLb->getIPv4Fields().end());
-    v4LagHashFields.transportFields()->insert(
-        newLb->getTransportFields().begin(), newLb->getTransportFields().end());
+    std::for_each(
+        newLb->getIPv4Fields().begin(),
+        newLb->getIPv4Fields().end(),
+        [&v4LagHashFields](const auto& entry) {
+          v4LagHashFields.ipv4Fields()->insert(entry->cref());
+        });
+
+    std::for_each(
+        newLb->getTransportFields().begin(),
+        newLb->getTransportFields().end(),
+        [&v4LagHashFields](const auto& entry) {
+          v4LagHashFields.transportFields()->insert(entry->cref());
+        });
     lagV4Hash_ = managerTable_->hashManager().getOrCreate(v4LagHashFields);
     // Set the new lag v4 hash attribute on switch obj
     switch_->setOptionalAttribute(
         SaiSwitchTraits::Attributes::LagHashV4{lagV4Hash_->adapterKey()});
   }
-  if (newLb->getIPv6Fields().size()) {
+  if (newLb->getIPv6Fields().begin() != newLb->getIPv6Fields().end()) {
     // v6 LAG
     cfg::Fields v6LagHashFields;
-    v6LagHashFields.ipv6Fields()->insert(
-        newLb->getIPv6Fields().begin(), newLb->getIPv6Fields().end());
-    v6LagHashFields.transportFields()->insert(
-        newLb->getTransportFields().begin(), newLb->getTransportFields().end());
+    std::for_each(
+        newLb->getIPv6Fields().begin(),
+        newLb->getIPv6Fields().end(),
+        [&v6LagHashFields](const auto& entry) {
+          v6LagHashFields.ipv6Fields()->insert(entry->cref());
+        });
+
+    std::for_each(
+        newLb->getTransportFields().begin(),
+        newLb->getTransportFields().end(),
+        [&v6LagHashFields](const auto& entry) {
+          v6LagHashFields.transportFields()->insert(entry->cref());
+        });
+
     lagV6Hash_ = managerTable_->hashManager().getOrCreate(v6LagHashFields);
     // Set the new lag v6 hash attribute on switch obj
     switch_->setOptionalAttribute(
@@ -380,24 +422,26 @@ void SaiSwitchManager::removeLoadBalancer(
 
 void SaiSwitchManager::setQosPolicy() {
   auto& qosMapManager = managerTable_->qosMapManager();
-  XLOG(INFO) << "Set default qos map";
+  XLOG(DBG2) << "Set default qos map";
   auto qosMapHandle = qosMapManager.getQosMap();
-  globalDscpToTcQosMap_ = qosMapHandle->dscpToTcMap;
-  globalTcToQueueQosMap_ = qosMapHandle->tcToQueueMap;
-  globalExpToTcQosMap_ = qosMapHandle->expToTcMap;
-  globalTcToExpQosMap_ = qosMapHandle->tcToExpMap;
   // set switch attrs to oids
-  switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::QosDscpToTcMap{
-      globalDscpToTcQosMap_->adapterKey()});
-  switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::QosTcToQueueMap{
-      globalTcToQueueQosMap_->adapterKey()});
+  if (isGlobalQoSMapSupported()) {
+    globalDscpToTcQosMap_ = qosMapHandle->dscpToTcMap;
+    switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::QosDscpToTcMap{
+        globalDscpToTcQosMap_->adapterKey()});
+    globalTcToQueueQosMap_ = qosMapHandle->tcToQueueMap;
+    switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::QosTcToQueueMap{
+        globalTcToQueueQosMap_->adapterKey()});
+  }
   if (!isMplsQosSupported_) {
     return;
   }
+  globalExpToTcQosMap_ = qosMapHandle->expToTcMap;
   if (globalExpToTcQosMap_) {
     switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::QosExpToTcMap{
         globalExpToTcQosMap_->adapterKey()});
   }
+  globalTcToExpQosMap_ = qosMapHandle->tcToExpMap;
   if (globalTcToExpQosMap_) {
     switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::QosTcToExpMap{
         globalTcToExpQosMap_->adapterKey()});
@@ -405,7 +449,7 @@ void SaiSwitchManager::setQosPolicy() {
 }
 
 void SaiSwitchManager::clearQosPolicy() {
-  XLOG(INFO) << "Reset default qos map";
+  XLOG(DBG2) << "Reset default qos map";
   resetQosMaps();
 }
 
@@ -425,7 +469,7 @@ void SaiSwitchManager::setIngressAcl(sai_object_id_t id) {
           HwAsic::Feature::SWITCH_ATTR_INGRESS_ACL)) {
     return;
   }
-  XLOG(INFO) << "Set ingress ACL; " << id;
+  XLOG(DBG2) << "Set ingress ACL; " << id;
   switch_->setOptionalAttribute(SaiSwitchTraits::Attributes::IngressAcl{id});
 }
 
@@ -439,7 +483,7 @@ void SaiSwitchManager::resetIngressAcl() {
       std::get<std::optional<SaiSwitchTraits::Attributes::IngressAcl>>(
           switch_->attributes());
   if (ingressAcl && ingressAcl->value() != SAI_NULL_OBJECT_ID) {
-    XLOG(INFO) << "Reset current ingress acl:" << ingressAcl->value()
+    XLOG(DBG2) << "Reset current ingress acl:" << ingressAcl->value()
                << " back to null";
     switch_->setOptionalAttribute(
         SaiSwitchTraits::Attributes::IngressAcl{SAI_NULL_OBJECT_ID});
@@ -493,4 +537,23 @@ std::optional<bool> SaiSwitchManager::getPtpTcEnabled() {
   return isPtpTcEnabled_;
 }
 
+bool SaiSwitchManager::isGlobalQoSMapSupported() const {
+#if defined(SAI_VERSION_7_2_0_0_ODP) || defined(SAI_VERSION_8_2_0_0_ODP) ||    \
+    defined(SAI_VERSION_8_2_0_0_SIM) ||                                        \
+    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
+    defined(SAI_VERSION_9_0_EA_DNX_ODP) || defined(SAI_VERSION_9_0_EA_SIM_ODP)
+  return false;
+#endif
+  return platform_->getAsic()->isSupported(HwAsic::Feature::QOS_MAP_GLOBAL);
+}
+
+bool SaiSwitchManager::isMplsQoSMapSupported() const {
+#if defined(SAI_VERSION_7_2_0_0_ODP)
+  return false;
+#endif
+#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+  return false;
+#endif
+  return platform_->getAsic()->isSupported(HwAsic::Feature::SAI_MPLS_QOS);
+}
 } // namespace facebook::fboss

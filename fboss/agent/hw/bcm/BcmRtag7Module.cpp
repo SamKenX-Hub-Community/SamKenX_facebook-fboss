@@ -10,6 +10,7 @@
 #include "fboss/agent/hw/bcm/BcmRtag7Module.h"
 
 #include "fboss/agent/hw/bcm/BcmError.h"
+#include "fboss/agent/hw/bcm/BcmUdfManager.h"
 #include "fboss/agent/hw/bcm/BcmWarmBootCache.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 
@@ -24,6 +25,8 @@ extern "C" {
 
 namespace {
 const bool kEnable = true;
+static constexpr int kBcmECMPHashSet0Offset = 0x5;
+static constexpr int kBcmEcmpDynamicHashOffset = 0x5;
 } // namespace
 
 namespace facebook::fboss {
@@ -202,20 +205,65 @@ void BcmRtag7Module::programFlowBasedHashTable() {
   }
 }
 
+void BcmRtag7Module::programUdfHash(
+    const LoadBalancer::UdfGroupIds& oldUdfGroups,
+    const LoadBalancer::UdfGroupIds& newUdfGroups) {
+  LoadBalancer::UdfGroupIds toBeRemovedUdfGroups;
+  LoadBalancer::UdfGroupIds toBeAddedUdfGroups;
+
+  std::set_difference(
+      oldUdfGroups.begin(),
+      oldUdfGroups.end(),
+      newUdfGroups.begin(),
+      newUdfGroups.end(),
+      std::inserter(toBeRemovedUdfGroups, toBeRemovedUdfGroups.end()));
+
+  for (const auto& toBeRemovedUdfGroup : toBeRemovedUdfGroups) {
+    const int bcmUdfGroupId =
+        hw_->getUdfMgr()->getBcmUdfGroupId(toBeRemovedUdfGroup);
+    const int bcmUdfGroupFieldSize =
+        hw_->getUdfMgr()->getBcmUdfGroupFieldSize(toBeRemovedUdfGroup);
+    deleteUdfHash(toBeRemovedUdfGroup, bcmUdfGroupId, bcmUdfGroupFieldSize);
+  }
+
+  std::set_difference(
+      newUdfGroups.begin(),
+      newUdfGroups.end(),
+      oldUdfGroups.begin(),
+      oldUdfGroups.end(),
+      std::inserter(toBeAddedUdfGroups, toBeAddedUdfGroups.end()));
+
+  for (const auto& toBeAddedUdfGroup : toBeAddedUdfGroups) {
+    const int bcmUdfGroupId =
+        hw_->getUdfMgr()->getBcmUdfGroupId(toBeAddedUdfGroup);
+    const int bcmUdfGroupFieldSize =
+        hw_->getUdfMgr()->getBcmUdfGroupFieldSize(toBeAddedUdfGroup);
+    addUdfHash(toBeAddedUdfGroup, bcmUdfGroupId, bcmUdfGroupFieldSize);
+  }
+}
+
 void BcmRtag7Module::programFieldSelection(const LoadBalancer& loadBalancer) {
   programIPv4FieldSelection(
-      loadBalancer.getIPv4Fields(), loadBalancer.getTransportFields());
+      loadBalancer.getIPv4Fields(),
+      loadBalancer.getTransportFields(),
+      loadBalancer.getUdfGroupIds());
   programIPv6FieldSelection(
-      loadBalancer.getIPv6Fields(), loadBalancer.getTransportFields());
+      loadBalancer.getIPv6Fields(),
+      loadBalancer.getTransportFields(),
+      loadBalancer.getUdfGroupIds());
   programTerminatedMPLSFieldSelection(loadBalancer);
   programNonTerminatedMPLSFieldSelection(loadBalancer);
+  programUdfSelection(loadBalancer.getUdfGroupIds());
+  programUdfHash({}, loadBalancer.getUdfGroupIds());
 }
 
 void BcmRtag7Module::programIPv4FieldSelection(
     LoadBalancer::IPv4FieldsRange v4FieldsRange,
-    LoadBalancer::TransportFieldsRange transportFieldsRange) {
+    LoadBalancer::TransportFieldsRange transportFieldsRange,
+    const LoadBalancer::UdfGroupIds& udfGroupIds) {
   int arg = computeIPv4Subfields(v4FieldsRange);
   arg |= computeTransportSubfields(transportFieldsRange);
+  arg |= computeUdf(udfGroupIds);
 
   // TODO(samank): why do we set BCM_HASH_FIELD_{SRC,DST}L4 here...
   int rv = setUnitControl(moduleControl_.ipv4NonTcpUdpFieldSelection, arg);
@@ -231,9 +279,29 @@ void BcmRtag7Module::programIPv4FieldSelection(
   bcmCheckError(rv, "failed to config field selection");
 }
 
+void BcmRtag7Module::programUdfSelection(
+    const LoadBalancer::UdfGroupIds& udfGroupIds) {
+  int enableUdfHash = 0;
+  if (udfGroupIds.size()) {
+    switch (moduleControl_.module) {
+      case 'A':
+        enableUdfHash = BCM_HASH_FIELD0_ENABLE_UDFHASH;
+        break;
+      case 'B':
+        enableUdfHash = BCM_HASH_FIELD1_ENABLE_UDFHASH;
+        break;
+      default:
+        folly::assume_unreachable();
+    }
+  }
+  int rv = setUnitControl(bcmSwitchUdfHashEnable, enableUdfHash);
+  bcmCheckError(rv, "failed to enable Udf hash");
+}
+
 void BcmRtag7Module::programIPv6FieldSelection(
     LoadBalancer::IPv6FieldsRange v6FieldsRange,
-    LoadBalancer::TransportFieldsRange transportFieldsRange) {
+    LoadBalancer::TransportFieldsRange transportFieldsRange,
+    const LoadBalancer::UdfGroupIds& udfGroupIds) {
   auto it = std::find(
       v6FieldsRange.begin(),
       v6FieldsRange.end(),
@@ -244,6 +312,7 @@ void BcmRtag7Module::programIPv6FieldSelection(
 
   int arg = computeIPv6Subfields(v6FieldsRange);
   arg |= computeTransportSubfields(transportFieldsRange);
+  arg |= computeUdf(udfGroupIds);
 
   // TODO(samank): why do we set BCM_HASH_FIELD_{SRC,DST}L4 here...
   int rv = setUnitControl(moduleControl_.ipv6NonTcpUdpFieldSelection, arg);
@@ -271,6 +340,15 @@ void BcmRtag7Module::enableRtag7(LoadBalancerID loadBalancerID) {
     case LoadBalancerID::ECMP:
       rv = setUnitControl(bcmSwitchHashControl, BCM_HASH_CONTROL_ECMP_ENHANCE);
       bcmCheckError(rv, "failed to enable RTAG7 for ECMP");
+      if (FLAGS_flowletSwitchingEnable) {
+        XLOG(DBG2) << "RTAG7 Programming for flowlet switching config: ";
+        rv =
+            setUnitControl(bcmSwitchECMPHashSet0Offset, kBcmECMPHashSet0Offset);
+        bcmCheckError(rv, "failed to set enhanced hash bits selection");
+        rv = setUnitControl(
+            bcmSwitchEcmpDynamicHashOffset, kBcmEcmpDynamicHashOffset);
+        bcmCheckError(rv, "failed to set ECMP-DLB hashout selection");
+      }
       break;
     case LoadBalancerID::AGGREGATE_PORT:
       // RTAG7 for trunks is enabled via bcm_trunk_info_t.psc for unicast
@@ -326,17 +404,30 @@ void BcmRtag7Module::program(
       oldLoadBalancer->getMPLSFields().end(),
       newLoadBalancer->getMPLSFields().begin(),
       newLoadBalancer->getMPLSFields().end());
+  bool sameUdf = std::equal(
+      oldLoadBalancer->getUdfGroupIds().begin(),
+      oldLoadBalancer->getUdfGroupIds().end(),
+      newLoadBalancer->getUdfGroupIds().begin(),
+      newLoadBalancer->getUdfGroupIds().end());
 
-  if (!sameIPv4Fields || !sameTransportFields) {
+  if (!sameIPv4Fields || !sameTransportFields || !sameUdf) {
     programIPv4FieldSelection(
         newLoadBalancer->getIPv4Fields(),
-        newLoadBalancer->getTransportFields());
+        newLoadBalancer->getTransportFields(),
+        newLoadBalancer->getUdfGroupIds());
   }
 
-  if (!sameIPv6Fields || !sameTransportFields) {
+  if (!sameIPv6Fields || !sameTransportFields || !sameUdf) {
     programIPv6FieldSelection(
         newLoadBalancer->getIPv6Fields(),
-        newLoadBalancer->getTransportFields());
+        newLoadBalancer->getTransportFields(),
+        newLoadBalancer->getUdfGroupIds());
+  }
+
+  if (!sameUdf) {
+    programUdfSelection(newLoadBalancer->getUdfGroupIds());
+    programUdfHash(
+        oldLoadBalancer->getUdfGroupIds(), newLoadBalancer->getUdfGroupIds());
   }
 
   if (!sameMPLSFields || !sameIPv4Fields || !sameIPv6Fields) {
@@ -363,7 +454,7 @@ int BcmRtag7Module::computeIPv4Subfields(
   int subfields = 0;
 
   for (const auto& v4Field : v4FieldsRange) {
-    switch (v4Field) {
+    switch (v4Field->cref()) {
       case LoadBalancer::IPv4Field::SOURCE_ADDRESS:
         subfields |= (BCM_HASH_FIELD_IP4SRC_LO | BCM_HASH_FIELD_IP4SRC_HI);
         break;
@@ -381,7 +472,7 @@ int BcmRtag7Module::computeIPv6Subfields(
   int subfields = 0;
 
   for (const auto& v6Field : v6FieldsRange) {
-    switch (v6Field) {
+    switch (v6Field->cref()) {
       case LoadBalancer::IPv6Field::SOURCE_ADDRESS:
         subfields |= (BCM_HASH_FIELD_IP6SRC_LO | BCM_HASH_FIELD_IP6SRC_HI);
         break;
@@ -402,7 +493,7 @@ int BcmRtag7Module::computeTransportSubfields(
   int subfields = 0;
 
   for (const auto& transportField : transportFieldsRange) {
-    switch (transportField) {
+    switch (transportField->cref()) {
       case LoadBalancer::TransportField::SOURCE_PORT:
         subfields |= BCM_HASH_FIELD_SRCL4;
         break;
@@ -413,6 +504,17 @@ int BcmRtag7Module::computeTransportSubfields(
   }
 
   return subfields;
+}
+
+int BcmRtag7Module::computeUdf(
+    const LoadBalancer::UdfGroupIds& udfGroupIds) const {
+  int subFields = 0;
+  if (udfGroupIds.size()) {
+    // udf is configured, since UDF uses bin 2, 3 in the hash
+    // they map to srcPort, srcMode fields
+    subFields = BCM_HASH_FIELD_SRCMOD | BCM_HASH_FIELD_SRCPORT;
+  }
+  return subFields;
 }
 
 void BcmRtag7Module::programFieldControl() {
@@ -606,6 +708,8 @@ void BcmRtag7Module::enableFlowLabelSelection() {
 int BcmRtag7Module::getBcmHashingAlgorithm(
     cfg::HashingAlgorithm algorithm) const {
   switch (algorithm) {
+    case cfg::HashingAlgorithm::CRC:
+      return BCM_HASH_FIELD_CONFIG_CRC16;
     case cfg::HashingAlgorithm::CRC16_CCITT:
       return BCM_HASH_FIELD_CONFIG_CRC16CCITT;
     case cfg::HashingAlgorithm::CRC32_LO:
@@ -707,7 +811,7 @@ int BcmRtag7Module::computeL3MPLSPayloadSubfields(
   int fields = 0;
 
   for (const auto& v4Field : loadBalancer.getIPv4Fields()) {
-    switch (v4Field) {
+    switch (v4Field->cref()) {
       case LoadBalancer::IPv4Field::SOURCE_ADDRESS:
         // upper and lower 16 bits of v4 src address
         fields |=
@@ -722,7 +826,7 @@ int BcmRtag7Module::computeL3MPLSPayloadSubfields(
   }
 
   for (const auto& v6Field : loadBalancer.getIPv6Fields()) {
-    switch (v6Field) {
+    switch (v6Field->cref()) {
       case LoadBalancer::IPv6Field::SOURCE_ADDRESS:
         // upper and lower 16 bits of collapsed v6 src address
         fields |=
@@ -753,7 +857,7 @@ int BcmRtag7Module::computeL3MPLSHeaderSubfields(
     const LoadBalancer& loadBalancer) {
   int fields = 0;
   for (auto mplsLabel : loadBalancer.getMPLSFields()) {
-    switch (mplsLabel) {
+    switch (mplsLabel->cref()) {
       case LoadBalancer::MPLSField::TOP_LABEL:
         // pick lower 16 bits and 4 upper bits of top label
         fields |=
@@ -774,4 +878,47 @@ int BcmRtag7Module::computeL3MPLSHeaderSubfields(
   return fields;
 }
 
+void BcmRtag7Module::addUdfHash(
+    const std::string& udfGroupName,
+    const int bcmUdfGroupId,
+    const int bcmUdfFieldSize) {
+  bcm_udf_hash_config_t config;
+  bcm_udf_hash_config_t_init(&config);
+
+  config.udf_id = bcmUdfGroupId;
+  config.mask_length = bcmUdfFieldSize;
+  for (int i = 0; i < bcmUdfFieldSize; ++i) {
+    config.hash_mask[i] = 0xff;
+  }
+
+  int rv = bcm_udf_hash_config_add(hw_->getUnit(), 0, &config);
+  bcmCheckError(
+      rv,
+      "Failed to enable hash for UDF group ",
+      udfGroupName,
+      " id: ",
+      config.udf_id);
+}
+
+void BcmRtag7Module::deleteUdfHash(
+    const std::string& udfGroupName,
+    const int bcmUdfGroupId,
+    const int bcmUdfFieldSize) {
+  bcm_udf_hash_config_t config;
+  bcm_udf_hash_config_t_init(&config);
+
+  config.udf_id = bcmUdfGroupId;
+  config.mask_length = bcmUdfFieldSize;
+  for (int i = 0; i < bcmUdfFieldSize; ++i) {
+    config.hash_mask[i] = 0xff;
+  }
+
+  int rv = bcm_udf_hash_config_delete(hw_->getUnit(), &config);
+  bcmLogFatal(
+      rv,
+      hw_,
+      "Failed to remove UDF group ",
+      udfGroupName,
+      " from hash config");
+}
 } // namespace facebook::fboss

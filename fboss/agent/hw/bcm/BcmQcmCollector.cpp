@@ -124,7 +124,7 @@ void BcmQcmCollector::exportProfileCreate() {
 bool BcmQcmCollector::getCollectorVlan(
     const std::shared_ptr<SwitchState>& swState) {
   const auto vlans = swState->getVlans();
-  for (const auto& vlan : *vlans) {
+  for (const auto& [id, vlan] : std::as_const(*vlans)) {
     // pick up any arbitrary vlan which is programmed
     // Collector pkts need to hit my station table entry
     // to route which can happen based on {dst_mac, vlan}
@@ -167,7 +167,7 @@ void BcmQcmCollector::init(const std::shared_ptr<SwitchState>& swState) {
   exportProfileCreate();
   flowTrackerTemplateCreate();
   collectorTemplateAttach();
-  XLOG(INFO) << "Collector Init done";
+  XLOG(DBG2) << "Collector Init done";
 }
 
 void BcmQcmCollector::destroyCollector() {
@@ -187,6 +187,6 @@ void BcmQcmCollector::stop() {
   destroyExportProfile();
   destroyFlowTrackerTemplate();
 
-  XLOG(INFO) << "Collector stop done";
+  XLOG(DBG2) << "Collector stop done";
 }
 } // namespace facebook::fboss

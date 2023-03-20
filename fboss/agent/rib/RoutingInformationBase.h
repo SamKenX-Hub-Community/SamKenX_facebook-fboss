@@ -102,6 +102,11 @@ class RibRouteTables {
       const std::shared_ptr<ForwardingInformationBaseMap>& fibs,
       const std::shared_ptr<LabelForwardingInformationBase>& labelFib);
 
+  static RibRouteTables fromThrift(
+      const std::map<int32_t, state::RouteTableFields>& ribThrift,
+      const std::shared_ptr<ForwardingInformationBaseMap>& fibs,
+      const std::shared_ptr<LabelForwardingInformationBase>& labelFib);
+
   void ensureVrf(RouterID rid);
   std::vector<RouterID> getVrfList() const;
   std::vector<RouteDetails> getRouteTableDetails(RouterID rid) const;
@@ -111,6 +116,11 @@ class RibRouteTables {
   std::shared_ptr<Route<AddressT>> longestMatch(
       const AddressT& address,
       RouterID vrf) const;
+
+  std::map<int32_t, state::RouteTableFields> toThrift() const;
+  static RibRouteTables fromThrift(
+      const std::map<int32_t, state::RouteTableFields>&);
+  std::map<int32_t, state::RouteTableFields> warmBootState() const;
 
  private:
   template <typename Filter>
@@ -137,6 +147,9 @@ class RibRouteTables {
       auto it = v6NetworkToRoute.longestMatch(addr, addr.bitCount());
       return it == v6NetworkToRoute.end() ? nullptr : it->value();
     }
+    state::RouteTableFields toThrift() const;
+    static RouteTable fromThrift(const state::RouteTableFields&);
+    state::RouteTableFields warmBootState() const;
   };
 
   void updateFib(
@@ -145,6 +158,7 @@ class RibRouteTables {
       void* cookie);
   template <typename RibUpdateFn>
   void updateRib(RouterID vrf, const RibUpdateFn& updateRib);
+
   /*
    * Currently, route updates to separate VRFs are made to be sequential. In the
    * event FBOSS has to operate in a routing architecture with numerous VRFs,
@@ -154,6 +168,11 @@ class RibRouteTables {
    */
   using RouterIDToRouteTable = boost::container::flat_map<RouterID, RouteTable>;
   using SynchronizedRouteTables = folly::Synchronized<RouterIDToRouteTable>;
+
+  void importFibs(
+      const SynchronizedRouteTables::WLockedPtr& lockedRouteTables,
+      const std::shared_ptr<ForwardingInformationBaseMap>& fibs,
+      const std::shared_ptr<LabelForwardingInformationBase>& labelFib);
 
   RouterIDToRouteTable constructRouteTables(
       const SynchronizedRouteTables::WLockedPtr& lockedRouteTables,
@@ -286,6 +305,11 @@ class RoutingInformationBase {
       const std::shared_ptr<ForwardingInformationBaseMap>& fibs,
       const std::shared_ptr<LabelForwardingInformationBase>& labelFib);
 
+  static std::unique_ptr<RoutingInformationBase> fromThrift(
+      const std::map<int32_t, state::RouteTableFields>& ribJson,
+      const std::shared_ptr<ForwardingInformationBaseMap>& fibs,
+      const std::shared_ptr<LabelForwardingInformationBase>& labelFib);
+
   void ensureVrf(RouterID rid) {
     ribTables_.ensureVrf(rid);
   }
@@ -311,6 +335,11 @@ class RoutingInformationBase {
       RouterID vrf) const {
     return ribTables_.longestMatch(address, vrf);
   }
+
+  std::map<int32_t, state::RouteTableFields> toThrift() const;
+  static std::unique_ptr<RoutingInformationBase> fromThrift(
+      const std::map<int32_t, state::RouteTableFields>&);
+  std::map<int32_t, state::RouteTableFields> warmBootState() const;
 
  private:
   void ensureRunning() const;

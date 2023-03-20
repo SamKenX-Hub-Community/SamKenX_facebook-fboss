@@ -136,7 +136,7 @@ class HwMacLearningAndNeighborResolutionTest : public HwLinkStateDependentTest {
     auto vlan = newState->getVlans()->getVlanIf(kVlanID).get();
     auto macTable = vlan->getMacTable().get();
     macTable = macTable->modify(&vlan, &newState);
-    auto macEntry = macTable->getNode(kNeighborMac);
+    auto macEntry = macTable->getNode(kNeighborMac.toString());
     macTable->updateEntry(
         kNeighborMac, macEntry->getPort(), lookupClass, macEntry->getType());
     applyNewState(newState);
@@ -201,7 +201,7 @@ class HwMacLearningAndNeighborResolutionTest : public HwLinkStateDependentTest {
         std::move(txPacket), phyPort));
   }
   void verifySentPacket(const folly::IPAddress& dstIp) {
-    auto firstVlan = *(getProgrammedState()->getVlans()->begin());
+    auto firstVlan = getProgrammedState()->getVlans()->cbegin()->second;
     auto intfMac =
         utility::getInterfaceMac(getProgrammedState(), firstVlan->getID());
     auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
@@ -232,12 +232,22 @@ class HwMacLearningAndNeighborResolutionTest : public HwLinkStateDependentTest {
                              ->modify(kVlanID, &state);
     if (neighborTable->getEntryIf(addr)) {
       neighborTable->updateEntry(
-          addr, kNeighborMac, port, kIntfID, lookupClass);
+          addr,
+          kNeighborMac,
+          port,
+          kIntfID,
+          NeighborState::REACHABLE,
+          lookupClass);
     } else {
       neighborTable->addEntry(addr, kNeighborMac, port, kIntfID);
       // Update entry to add classid if any
       neighborTable->updateEntry(
-          addr, kNeighborMac, port, kIntfID, lookupClass);
+          addr,
+          kNeighborMac,
+          port,
+          kIntfID,
+          NeighborState::REACHABLE,
+          lookupClass);
     }
     applyNewState(state);
   }

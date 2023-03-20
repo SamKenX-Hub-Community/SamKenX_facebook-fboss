@@ -215,4 +215,80 @@ void ReadFileRecordResp::decode() {
   checkValue("length", len, 0);
 }
 
+static constexpr ModbusErrorCode toModbusErrorCode(uint8_t error) {
+  switch (error) {
+    case 1:
+      return ModbusErrorCode::ILLEGAL_FUNCTION;
+    case 2:
+      return ModbusErrorCode::ILLEGAL_DATA_ADDRESS;
+    case 3:
+      return ModbusErrorCode::ILLEGAL_DATA_VALUE;
+    case 4:
+      return ModbusErrorCode::SLAVE_DEVICE_FAILURE;
+    case 5:
+      return ModbusErrorCode::ACKNOWLEDGE;
+    case 6:
+      return ModbusErrorCode::SLAVE_DEVICE_BUSY;
+    case 7:
+      return ModbusErrorCode::NEGATIVE_ACKNOWLEDGE;
+    case 8:
+      return ModbusErrorCode::MEMORY_PARITY_ERROR;
+    default:
+      break;
+  }
+  return ModbusErrorCode::UNDEFINED_ERROR;
+}
+
+std::string ModbusError::toString(ModbusErrorCode error) {
+  switch (error) {
+    case ModbusErrorCode::ILLEGAL_FUNCTION:
+      return "ERR_ILLEGAL_FUNCTION";
+    case ModbusErrorCode::ILLEGAL_DATA_ADDRESS:
+      return "ERR_ILLEGAL_DATA_ADDRESS";
+    case ModbusErrorCode::ILLEGAL_DATA_VALUE:
+      return "ERR_ILLEGAL_DATA_VALUE";
+    case ModbusErrorCode::SLAVE_DEVICE_FAILURE:
+      return "ERR_SLAVE_DEVICE_FAILURE";
+    case ModbusErrorCode::ACKNOWLEDGE:
+      return "ERR_ACKNOWLEDGE";
+    case ModbusErrorCode::SLAVE_DEVICE_BUSY:
+      return "ERR_SLAVE_DEVICE_BUSY";
+    case ModbusErrorCode::NEGATIVE_ACKNOWLEDGE:
+      return "ERR_NEGATIVE_ACKNOWLEDGE";
+    case ModbusErrorCode::MEMORY_PARITY_ERROR:
+      return "ERR_MEMORY_PARITY_ERROR";
+    default:
+      break;
+  }
+  return "ERR_UNDEFINED_MODBUS_ERROR";
+}
+
+static std::string strError(uint8_t rawError) {
+  ModbusErrorCode error = toModbusErrorCode(rawError);
+  return "Modbus Error: " + ModbusError::toString(error) + "(" +
+      std::to_string(+rawError) + ")";
+}
+
+ModbusError::ModbusError(uint8_t error)
+    : std::runtime_error(strError(error)),
+      errorData(error),
+      errorCode(toModbusErrorCode(error)) {}
+
+void from_json(const nlohmann::json& j, FileRecord& file) {
+  j.at("fileNum").get_to(file.fileNum);
+  j.at("recordNum").get_to(file.recordNum);
+  int size = j.value("dataSize", -1);
+  if (size >= 0) {
+    file.data.resize(size, 0);
+  } else {
+    j.at("data").get_to(file.data);
+  }
+}
+
+void to_json(nlohmann::json& j, const FileRecord& file) {
+  j["fileNum"] = file.fileNum;
+  j["recordNum"] = file.recordNum;
+  j["data"] = file.data;
+}
+
 } // namespace rackmon

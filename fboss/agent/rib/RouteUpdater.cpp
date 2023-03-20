@@ -121,14 +121,13 @@ void RibRouteUpdater::addOrReplaceRouteImpl(
     const Prefix<AddressT>& prefix,
     NetworkToRouteMap<AddressT>* routes,
     ClientID clientID,
-    RouteNextHopEntry entry) {
+    const RouteNextHopEntry& entry) {
   auto it = routes->exactMatch(prefix.network(), prefix.mask());
 
   if (it != routes->end()) {
     auto route = it->value();
     auto existingRouteForClient = route->getEntryForClient(clientID);
-    if (!existingRouteForClient ||
-        !(RouteNextHopEntry::fromThrift(*existingRouteForClient) == entry)) {
+    if (!existingRouteForClient || !(*existingRouteForClient == entry)) {
       route = writableRoute<AddressT>(it);
       route->update(clientID, entry);
     }
@@ -143,30 +142,31 @@ void RibRouteUpdater::addOrReplaceRoute(
     const folly::IPAddress& network,
     uint8_t mask,
     ClientID clientID,
-    RouteNextHopEntry entry) {
+    const RouteNextHopEntry& entry) {
   if (network.isV4()) {
     RoutePrefixV4 prefix{network.asV4().mask(mask), mask};
-    addOrReplaceRouteImpl(prefix, v4Routes_, clientID, std::move(entry));
+    addOrReplaceRouteImpl(prefix, v4Routes_, clientID, entry);
   } else {
     RoutePrefixV6 prefix{network.asV6().mask(mask), mask};
-    addOrReplaceRouteImpl(prefix, v6Routes_, clientID, std::move(entry));
+    addOrReplaceRouteImpl(prefix, v6Routes_, clientID, entry);
   }
 }
 
 void RibRouteUpdater::addOrReplaceRoute(
     LabelID label,
     ClientID clientID,
-    RouteNextHopEntry entry) {
+    const RouteNextHopEntry& entry) {
   XLOG(DBG3) << "Add mpls route for label " << label << " nh " << entry.str();
   auto iter = mplsRoutes_->find(label);
   if (iter == mplsRoutes_->end()) {
     mplsRoutes_->emplace(std::make_pair(
-        label, std::make_shared<Route<LabelID>>(label, clientID, entry)));
+        label,
+        std::make_shared<Route<LabelID>>(
+            Route<LabelID>::makeThrift(label, clientID, entry))));
   } else {
     auto& route = iter->second;
     auto existingRouteForClient = route->getEntryForClient(clientID);
-    if (!existingRouteForClient ||
-        !(RouteNextHopEntry::fromThrift(*existingRouteForClient) == entry)) {
+    if (!existingRouteForClient || !(*existingRouteForClient == entry)) {
       route = writableRoute<LabelID>(route);
       route->update(clientID, entry);
     }
@@ -567,7 +567,7 @@ std::shared_ptr<Route<AddressT>> RibRouteUpdater::resolveOne(
 
   auto bestPair = route->getBestEntry();
   const auto clientId = bestPair.first;
-  const auto bestEntryVal = RouteNextHopEntry::fromThrift(*bestPair.second);
+  const auto& bestEntryVal = *bestPair.second;
   const auto bestEntry = &bestEntryVal;
   const auto action = bestEntry->getAction();
   const auto counterID = bestEntry->getCounterID();
@@ -673,7 +673,7 @@ std::shared_ptr<Route<AddressT>> RibRouteUpdater::resolveOne(
         route->getForwardInfo().getClassID() != classID) {
       updateRoute(
           ritr,
-          RouteNextHopEntry(
+          std::make_optional<RouteNextHopEntry>(
               *fwd, bestEntry->getAdminDistance(), counterID, classID));
     }
   } else if (hasToCpu) {
@@ -682,7 +682,7 @@ std::shared_ptr<Route<AddressT>> RibRouteUpdater::resolveOne(
         route->getForwardInfo().getClassID() != classID) {
       updateRoute(
           ritr,
-          RouteNextHopEntry(
+          std::make_optional<RouteNextHopEntry>(
               RouteForwardAction::TO_CPU,
               AdminDistance::MAX_ADMIN_DISTANCE,
               counterID,
@@ -694,7 +694,7 @@ std::shared_ptr<Route<AddressT>> RibRouteUpdater::resolveOne(
         route->getForwardInfo().getClassID() != classID) {
       updateRoute(
           ritr,
-          RouteNextHopEntry(
+          std::make_optional<RouteNextHopEntry>(
               RouteForwardAction::DROP,
               AdminDistance::MAX_ADMIN_DISTANCE,
               counterID,

@@ -11,12 +11,14 @@ namespace php fboss_switch_config
 
 include "fboss/agent/if/common.thrift"
 include "fboss/agent/if/mpls.thrift"
+include "fboss/lib/if/fboss_common.thrift"
 
 typedef i64 (cpp.type = "uint64_t") u64
 
 enum PortDescriptorType {
   Physical = 0,
   Aggregate = 1,
+  SystemPort = 2,
 }
 
 struct PortDescriptor {
@@ -96,9 +98,11 @@ enum PortSpeed {
   TWENTYFIVEG = 25000, // 25G
   FORTYG = 40000, // 40G
   FIFTYG = 50000, // 50G
+  FIFTYTHREEPOINTONETWOFIVEG = 53125, //53.125G
   HUNDREDG = 100000, // 100G
   TWOHUNDREDG = 200000, // 200G
   FOURHUNDREDG = 400000, // 400G
+  EIGHTHUNDREDG = 800000, // 800G
 }
 
 // <speed>_<num_lanes>_<modulation>_<fec>
@@ -142,6 +146,10 @@ enum PortProfileID {
   PROFILE_100G_4_NRZ_CL91_COPPER_RACK_YV3_T1 = 33,
   PROFILE_25G_1_NRZ_NOFEC_COPPER_RACK_YV3_T1 = 34,
   PROFILE_400G_8_PAM4_RS544X2N_COPPER = 35,
+  PROFILE_53POINT125G_1_PAM4_RS545_COPPER = 36,
+  PROFILE_53POINT125G_1_PAM4_RS545_OPTICAL = 37,
+  PROFILE_400G_4_PAM4_RS544X2N_OPTICAL = 38,
+  PROFILE_800G_8_PAM4_RS544X2N_OPTICAL = 39,
 }
 
 /**
@@ -158,6 +166,8 @@ struct PortPause {
  * attribute is non-null, but defaults both members to false.
 */
 const PortPause NO_PAUSE = {"tx": false, "rx": false};
+
+const string TeFlowTableName = "TeFlowTable";
 
 /**
  *  [DEPRECATED] TODO(joseph5wu)
@@ -528,6 +538,7 @@ enum StreamType {
   UNICAST = 0,
   MULTICAST = 1,
   ALL = 2,
+  FABRIC_TX = 3,
 }
 
 struct QueueMatchAction {
@@ -608,6 +619,7 @@ enum MMUScalingFactor {
   ONE_HALF = 8,
   TWO = 9,
   FOUR = 10,
+  ONE_32768 = 11,
 }
 
 // This determines how packets are scheduled on a per queue basis
@@ -620,6 +632,13 @@ enum QueueScheduling {
   // This means this can cause starvation on other queues if not
   // configured properly
   STRICT_PRIORITY = 1,
+  // The round robin runs on all queues set to use WRR with deficit counter
+  // for a port
+  // Required to set a weight when using this
+  DEFICIT_ROUND_ROBIN = 2,
+  // For certain queue types (viz. Fabric port queues) scheduling details are
+  // not exposed for programming.
+  INTERNAL = 1000,
 }
 
 // Detection based on average queue length in bytes with two thresholds.
@@ -632,8 +651,8 @@ enum QueueScheduling {
 // formula for the probability at queue length m+k is:
 // P(m+k) = k/(M-m) for k between 0 and M-m
 struct LinearQueueCongestionDetection {
-  1: required i32 minimumLength;
-  2: required i32 maximumLength;
+  1: i32 minimumLength;
+  2: i32 maximumLength;
   3: i32 probability = 100;
 }
 
@@ -661,14 +680,19 @@ enum QueueCongestionBehavior {
 // Follows the principles outlined in RFC 7567.
 struct ActiveQueueManagement {
   // How we answer the question "Is the queue congested?"
-  1: required QueueCongestionDetection detection;
+  1: QueueCongestionDetection detection;
   // How we handle packets on queues experiencing congestion
-  2: required QueueCongestionBehavior behavior;
+  2: QueueCongestionBehavior behavior;
 }
 
 struct Range {
   1: i32 minimum;
   2: i32 maximum;
+}
+
+struct Range64 {
+  1: i64 minimum;
+  2: i64 maximum;
 }
 
 union PortQueueRate {
@@ -683,14 +707,14 @@ union PortQueueRate {
 // Any queues not described by config will use the system defaults of weighted
 // round robin with a default weight of 1
 struct PortQueue {
-  1: required i16 id;
+  1: i16 id;
   // We only use unicast in Fabric
-  2: required StreamType streamType = StreamType.UNICAST;
+  2: StreamType streamType = StreamType.UNICAST;
   // This value is ignored if STRICT_PRIORITY is chosen
   3: optional i32 weight;
   4: optional i32 reservedBytes;
   5: optional MMUScalingFactor scalingFactor;
-  6: required QueueScheduling scheduling;
+  6: QueueScheduling scheduling;
   7: optional string name;
   // 8: optional i32 length (deprecated)
   /*
@@ -754,8 +778,8 @@ struct TrafficPolicyConfig {
 }
 
 struct PacketRxReasonToQueue {
-  1: required PacketRxReason rxReason;
-  2: required i16 queueId;
+  1: PacketRxReason rxReason;
+  2: i16 queueId;
 }
 
 struct CPUTrafficPolicyConfig {
@@ -786,6 +810,7 @@ enum PacketRxReason {
   MPLS_UNKNOWN_LABEL = 16, // SAI only for MPLS packet with unprogrammed label
   DHCPV6 = 17, // DHCPv6
   SAMPLEPACKET = 18, // Sample Packet
+  TTL_0 = 19, // Packets with TTL as 0
 }
 
 enum PortLoopbackMode {
@@ -823,7 +848,20 @@ const i32 DEFAULT_PORT_MTU = 9412;
 enum PortType {
   INTERFACE_PORT = 0,
   FABRIC_PORT = 1,
+  CPU_PORT = 2,
+  RECYCLE_PORT = 3,
 }
+
+struct PortNeighbor {
+  1: string remoteSystem;
+  2: string remotePort;
+}
+
+enum PortDrainState {
+  UNDRAINED = 0,
+  DRAINED = 1,
+}
+
 /**
  * Configuration for a single logical port
  */
@@ -970,6 +1008,17 @@ struct Port {
    * Port type to convey type for this port
    */
   27: PortType portType = PortType.INTERFACE_PORT;
+
+  /*
+   * List of neighbors reachable over this link
+   * includes information on remote system and ports
+   */
+  28: list<PortNeighbor> expectedNeighborReachability = [];
+
+  /*
+   * Represents if this port is drained in DSF
+   */
+  29: PortDrainState drainState = PortDrainState.UNDRAINED;
 }
 
 enum LacpPortRate {
@@ -1130,8 +1179,35 @@ struct NdpConfig {
   * servers within the network.
   */
   7: bool routerAdvertisementOtherBit = 0;
+  /*
+   * IP Address to use in router advertisement.
+   * This must be one of the Interface IP addresses.
+   * In absence of this config, implementation can
+   * choose any of the interface addresses as Router
+   * address.
+   */
+  8: optional string routerAddress;
+}
+enum InterfaceType {
+  VLAN = 1,
+  SYSTEM_PORT = 2,
 }
 
+enum AsicType {
+  ASIC_TYPE_FAKE = 1,
+  ASIC_TYPE_MOCK = 2,
+  ASIC_TYPE_TRIDENT2 = 3,
+  ASIC_TYPE_TOMAHAWK = 4,
+  ASIC_TYPE_TOMAHAWK3 = 5,
+  ASIC_TYPE_TOMAHAWK4 = 6,
+  ASIC_TYPE_ELBERT_8DD = 7,
+  ASIC_TYPE_EBRO = 8,
+  ASIC_TYPE_GARONNE = 9,
+  ASIC_TYPE_SANDIA_PHY = 10,
+  ASIC_TYPE_JERICHO2 = 11,
+  ASIC_TYPE_RAMON = 12,
+  ASIC_TYPE_TOMAHAWK5 = 13,
+}
 /**
  * The configuration for an interface
  */
@@ -1140,8 +1216,9 @@ struct Interface {
   /** The VRF where the interface belongs to */
   2: i32 routerID = 0;
   /**
-   * The VLAN where the interface sits.
-   * There shall be maximum one interface per VLAN
+   * The VLAN where the interface sits. Valid only
+   * for interface of type VLAN. When present
+   * there shall be maximum one interface per VLAN
    */
   3: i32 vlanID;
   /** The description of the interface */
@@ -1168,16 +1245,18 @@ struct Interface {
   8: optional i32 mtu;
   /**
    * is_virtual is set to true for logical interfaces
-   * (e.g. loopbacks) which are associated with
-   * a reserver vlan. This VLAN has no ports in it
-   * and the interface is expected to always be up.
+   * (e.g. loopbacks). No ports are thus associated with
+   * such a interface and the interface is expected to
+   * always be up.
    */
   9: bool isVirtual = 0;
   /**
   * this flag is set to true if we need to
-  * disable auto-state feature for SVI
+  * disable auto-state feature for interface.
   */
   10: bool isStateSyncDisabled = 0;
+
+  11: InterfaceType type = InterfaceType.VLAN;
 }
 
 struct StaticRouteWithNextHops {
@@ -1253,6 +1332,7 @@ struct Fields {
   2: set<IPv6Field> ipv6Fields;
   3: set<TransportField> transportFields;
   4: set<MPLSField> mplsFields;
+  5: list<string> udfGroups = [];
 }
 
 enum HashingAlgorithm {
@@ -1266,6 +1346,7 @@ enum HashingAlgorithm {
 
   CRC32_KOOPMAN_LO = 7,
   CRC32_KOOPMAN_HI = 8,
+  CRC = 9,
 }
 
 struct LoadBalancer {
@@ -1370,6 +1451,14 @@ enum SwitchType {
   VOQ = 2,
   FABRIC = 3,
 }
+
+struct ExactMatchTableConfig {
+  1: string name;
+  2: optional i32 dstPrefixLength;
+}
+
+const i16 DEFAULT_FLOWLET_TABLE_SIZE = 4096;
+
 /*
  * Switch specific settings: global to the switch
  */
@@ -1396,12 +1485,13 @@ struct SwitchSettings {
   8: SwitchType switchType = SwitchType.NPU;
   // Switch id (only applicable for VOQ based systems)
   9: optional i64 switchId;
+  10: list<ExactMatchTableConfig> exactMatchTableConfigs = [];
 }
 
 // Global buffer pool shared by {port, pgs}
 struct BufferPoolConfig {
-  1: required i32 sharedBytes;
-  2: required i32 headroomBytes;
+  1: i32 sharedBytes;
+  2: i32 headroomBytes;
 }
 
 // max PG/port supported
@@ -1411,7 +1501,7 @@ const i16 PFC_PRIORITY_VALUE_MAX = 7;
 // Defines PG (priority group) configuration for ports
 // This configuration defines the PG buffer settings for given port(s)
 struct PortPgConfig {
-  1: required i16 id;
+  1: i16 id;
   2: optional string name;
   3: optional MMUScalingFactor scalingFactor;
   // Min buffer available to each PG, port
@@ -1436,23 +1526,147 @@ struct SdkVersion {
 }
 
 enum IpTunnelMode {
-  // will map to sai_tunnel_ttl_mode_t and sai_tunnel_dscp_mode_t and
-  // sai_tunnel_decap_ecn_mode_t
   UNIFORM = 0,
   PIPE = 1,
   USER = 2,
+}
+
+enum TunnelType {
+  IP_IN_IP = 0,
+}
+
+enum TunnelTerminationType {
+  P2P = 1,
+  P2MP = 2,
+  MP2P = 3,
+  MP2MP = 4,
 }
 
 struct IpInIpTunnel {
   1: string ipInIpTunnelId;
   2: i32 underlayIntfID;
   3: string dstIp;
-  4: string srcIp;
-  5: string dstIpMask;
-  6: string srcIpMask;
+  4: optional string srcIp;
+  5: optional string dstIpMask;
+  6: optional string srcIpMask;
   7: optional IpTunnelMode ttlMode;
   8: optional IpTunnelMode dscpMode;
   9: optional IpTunnelMode ecnMode;
+  10: optional TunnelTerminationType tunnelTermType;
+  11: optional TunnelType tunnelType;
+}
+
+enum DsfNodeType {
+  FABRIC_NODE = 1,
+  INTERFACE_NODE = 2,
+}
+
+struct DsfNode {
+  1: string name;
+  2: i64 switchId;
+  3: DsfNodeType type;
+  4: list<string> loopbackIps;
+  5: optional Range64 systemPortRange;
+  6: optional string nodeMac;
+  7: AsicType asicType;
+  8: fboss_common.PlatformType platformType;
+}
+
+/**
+ * UDF related struct definitions
+ */
+enum UdfBaseHeaderType {
+  UDF_L2_HEADER = 1,
+  UDF_L3_HEADER = 2,
+  UDF_L4_HEADER = 3,
+}
+
+enum UdfMatchL2Type {
+  // match any l2 pkt
+  UDF_L2_PKT_TYPE_ANY = 0,
+  // match eth pkt only
+  UDF_L2_PKT_TYPE_ETH = 1,
+}
+
+enum UdfMatchL3Type {
+  // match any l3 pkt
+  UDF_L3_PKT_TYPE_ANY = 0,
+  // match ipv4 l3 pkt only
+  UDF_L3_PKT_TYPE_IPV4 = 1,
+  // match ipv6 l3 pkt only
+  UDF_L3_PKT_TYPE_IPV6 = 2,
+}
+
+enum UdfMatchL4Type {
+  // match any l4 packet
+  UDF_L4_PKT_TYPE_ANY = 0,
+  // udp
+  UDF_L4_PKT_TYPE_UDP = 1,
+  // tcp
+  UDF_L4_PKT_TYPE_TCP = 2,
+}
+
+/**
+ * Generic objects for UDF are UdfGroup, UdfMatchPacketConfig
+ * For extracting any one field in the packet.
+ * 2 possible scenarios covered:
+ * Case 1. We have 2 different packets and want to extract the same field
+ * e.g. dst_queue_pair from ipv4_roce, dst_queue_pair from ipv6_roce.
+ * UDFGroup1 -> {UdfMatchPacket1, UdfMatchPacket2}
+ * Case 2. We have 1 packet but want to extract 2 different fields in the packet
+ * to be used at the same time. e.g. dst_queue_pair from ipv4_roce
+ * src_queue_pair from ipv4_roce
+ * UDFGroup1 -> {UdfMatchPacket1}
+ * UDFGroup2 -> {UdfMatchPacket1}
+ */
+struct UdfPacketMatcher {
+  1: string name;
+  2: UdfMatchL2Type l2PktType = UDF_L2_PKT_TYPE_ANY;
+  3: UdfMatchL3Type l3pktType = UDF_L3_PKT_TYPE_ANY;
+  4: UdfMatchL4Type l4PktType = UDF_L4_PKT_TYPE_ANY;
+  // l4 dstPort to match on
+  5: optional i16 UdfL4DstPort;
+}
+
+struct UdfGroup {
+  // identifier
+  1: string name;
+  // maps to unique udf cfgs
+  2: UdfBaseHeaderType header;
+  // bytes from the start of header
+  3: i32 startOffsetInBytes;
+  // number of bytes to extract (can use for hashing)
+  4: i32 fieldSizeInBytes;
+  5: list<string> udfPacketMatcherIds;
+}
+
+struct UdfConfig {
+  1: map<string, UdfGroup> udfGroups;
+  2: map<string, UdfPacketMatcher> udfPacketMatcher;
+}
+
+struct FlowletSwitchingConfig {
+  // wait for lack of activitiy interval on the flow before load balancing
+  1: i16 inactivityIntervalUsecs;
+  // flow set table size
+  2: i16 flowletTableSize = DEFAULT_FLOWLET_TABLE_SIZE;
+  // EWMA (exponentially weighted moving average) of historical member load in bytes
+  3: i16 dynamicEgressLoadExponent;
+  // EWMA of historical member queued bytes
+  4: i16 dynamicQueueExponent;
+  // minimum threshold, in bytes, used to quantize historical member queued bytes
+  5: i32 dynamicQueueMinThresholdBytes;
+  // maximum threshold, in bytes, used to quantize historical member queued bytes
+  6: i32 dynamicQueueMaxThresholdBytes;
+  // number of times historical member load and queued bytes are computed in a second
+  7: i32 dynamicSampleRate;
+  // TODO move the following 3 port params to port specific structure
+  // port scaling factor for dynamic load balancing
+  8: optional i16 portScalingFactor;
+  // weight of traffic load in determining ports quality
+  9: optional i16 portLoadWeight;
+  // weight of total queue size in determining port quality
+  10: optional i16 portQueueWeight;
 }
 
 /**
@@ -1576,4 +1790,9 @@ struct SwitchConfig {
   // agent sdk versions
   46: optional SdkVersion sdkVersion;
   47: optional list<IpInIpTunnel> ipInIpTunnels;
+  // When part of a DSF cluster, the following info
+  // will be populated to reflect global DSF node info
+  48: map<i64, DsfNode> dsfNodes = {};
+  49: optional UdfConfig udfConfig;
+  50: optional FlowletSwitchingConfig flowletSwitchingConfig;
 }

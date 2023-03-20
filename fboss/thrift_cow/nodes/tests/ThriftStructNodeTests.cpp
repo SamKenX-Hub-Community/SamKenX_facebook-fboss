@@ -191,8 +191,8 @@ TEST(ThriftStructNodeTests, ThriftStructNodeSetChild) {
   ASSERT_EQ(node.get<k::inlineStruct>()->toThrift(), *data.inlineStruct());
 
   cfg::L4PortRange portRange2;
-  portRange.min() = 1000;
-  portRange.max() = 9999;
+  portRange2.min() = 1000;
+  portRange2.max() = 9999;
 
   // test we can set full struct children
   node.template set<k::inlineStruct>(portRange2);
@@ -349,6 +349,32 @@ TEST(ThriftStructNodeTests, ThriftStructNodeModify) {
   ASSERT_FALSE(node->template isSet<k::optionalString>());
   ThriftStructNode<TestStruct>::modify(&node, "optionalString");
   ASSERT_TRUE(node->template isSet<k::optionalString>());
+
+  node = std::make_shared<ThriftStructNode<TestStruct>>(data);
+  node->publish();
+  auto& inLineBool = ThriftStructNode<TestStruct>::modify<k::inlineBool>(&node);
+  EXPECT_FALSE(node->isPublished());
+  inLineBool->set(false);
+
+  auto& optionalStruct1 =
+      ThriftStructNode<TestStruct>::modify<k::optionalStruct>(&node);
+  EXPECT_FALSE(optionalStruct1->isPublished());
+  optionalStruct1->fromThrift(buildPortRange(1, 10));
+
+  node->publish();
+  EXPECT_TRUE(node->isPublished());
+
+  auto obj1 = node->toThrift();
+  EXPECT_FALSE(*obj1.inlineBool());
+  EXPECT_TRUE(obj1.optionalStruct().has_value());
+  EXPECT_EQ(obj1.optionalStruct().value(), buildPortRange(1, 10));
+
+  auto& optionalStruct2 = node->modify<k::optionalStruct>(&node);
+  optionalStruct2.reset();
+  node->publish();
+
+  auto obj2 = node->toThrift();
+  EXPECT_FALSE(obj2.optionalStruct().has_value());
 }
 
 TEST(ThriftStructNodeTests, ThriftStructNodeRemove) {
@@ -453,4 +479,38 @@ TEST(ThriftStructNodeTests, UnsignedInteger) {
   using UnderlyingType = folly::remove_cvref_t<
       decltype(*fields.get<k::unsigned_int64>())>::ThriftType;
   static_assert(std::is_same_v<UnderlyingType, uint64_t>);
+}
+
+TEST(ThriftStructNodeTests, ReferenceWrapper) {
+  auto portRange = buildPortRange(100, 999);
+
+  TestUnion unionData;
+  unionData.inlineString_ref() = "UnionData";
+
+  TestStruct data;
+  data.inlineBool() = true;
+  data.inlineInt() = 123;
+  data.inlineString() = "HelloThere";
+  data.inlineStruct() = std::move(portRange);
+  data.inlineVariant() = std::move(unionData);
+
+  auto node = std::make_shared<ThriftStructNode<TestStruct>>(data);
+
+  using NodeType = decltype(node);
+  auto ref = detail::ReferenceWrapper<NodeType>(node);
+
+  ref->set<k::inlineInt>(124);
+  (*ref).set<k::inlineBool>(false);
+
+  EXPECT_EQ(node->get<k::inlineInt>(), 124);
+  EXPECT_EQ(node->get<k::inlineBool>(), false);
+
+  auto& node0 = *ref;
+
+  EXPECT_EQ(&node0, node.get());
+
+  ref.reset();
+  EXPECT_EQ(node, nullptr);
+
+  EXPECT_FALSE(ref);
 }

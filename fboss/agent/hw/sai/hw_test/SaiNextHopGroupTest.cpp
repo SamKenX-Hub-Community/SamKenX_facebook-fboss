@@ -20,12 +20,8 @@ class SaiNextHopGroupTest : public SaiLinkStateDependentTests {
   }
 
   cfg::SwitchConfig initialConfig() const override {
-    return utility::onePortPerVlanConfig(
-        getHwSwitch(),
-        {masterLogicalPortIds()[0],
-         masterLogicalPortIds()[1],
-         masterLogicalPortIds()[2],
-         masterLogicalPortIds()[3]});
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
   }
 
   void addRoute(int nextHopGroupMemberCount) {
@@ -48,7 +44,7 @@ class SaiNextHopGroupTest : public SaiLinkStateDependentTests {
         managerTable->virtualRouterManager().getVirtualRouterHandle(
             RouterID(0));
     return SaiRouteTraits::RouteEntry{
-        getSaiSwitch()->getSwitchId(),
+        getSaiSwitch()->getSaiSwitchId(),
         vrHandle->virtualRouter->adapterKey(),
         folly::CIDRNetwork("::", 0)};
   }
@@ -132,19 +128,19 @@ TEST_F(SaiNextHopGroupTest, addNextHopGroupPortDown) {
   auto setup = [=]() {
     resolveNeighbors(4);
     addRoute(4);
-    bringDownPort(masterLogicalPortIds()[0]);
+    bringDownPort(masterLogicalInterfacePortIds()[0]);
   };
   auto verify = [=]() { verifyMemberCount(3); };
   verifyAcrossWarmBoots(setup, verify);
 }
 
-TEST_F(SaiNextHopGroupTest, addNextHopGroupPortDownPortUp) {
+TEST_F(SaiNextHopGroupTest, addNextHopGroupInterfacePortDownInterfacePortUp) {
   auto setup = [=]() {
     resolveNeighbors(4);
     addRoute(4);
-    bringDownPort(masterLogicalPortIds()[0]);
+    bringDownPort(masterLogicalInterfacePortIds()[0]);
     unresolveNeighbors(1);
-    bringUpPort(masterLogicalPortIds()[0]);
+    bringUpPort(masterLogicalInterfacePortIds()[0]);
     resolveNeighbors(1);
   };
   auto verify = [=]() { verifyMemberCount(4); };

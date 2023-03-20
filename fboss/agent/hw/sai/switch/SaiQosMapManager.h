@@ -33,6 +33,8 @@ struct SaiQosMapHandle {
   std::shared_ptr<SaiQosMap> tcToQueueMap;
   std::shared_ptr<SaiQosMap> expToTcMap;
   std::shared_ptr<SaiQosMap> tcToExpMap;
+  std::shared_ptr<SaiQosMap> tcToPgMap;
+  std::shared_ptr<SaiQosMap> pfcPriorityToQueueMap;
 };
 
 class SaiQosMapManager {
@@ -51,11 +53,18 @@ class SaiQosMapManager {
   const SaiQosMapHandle* getQosMap() const;
 
  private:
-  std::shared_ptr<SaiQosMap> setDscpToTcQosMap(const DscpMap& newDscpMap);
+  std::shared_ptr<SaiQosMap> setDscpToTcQosMap(
+      const std::shared_ptr<QosPolicy>& qosPolicy);
   std::shared_ptr<SaiQosMap> setTcToQueueQosMap(
-      const std::map<int16_t, int16_t>& newTcToQueueIdMap);
-  std::shared_ptr<SaiQosMap> setExpToTcQosMap(const ExpMap& newExpMap);
-  std::shared_ptr<SaiQosMap> setTcToExpQosMap(const ExpMap& newExpMap);
+      const std::shared_ptr<QosPolicy>& qosPolicy);
+  std::shared_ptr<SaiQosMap> setExpToTcQosMap(
+      const std::shared_ptr<QosPolicy>& qosPolicy);
+  std::shared_ptr<SaiQosMap> setTcToExpQosMap(
+      const std::shared_ptr<QosPolicy>& qosPolicy);
+  std::shared_ptr<SaiQosMap> setTcToPgQosMap(
+      const std::shared_ptr<QosPolicy>& qosPolicy);
+  std::shared_ptr<SaiQosMap> setPfcPriorityToQueueQosMap(
+      const std::shared_ptr<QosPolicy>& qosPolicy);
   void setQosMaps(const std::shared_ptr<QosPolicy>& newQosPolicy);
 
   SaiStore* saiStore_;

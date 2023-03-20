@@ -30,5 +30,12 @@ uint8_t kIcpDscp();
 void addDscpMarkingAcls(cfg::SwitchConfig* config);
 void addDscpCounterAcl(cfg::SwitchConfig* config);
 void addDscpMarkingAclTable(cfg::SwitchConfig* config);
-void addDscpAclTable(cfg::SwitchConfig* config, int16_t priority);
+void addDscpAclEntryWithCounter(
+    cfg::SwitchConfig* config,
+    const std::string& aclTableName);
+void addDscpAclTable(
+    cfg::SwitchConfig* config,
+    int16_t priority,
+    bool addTtlQualifier);
+void delDscpMatchers(cfg::SwitchConfig* config);
 } // namespace facebook::fboss::utility

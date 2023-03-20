@@ -23,9 +23,9 @@ extern "C" {
 
 namespace facebook::fboss::utility {
 
-bcm_l3_route_t
-getBcmRoute(int unit, const folly::CIDRNetwork& cidrNetwork, uint32_t flags) {
-  bcm_l3_route_t route;
+void initBcmRoute(
+    bcm_l3_route_t& route,
+    const folly::CIDRNetwork& cidrNetwork) {
   bcm_l3_route_t_init(&route);
 
   const auto& [networkIP, netmask] = cidrNetwork;
@@ -41,9 +41,25 @@ getBcmRoute(int unit, const folly::CIDRNetwork& cidrNetwork, uint32_t flags) {
         sizeof(route.l3a_ip6_mask));
     route.l3a_flags = BCM_L3_IP6;
   }
+}
+
+bcm_l3_route_t
+getBcmRoute(int unit, const folly::CIDRNetwork& cidrNetwork, uint32_t flags) {
+  bcm_l3_route_t route;
+  initBcmRoute(route, cidrNetwork);
   route.l3a_flags |= flags;
   CHECK_EQ(bcm_l3_route_get(unit, &route), 0);
   return route;
+}
+
+bool isRoutePresent(
+    int unit,
+    RouterID rid,
+    const folly::CIDRNetwork& cidrNetwork) {
+  bcm_l3_route_t route;
+  initBcmRoute(route, cidrNetwork);
+  route.l3a_vrf = rid;
+  return (0 == bcm_l3_route_get(unit, &route));
 }
 
 uint64_t getBcmRouteCounter(
@@ -229,6 +245,19 @@ uint64_t getRouteStat(
     const HwSwitch* hwSwitch,
     std::optional<RouteCounterID> counterID) {
   return getBcmRouteCounter(hwSwitch, counterID);
+}
+
+bool isHwRoutePresent(
+    const HwSwitch* hwSwitch,
+    RouterID rid,
+    const folly::CIDRNetwork& cidrNetwork) {
+  auto bcmSwitch = static_cast<const BcmSwitch*>(hwSwitch);
+  return isRoutePresent(bcmSwitch->getUnit(), rid, cidrNetwork);
+}
+
+bool isRouteCounterSupported(const HwSwitch* hwSwitch) {
+  return hwSwitch->getPlatform()->getAsic()->isSupported(
+      HwAsic::Feature::ROUTE_COUNTERS);
 }
 
 } // namespace facebook::fboss::utility

@@ -11,8 +11,10 @@
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwTestUtils.h"
 
+#include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/AlpmUtils.h"
 #include "fboss/agent/ApplyThriftConfig.h"
+#include "fboss/agent/EncapIndexAllocator.h"
 #include "fboss/agent/FbossHwUpdateError.h"
 #include "fboss/agent/HwSwitch.h"
 #include "fboss/agent/L2Entry.h"
@@ -31,6 +33,7 @@
 #include "fboss/qsfp_service/lib/QsfpCache.h"
 
 #include <folly/experimental/FunctionScheduler.h>
+#include <folly/gen/Base.h>
 
 DEFINE_bool(
     setup_thrift,
@@ -48,6 +51,8 @@ DEFINE_bool(
     qgroup_guarantee_enable,
     false,
     "Enable setting of unicast and multicast queue guaranteed buffer sizes");
+DEFINE_bool(enable_exact_match, false, "enable init of exact match table");
+DEFINE_bool(skip_buffer_reservation, false, "Enable skip reservation");
 
 using namespace std::chrono_literals;
 
@@ -148,16 +153,111 @@ std::shared_ptr<SwitchState> HwSwitchEnsemble::applyNewConfig(
       applyThriftConfig(originalState, &config, getPlatform()));
 }
 
+std::shared_ptr<SwitchState> HwSwitchEnsemble::updateEncapIndices(
+    const std::shared_ptr<SwitchState>& in) const {
+  // For wedge_agent we assign Encap indices on VOQ swtiches at
+  // SwSwitch layer and later assert for their presence before
+  // programming in HW.
+  // For HW tests, since there is no SwSwitch layer we need to
+  // explicitly assign and remove encap indices from neighbor entries
+  // This function's charter is
+  // - Assign encap index to reachable nbr entries (if one is not already
+  //  assigned)
+  // - Clear encap index from unreachable/pending entries
+  auto newState = in->clone();
+  StateDelta delta(programmedState_, in);
+  if (getAsic()->isSupported(HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE)) {
+    auto handleNewNbr = [this, &newState](auto newNbr) {
+      if (!newNbr->isPending() && !newNbr->getEncapIndex()) {
+        auto nbr = newNbr->clone();
+        nbr->setEncapIndex(EncapIndexAllocator::getNextAvailableEncapIdx(
+            newState, *getAsic()));
+        return nbr;
+      }
+      if (newNbr->isPending() && newNbr->getEncapIndex()) {
+        auto nbr = newNbr->clone();
+        nbr->setEncapIndex(std::nullopt);
+        return nbr;
+      }
+      return std::shared_ptr<std::remove_reference_t<decltype(*newNbr)>>();
+    };
+    for (const auto& intfDelta : delta.getIntfsDelta()) {
+      auto updateIntf =
+          [&](auto newNbr, const auto& nbrTable, InterfaceID intfId) {
+            auto intfMap = newState->getInterfaces()->modify(&newState);
+            auto intf = intfMap->getInterface(intfId);
+            if (intf->getType() != cfg::InterfaceType::SYSTEM_PORT) {
+              return;
+            }
+            auto updatedNbr = handleNewNbr(newNbr);
+            if (updatedNbr) {
+              auto intfNew = intf->clone();
+              auto updatedNbrTable = nbrTable->toThrift();
+              if (!nbrTable->getEntry(newNbr->getIP())) {
+                updatedNbrTable.insert(
+                    {newNbr->getIP().str(), updatedNbr->toThrift()});
+              } else {
+                updatedNbrTable.erase(newNbr->getIP().str());
+                updatedNbrTable.insert(
+                    {newNbr->getIP().str(), updatedNbr->toThrift()});
+              }
+              if (newNbr->getIP().version() == 6) {
+                intfNew->setNdpTable(updatedNbrTable);
+              } else {
+                intfNew->setArpTable(updatedNbrTable);
+              }
+              intfMap->updateNode(intfNew);
+            }
+          };
+      DeltaFunctions::forEachChanged(
+          intfDelta.getArpEntriesDelta(),
+          [&](auto /*oldNbr*/, auto newNbr) {
+            updateIntf(
+                newNbr,
+                intfDelta.getNew()->getArpTable(),
+                intfDelta.getNew()->getID());
+          },
+          [&](auto newNbr) {
+            updateIntf(
+                newNbr,
+                intfDelta.getNew()->getArpTable(),
+                intfDelta.getNew()->getID());
+          },
+          [&](auto /*rmNbr*/) {});
+
+      DeltaFunctions::forEachChanged(
+          intfDelta.getNdpEntriesDelta(),
+          [&](auto /*oldNbr*/, auto newNbr) {
+            updateIntf(
+                newNbr,
+                intfDelta.getNew()->getNdpTable(),
+                intfDelta.getNew()->getID());
+          },
+          [&](auto newNbr) {
+            updateIntf(
+                newNbr,
+                intfDelta.getNew()->getNdpTable(),
+                intfDelta.getNew()->getID());
+          },
+          [&](auto /*rmNbr*/) {});
+    }
+  }
+  return newState;
+}
+
 std::shared_ptr<SwitchState> HwSwitchEnsemble::applyNewStateImpl(
     const std::shared_ptr<SwitchState>& newState,
-    bool transaction) {
+    bool transaction,
+    bool disableAppliedStateVerification) {
   if (!newState) {
     return programmedState_;
   }
 
   newState->publish();
-  auto appliedState = newState;
-  StateDelta delta(programmedState_, newState);
+  auto toApply = updateEncapIndices(newState);
+  toApply->publish();
+  StateDelta delta(programmedState_, toApply);
+  auto appliedState = toApply;
   {
     std::lock_guard<std::mutex> lk(updateStateMutex_);
     programmedState_ = transaction
@@ -170,8 +270,8 @@ std::shared_ptr<SwitchState> HwSwitchEnsemble::applyNewStateImpl(
   }
   StaticL2ForNeighborHwSwitchUpdater updater(this);
   updater.stateUpdated(StateDelta(delta.oldState(), appliedState));
-  if (newState != appliedState) {
-    throw FbossHwUpdateError(newState, appliedState);
+  if (!disableAppliedStateVerification && toApply != appliedState) {
+    throw FbossHwUpdateError(toApply, appliedState);
   }
   return appliedState;
 }
@@ -243,15 +343,38 @@ void HwSwitchEnsemble::createEqualDistributedUplinkDownlinks(
   throw FbossError("Needs to be implemented by the derived class");
 }
 
+std::vector<SystemPortID> HwSwitchEnsemble::masterLogicalSysPortIds() const {
+  std::vector<SystemPortID> sysPorts;
+  if (getAsic()->getSwitchType() != cfg::SwitchType::VOQ) {
+    return sysPorts;
+  }
+  auto sysPortRange =
+      getProgrammedState()->getSwitchSettings()->getSystemPortRange();
+  for (auto port : masterLogicalPortIds({cfg::PortType::INTERFACE_PORT})) {
+    sysPorts.push_back(
+        SystemPortID(*sysPortRange->minimum() + static_cast<int>(port)));
+  }
+  return sysPorts;
+}
+
 bool HwSwitchEnsemble::ensureSendPacketSwitched(std::unique_ptr<TxPacket> pkt) {
   // lambda that returns HwPortStats for the given port(s)
   auto getPortStats =
       [&](const std::vector<PortID>& portIds) -> std::map<PortID, HwPortStats> {
     return getLatestPortStats(portIds);
   };
+  auto getSysPortStats = [&](const std::vector<SystemPortID>& portIds)
+      -> std::map<SystemPortID, HwSysPortStats> {
+    return getLatestSysPortStats(portIds);
+  };
 
   return utility::ensureSendPacketSwitched(
-      getHwSwitch(), std::move(pkt), masterLogicalPortIds(), getPortStats);
+      getHwSwitch(),
+      std::move(pkt),
+      masterLogicalPortIds({cfg::PortType::INTERFACE_PORT}),
+      getPortStats,
+      masterLogicalSysPortIds(),
+      getSysPortStats);
 }
 
 bool HwSwitchEnsemble::ensureSendPacketOutOfPort(
@@ -267,7 +390,7 @@ bool HwSwitchEnsemble::ensureSendPacketOutOfPort(
       getHwSwitch(),
       std::move(pkt),
       portID,
-      masterLogicalPortIds(),
+      masterLogicalPortIds({cfg::PortType::INTERFACE_PORT}),
       getPortStats,
       queue);
 }
@@ -287,6 +410,15 @@ bool HwSwitchEnsemble::waitPortStatsCondition(
       retries,
       msBetweenRetry,
       getPortStatsFn);
+}
+
+bool HwSwitchEnsemble::waitStatsCondition(
+    const std::function<bool()>& conditionFn,
+    const std::function<void()>& updateStatsFn,
+    uint32_t retries,
+    const std::chrono::duration<uint32_t, std::milli> msBetweenRetry) {
+  return utility::waitStatsCondition(
+      conditionFn, updateStatsFn, retries, msBetweenRetry);
 }
 
 HwPortStats HwSwitchEnsemble::getLatestPortStats(PortID port) {
@@ -311,6 +443,28 @@ std::map<PortID, HwPortStats> HwSwitchEnsemble::getLatestPortStats(
   return portIdStatsMap;
 }
 
+HwSysPortStats HwSwitchEnsemble::getLatestSysPortStats(SystemPortID port) {
+  return getLatestSysPortStats(std::vector<SystemPortID>{port})[port];
+}
+
+std::map<SystemPortID, HwSysPortStats> HwSwitchEnsemble::getLatestSysPortStats(
+    const std::vector<SystemPortID>& ports) {
+  std::map<SystemPortID, HwSysPortStats> portIdStatsMap;
+  SwitchStats dummy{};
+  getHwSwitch()->updateStats(&dummy);
+
+  auto swState = getProgrammedState();
+  auto stats = getHwSwitch()->getSysPortStats();
+  for (auto [portName, stats] : stats) {
+    auto portId = swState->getSystemPorts()->getSystemPort(portName)->getID();
+    if (std::find(ports.begin(), ports.end(), portId) == ports.end()) {
+      continue;
+    }
+    portIdStatsMap.emplace(portId, stats);
+  }
+  return portIdStatsMap;
+}
+
 HwTrunkStats HwSwitchEnsemble::getLatestAggregatePortStats(
     AggregatePortID aggregatePort) {
   return getLatestAggregatePortStats(
@@ -328,8 +482,8 @@ void HwSwitchEnsemble::setupEnsemble(
   auto hwInitResult = getHwSwitch()->init(
       this,
       true /*failHwCallsOnWarmboot*/,
-      initInfo.switchType,
-      initInfo.switchId);
+      platform_->getAsic()->getSwitchType(),
+      platform_->getAsic()->getSwitchId());
 
   programmedState_ = hwInitResult.switchState;
   routingInformationBase_ = std::move(hwInitResult.rib);
@@ -382,17 +536,22 @@ void HwSwitchEnsemble::switchRunStateChanged(SwitchRunState switchState) {
   }
 }
 
-folly::dynamic HwSwitchEnsemble::gracefulExitState() const {
-  folly::dynamic switchState = folly::dynamic::object;
+std::tuple<folly::dynamic, state::WarmbootState>
+HwSwitchEnsemble::gracefulExitState() const {
+  folly::dynamic follySwitchState = folly::dynamic::object;
+  state::WarmbootState thriftSwitchState;
+
   // For RIB we employ a optmization to serialize only unresolved routes
   // and recover others from FIB
-  switchState[kSwSwitch] = getProgrammedState()->toFollyDynamic();
   if (routingInformationBase_) {
     // For RIB we employ a optmization to serialize only unresolved routes
     // and recover others from FIB
-    switchState[kRib] = routingInformationBase_->unresolvedRoutesFollyDynamic();
+    follySwitchState[kRib] =
+        routingInformationBase_->unresolvedRoutesFollyDynamic();
+    thriftSwitchState.routeTables() = routingInformationBase_->warmBootState();
   }
-  return switchState;
+  *thriftSwitchState.swSwitchState() = getProgrammedState()->toThrift();
+  return std::make_tuple(follySwitchState, thriftSwitchState);
 }
 
 void HwSwitchEnsemble::stopObservers() {
@@ -415,8 +574,8 @@ void HwSwitchEnsemble::gracefulExit() {
   // Initiate warm boot
   getHwSwitch()->unregisterCallbacks();
   stopObservers();
-  auto switchState = gracefulExitState();
-  getHwSwitch()->gracefulExit(switchState);
+  auto [follySwitchState, thriftSwitchState] = gracefulExitState();
+  getHwSwitch()->gracefulExit(follySwitchState, thriftSwitchState);
 }
 
 /*
@@ -572,4 +731,26 @@ void HwSwitchEnsemble::clearPfcWatchdogCounter(
     watchdogCounterMap[port] = 0;
   }
 }
+
+std::vector<PortID> HwSwitchEnsemble::filterByPortTypes(
+    const std::set<cfg::PortType>& filter,
+    const std::vector<PortID>& portIDs) const {
+  std::vector<PortID> filteredPortIDs;
+
+  folly::gen::from(portIDs) |
+      folly::gen::filter([this, filter](const auto& portID) {
+        if (filter.empty()) {
+          // if no filter is requested, allow all
+          return true;
+        }
+        auto portType =
+            getProgrammedState()->getPorts()->getPort(portID)->getPortType();
+
+        return filter.find(portType) != filter.end();
+      }) |
+      folly::gen::appendTo(filteredPortIDs);
+
+  return filteredPortIDs;
+}
+
 } // namespace facebook::fboss

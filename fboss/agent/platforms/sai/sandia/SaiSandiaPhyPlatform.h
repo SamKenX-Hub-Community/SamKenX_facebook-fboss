@@ -13,7 +13,7 @@
 
 namespace facebook::fboss {
 
-class Mvl88X93161Asic;
+class MarvelPhyAsic;
 
 class SaiSandiaPhyPlatform : public SaiHwPlatform {
  public:
@@ -56,8 +56,8 @@ class SaiSandiaPhyPlatform : public SaiHwPlatform {
 
   SaiSwitchTraits::CreateAttributes getSwitchAttributes(
       bool /*mandatoryOnly*/,
-      cfg::SwitchType /*switchType*/,
-      std::optional<int64_t> /*switchId*/) override {
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId) override {
     CHECK(switchCreateAttrs_);
     return *switchCreateAttrs_;
   }
@@ -66,11 +66,16 @@ class SaiSandiaPhyPlatform : public SaiHwPlatform {
   }
 
  private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
   uint8_t pimId_{0};
   int phyId_{0};
-  std::unique_ptr<Mvl88X93161Asic> asic_;
+  std::unique_ptr<MarvelPhyAsic> asic_;
   std::optional<SaiSwitchTraits::CreateAttributes> switchCreateAttrs_;
 
   void initImpl(uint32_t hwFeaturesDesired) override;
+  void initSandiaSaiProfileValues();
 };
 } // namespace facebook::fboss

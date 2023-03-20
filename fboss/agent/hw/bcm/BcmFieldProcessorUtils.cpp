@@ -190,19 +190,19 @@ bool isActionStateSame(
   int expectedAC = 0;
   expectedAC += acl->getActionType() == cfg::AclActionType::DENY;
   if (acl->getAclAction()) {
-    if (acl->getAclAction().value().getSendToQueue()) {
+    if (acl->getAclAction()->cref<switch_state_tags::sendToQueue>()) {
       expectedAC += 1;
     }
-    if (acl->getAclAction().value().getSetDscp()) {
+    if (acl->getAclAction()->cref<switch_state_tags::setDscp>()) {
       expectedAC += 1;
     }
-    if (acl->getAclAction().value().getIngressMirror()) {
+    if (acl->getAclAction()->cref<switch_state_tags::ingressMirror>()) {
       expectedAC += 1;
     }
-    if (acl->getAclAction().value().getEgressMirror()) {
+    if (acl->getAclAction()->cref<switch_state_tags::egressMirror>()) {
       expectedAC += 1;
     }
-    if (acl->getAclAction().value().getRedirectToNextHop()) {
+    if (acl->getAclAction()->cref<switch_state_tags::redirectToNextHop>()) {
       expectedAC += 1;
     }
   }
@@ -219,6 +219,11 @@ bool isActionStateSame(
   for (auto action = bcmActions.begin(); action != bcmActions.end(); action++) {
     auto param0 = action->second.first;
     auto param1 = action->second.second;
+    std::optional<MatchAction> aclAction{};
+    if (acl->getAclAction()) {
+      // THRIFT_COPY
+      aclAction = MatchAction::fromThrift(acl->getAclAction()->toThrift());
+    }
     switch (action->first) {
       case bcmFieldActionDrop:
         if (acl->getActionType() != cfg::AclActionType::DENY) {
@@ -228,14 +233,14 @@ bool isActionStateSame(
         break;
       case bcmFieldActionCosQNew:
         isSame = isSendToQueueStateSame(
-            bcmFieldActionCosQNew, param0, acl->getAclAction(), aclMsg);
+            bcmFieldActionCosQNew, param0, aclAction, aclMsg);
         break;
       case bcmFieldActionCosQCpuNew:
         isSame = isSendToQueueStateSame(
-            bcmFieldActionCosQCpuNew, param0, acl->getAclAction(), aclMsg);
+            bcmFieldActionCosQCpuNew, param0, aclAction, aclMsg);
         break;
       case bcmFieldActionDscpNew:
-        isSame = isSetDscpActionStateSame(param0, acl->getAclAction(), aclMsg);
+        isSame = isSetDscpActionStateSame(param0, aclAction, aclMsg);
         break;
       // check for mirror
       case bcmFieldActionMirrorIngress:
@@ -244,7 +249,7 @@ bool isActionStateSame(
                      bcmFieldActionMirrorIngress,
                      param0,
                      param1,
-                     acl->getAclAction(),
+                     aclAction,
                      data.mirrors.ingressMirrorHandle.value(),
                      aclMsg);
         break;
@@ -254,13 +259,12 @@ bool isActionStateSame(
                      bcmFieldActionMirrorEgress,
                      param0,
                      param1,
-                     acl->getAclAction(),
+                     aclAction,
                      data.mirrors.egressMirrorHandle.value(),
                      aclMsg);
         break;
       case bcmFieldActionL3Switch:
-        isSame = isRedirectToNextHopStateSame(
-            hw, param0, acl->getAclAction(), aclMsg);
+        isSame = isRedirectToNextHopStateSame(hw, param0, aclAction, aclMsg);
         break;
       default:
         throw FbossError("Unknown action=", action->first);
@@ -317,7 +321,7 @@ void createFPGroup(
   XLOG(DBG1) << " Created FP group: " << gid;
 }
 
-bcm_field_qset_t getAclQset(HwAsic::AsicType asicType) {
+bcm_field_qset_t getAclQset(cfg::AsicType asicType) {
   bcm_field_qset_t qset;
   BCM_FIELD_QSET_INIT(qset);
   BCM_FIELD_QSET_ADD(qset, bcmFieldQualifySrcIp6);
@@ -341,7 +345,7 @@ bcm_field_qset_t getAclQset(HwAsic::AsicType asicType) {
    * solution. However, the solution is not applicable for Trident2 as Trident2
    * does not support queues. Thus, skip configuring this qualifier for Trident2
    */
-  if (asicType != HwAsic::AsicType::ASIC_TYPE_TRIDENT2) {
+  if (asicType != cfg::AsicType::ASIC_TYPE_TRIDENT2) {
     BCM_FIELD_QSET_ADD(qset, bcmFieldQualifyDstClassL2);
     /* Used for counting mpls lookup miss currently. Not used on trident2 */
     BCM_FIELD_QSET_ADD(qset, bcmFieldQualifyPacketRes);
@@ -393,23 +397,24 @@ int fpGroupNumAclEntries(int unit, bcm_field_group_t gid) {
   return size;
 }
 
-bool needsExtraFPQsetQualifiers(HwAsic::AsicType asicType) {
+bool needsExtraFPQsetQualifiers(cfg::AsicType asicType) {
   // Currently we know any asic is before TH4 will add extra qualifiers
   switch (asicType) {
-    case HwAsic::AsicType::ASIC_TYPE_TRIDENT2:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3:
-    case HwAsic::AsicType::ASIC_TYPE_FAKE:
-    case HwAsic::AsicType::ASIC_TYPE_MOCK:
+    case cfg::AsicType::ASIC_TYPE_TRIDENT2:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
+    case cfg::AsicType::ASIC_TYPE_FAKE:
+    case cfg::AsicType::ASIC_TYPE_MOCK:
       return true;
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
       return false;
-    case HwAsic::AsicType::ASIC_TYPE_EBRO:
-    case HwAsic::AsicType::ASIC_TYPE_GARONNE:
-    case HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD:
-    case HwAsic::AsicType::ASIC_TYPE_SANDIA_PHY:
-    case HwAsic::AsicType::ASIC_TYPE_INDUS:
-    case HwAsic::AsicType::ASIC_TYPE_BEAS:
+    case cfg::AsicType::ASIC_TYPE_EBRO:
+    case cfg::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
+    case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
+    case cfg::AsicType::ASIC_TYPE_JERICHO2:
+    case cfg::AsicType::ASIC_TYPE_RAMON:
       throw FbossError("Unsupported ASIC type");
   }
   return true;
@@ -428,7 +433,7 @@ FPGroupDesiredQsetCmp::FPGroupDesiredQsetCmp(
 
 bool FPGroupDesiredQsetCmp::hasDesiredQset() {
   auto equal = qsetsEqual(groupQset_, getEffectiveDesiredQset());
-  XLOG(INFO) << "Group : " << groupId_ << " has desired qset: " << equal;
+  XLOG(DBG2) << "Group : " << groupId_ << " has desired qset: " << equal;
   return equal;
 }
 

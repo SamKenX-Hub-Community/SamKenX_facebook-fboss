@@ -22,7 +22,7 @@ folly::dynamic createTestDynamic() {
   return dynamic::
       object(
           "inlineBool",
-          true)("inlineInt", 54)("inlineString", "testname")("optionalString", "bla")("inlineStruct", dynamic::object("min", 10)("max", 20)("invert", false))("inlineVariant", dynamic::object("inlineInt", 99))("mapOfEnumToStruct", dynamic::object(3, dynamic::object("min", 100)("max", 200)("invert", false)))("listOfListOfPrimitives", dynamic::array())("listOfListOfStructs", dynamic::array())("listOfPrimitives", dynamic::array())("listOfStructs", dynamic::array())("mapOfEnumToI32", dynamic::object())("mapOfI32ToI32", dynamic::object())("mapOfI32ToListOfStructs", dynamic::object())("mapOfI32ToStruct", dynamic::object())("mapOfStringToI32", dynamic::object())("mapOfStringToStruct", dynamic::object())("setOfEnum", dynamic::array())("setOfI32", dynamic::array())("setOfString", dynamic::array())("unsigned_int64", 123);
+          true)("inlineInt", 54)("inlineString", "testname")("optionalString", "bla")("inlineStruct", dynamic::object("min", 10)("max", 20)("invert", false))("inlineVariant", dynamic::object("inlineInt", 99))("mapOfEnumToStruct", dynamic::object(3, dynamic::object("min", 100)("max", 200)("invert", false)))("listOfListOfPrimitives", dynamic::array())("listOfListOfStructs", dynamic::array())("listOfPrimitives", dynamic::array())("listOfStructs", dynamic::array())("mapOfEnumToI32", dynamic::object())("mapOfI32ToI32", dynamic::object())("mapOfI32ToListOfStructs", dynamic::object())("mapOfI32ToStruct", dynamic::object())("mapOfStringToI32", dynamic::object())("mapOfStringToStruct", dynamic::object())("setOfEnum", dynamic::array())("setOfI32", dynamic::array())("setOfString", dynamic::array())("unsigned_int64", 123)("mapA", dynamic::object())("mapB", dynamic::object());
 }
 
 TestStruct createTestStruct(folly::dynamic testDyn) {
@@ -38,7 +38,8 @@ TEST(RecurseVisitorTests, TestFullRecurse) {
 
   auto nodeA = std::make_shared<ThriftStructNode<TestStruct>>(structA);
   std::map<std::vector<std::string>, folly::dynamic> visited;
-  auto processPath = [&visited](auto&& path, auto&& node) {
+  auto processPath = [&visited](
+                         const std::vector<std::string>& path, auto&& node) {
     visited.emplace(std::make_pair(path, node->toFollyDynamic()));
   };
 
@@ -78,7 +79,9 @@ TEST(RecurseVisitorTests, TestFullRecurse) {
       {{"mapOfStringToStruct"}, dynamic::object()},
       {{"setOfEnum"}, dynamic::array()},
       {{"setOfI32"}, dynamic::array()},
-      {{"setOfString"}, dynamic::array()}};
+      {{"setOfString"}, dynamic::array()},
+      {{"mapA"}, dynamic::object()},
+      {{"mapB"}, dynamic::object()}};
 
   EXPECT_EQ(visited.size(), expected.size());
   for (auto& [path, dyn] : expected) {
@@ -93,7 +96,8 @@ TEST(RecurseVisitorTests, TestLeafRecurse) {
 
   auto nodeA = std::make_shared<ThriftStructNode<TestStruct>>(structA);
   std::map<std::vector<std::string>, folly::dynamic> visited;
-  auto processPath = [&visited](auto&& path, auto&& node) {
+  auto processPath = [&visited](
+                         const std::vector<std::string>& path, auto&& node) {
     visited.emplace(std::make_pair(path, node->toFollyDynamic()));
   };
 

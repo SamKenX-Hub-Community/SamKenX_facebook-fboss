@@ -30,8 +30,8 @@ class HwLabelSwitchRouteTest : public HwLinkStateDependentTest {
     for (auto i = 0; i < kWidth; i++) {
       ports.push_back(masterLogicalPortIds()[i]);
     }
-    return utility::onePortPerVlanConfig(
-        getHwSwitch(), ports, cfg::PortLoopbackMode::MAC);
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), ports, getAsic()->desiredLoopbackMode());
   }
 
   void configureStaticMplsRoute(

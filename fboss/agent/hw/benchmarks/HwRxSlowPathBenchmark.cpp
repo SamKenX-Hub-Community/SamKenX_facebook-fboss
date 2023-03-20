@@ -10,9 +10,6 @@
 
 #include "fboss/agent/Platform.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
-#include "fboss/agent/hw/test/HwSwitchEnsemble.h"
-#include "fboss/agent/hw/test/HwSwitchEnsembleFactory.h"
-#include "fboss/agent/hw/test/HwSwitchEnsembleRouteUpdateWrapper.h"
 #include "fboss/agent/hw/test/HwTestCoppUtils.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwTestQosUtils.h"
@@ -21,6 +18,10 @@
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/hw/test/HwTestPacketTrapEntry.h"
 
+#include "fboss/agent/SwSwitchRouteUpdateWrapper.h"
+#include "fboss/agent/benchmarks/AgentBenchmarks.h"
+
+#include <folly/Benchmark.h>
 #include <folly/IPAddress.h>
 #include <folly/dynamic.h>
 #include <folly/init/Init.h>
@@ -29,38 +30,42 @@
 #include <iostream>
 #include <thread>
 
-DEFINE_bool(json, true, "Output in json form");
-DEFINE_bool(
-    setup_for_warmboot,
-    false,
-    "Set to true will prepare the device for warmboot");
-
 namespace facebook::fboss {
 
 const std::string kDstIp = "2620:0:1cfe:face:b00c::4";
 
-void runRxSlowPathBenchmark() {
+BENCHMARK(RxSlowPathBenchmark) {
   constexpr int kEcmpWidth = 1;
-  auto ensemble = createHwEnsemble(HwSwitchEnsemble::getAllFeatures());
+  AgentEnsembleSwitchConfigFn initialConfig =
+      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
+        CHECK_GE(ports.size(), 1);
+        auto portUsed = ports[0];
+
+        auto config = utility::oneL3IntfConfig(hwSwitch, portUsed);
+        // We don't want to set queue rate that limits the number of rx pkts
+        utility::addCpuQueueConfig(
+            config,
+            hwSwitch->getPlatform()->getAsic(),
+            /* setQueueRate */ false);
+
+        return config;
+      };
+
+  auto ensemble = createAgentEnsemble(initialConfig);
+
   auto hwSwitch = ensemble->getHwSwitch();
-  auto portUsed = ensemble->masterLogicalPortIds()[0];
-  auto config = utility::oneL3IntfConfig(hwSwitch, portUsed);
-  // We don't want to set queue rate that limits the number of rx pkts
-  utility::addCpuQueueConfig(
-      config, ensemble->getPlatform()->getAsic(), /* setQueueRate */ false);
-  ensemble->applyInitialConfig(config);
+  auto config = initialConfig(hwSwitch, ensemble->masterLogicalPortIds());
   // capture packet exiting port 0 (entering due to loopback)
   auto trapDstIp = folly::CIDRNetwork{kDstIp, 128};
   auto packetCapture = HwTestPacketTrapEntry(hwSwitch, trapDstIp);
-  auto dstMac = utility::getInterfaceMac(
-      ensemble->getProgrammedState(), utility::firstVlanID(config));
+  auto dstMac = utility::getFirstInterfaceMac(ensemble->getProgrammedState());
   auto ecmpHelper =
       utility::EcmpSetupAnyNPorts6(ensemble->getProgrammedState(), dstMac);
   ensemble->applyNewState(
       ecmpHelper.resolveNextHops(ensemble->getProgrammedState(), kEcmpWidth));
   ecmpHelper.programRoutes(
-      std::make_unique<HwSwitchEnsembleRouteUpdateWrapper>(
-          ensemble->getRouteUpdater()),
+      std::make_unique<SwSwitchRouteUpdateWrapper>(
+          ensemble->getSw(), ensemble->getSw()->getRib()),
       kEcmpWidth);
   // Disable TTL decrements
   utility::disableTTLDecrements(
@@ -106,15 +111,9 @@ void runRxSlowPathBenchmark() {
     cpuRxRateJson["cpu_rx_bytes_per_sec"] = bytesPerSec;
     std::cout << toPrettyJson(cpuRxRateJson) << std::endl;
   } else {
-    XLOG(INFO) << " Pkts before: " << pktsBefore << " Pkts after: " << pktsAfter
+    XLOG(DBG2) << " Pkts before: " << pktsBefore << " Pkts after: " << pktsAfter
                << " interval ms: " << durationMillseconds.count()
                << " pps: " << pps << " bytes per sec: " << bytesPerSec;
   }
 }
 } // namespace facebook::fboss
-
-int main(int argc, char* argv[]) {
-  folly::init(&argc, &argv, true);
-  facebook::fboss::runRxSlowPathBenchmark();
-  return 0;
-}

@@ -54,4 +54,11 @@ uint64_t getRouteStat(
     const HwSwitch* hwSwitch,
     std::optional<RouteCounterID> counterID);
 
+bool isHwRoutePresent(
+    const HwSwitch* hwSwitch,
+    RouterID rid,
+    const folly::CIDRNetwork& cidrNetwork);
+
+bool isRouteCounterSupported(const HwSwitch* hwSwitch);
+
 } // namespace facebook::fboss::utility

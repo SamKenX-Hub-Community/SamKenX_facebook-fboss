@@ -54,7 +54,7 @@ std::unique_ptr<TxPacket> createICMPv4Pkt(
     SwSwitch* sw,
     folly::MacAddress dstMac,
     folly::MacAddress srcMac,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::IPAddressV4& dstIP,
     folly::IPAddressV4& srcIP,
     ICMPv4Type icmpType,
@@ -70,7 +70,7 @@ std::unique_ptr<TxPacket> createICMPv4Pkt(
 
   ICMPHdr icmp4(
       static_cast<uint8_t>(icmpType), static_cast<uint8_t>(icmpCode), 0);
-  uint32_t pktLen = icmp4.computeTotalLengthV4(bodyLength);
+  uint32_t pktLen = icmp4.computeTotalLengthV4(bodyLength, vlan.has_value());
 
   auto pkt = sw->allocatePacket(pktLen);
   RWPrivateCursor cursor(pkt->buf());
@@ -99,7 +99,12 @@ void IPv4Handler::sendICMPTimeExceeded(
     sendCursor->push(cursor.data(), ICMPHdr::ICMPV4_SENDER_BYTES);
   };
 
-  IPAddressV4 srcIp = getSwitchVlanIP(state, srcVlan);
+  IPAddressV4 srcIp;
+  try {
+    srcIp = getSwitchVlanIP(state, srcVlan);
+  } catch (const std::exception& ex) {
+    srcIp = getAnyIntfIP(state);
+  }
   auto icmpPkt = createICMPv4Pkt(
       sw_,
       dst,
@@ -167,6 +172,14 @@ void IPv4Handler::handlePacket(
   std::shared_ptr<Interface> intf{nullptr};
   auto interfaceMap = state->getInterfaces();
   if (v4Hdr.dstAddr.isMulticast()) {
+    // If packet is received on a lag member port, ensure that
+    // LAG is in forwarding state
+    if (!AggregatePort::isIngressValid(state, pkt)) {
+      XLOG_EVERY_MS(DBG2, 5000)
+          << "Dropping multicast ipv4 pkt ingressing on disabled agg member port "
+          << pkt->getSrcPort();
+      return;
+    }
     // Forward multicast packet directly to corresponding host interface
     intf = interfaceMap->getInterfaceInVlanIf(pkt->getSrcVlan());
   } else if (v4Hdr.dstAddr.isLinkLocal()) {

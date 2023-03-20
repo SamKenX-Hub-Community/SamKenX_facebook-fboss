@@ -7,6 +7,7 @@
  *  of patent rights can be found in the PATENTS file in the same directory.
  *
  */
+#include <fboss/agent/gen-cpp2/switch_config_types.h>
 #include "fboss/agent/hw/mock/MockPlatform.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/TestUtils.h"
@@ -152,7 +153,7 @@ TEST(SwitchSettingsTest, applyBlockNeighbors) {
   // Check default value
   auto switchSettingsV0 = stateV0->getSwitchSettings();
   ASSERT_NE(nullptr, switchSettingsV0);
-  EXPECT_EQ(switchSettingsV0->getBlockNeighbors().size(), 0);
+  EXPECT_EQ(switchSettingsV0->getBlockNeighbors()->size(), 0);
 
   // Check if value is updated
   cfg::SwitchConfig config;
@@ -167,14 +168,21 @@ TEST(SwitchSettingsTest, applyBlockNeighbors) {
   auto switchSettingsV1 = stateV1->getSwitchSettings();
   ASSERT_NE(nullptr, switchSettingsV1);
   EXPECT_FALSE(switchSettingsV1->isPublished());
-  EXPECT_EQ(switchSettingsV1->getBlockNeighbors().size(), 1);
+  EXPECT_EQ(switchSettingsV1->getBlockNeighbors()->size(), 1);
 
   EXPECT_EQ(
-      int(switchSettingsV1->getBlockNeighbors()[0].first),
+      switchSettingsV1->getBlockNeighbors()
+          ->at(0)
+          ->cref<switch_state_tags::blockNeighborVlanID>()
+          ->toThrift(),
       blockNeighbor.vlanID());
   EXPECT_EQ(
-      switchSettingsV1->getBlockNeighbors()[0].second.str(),
-      blockNeighbor.ipAddress());
+      switchSettingsV1->getBlockNeighbors()
+          ->at(0)
+          ->cref<switch_state_tags::blockNeighborIP>()
+          ->toThrift(),
+      facebook::network::toBinaryAddress(
+          folly::IPAddress(*blockNeighbor.ipAddress())));
 }
 
 TEST(SwitchSettingsTest, applyMacAddrsToBlock) {
@@ -184,7 +192,7 @@ TEST(SwitchSettingsTest, applyMacAddrsToBlock) {
   // Check default value
   auto switchSettingsV0 = stateV0->getSwitchSettings();
   ASSERT_NE(nullptr, switchSettingsV0);
-  EXPECT_EQ(switchSettingsV0->getMacAddrsToBlock().size(), 0);
+  EXPECT_EQ(switchSettingsV0->getMacAddrsToBlock()->size(), 0);
 
   // Check if value is updated
   cfg::SwitchConfig config;
@@ -199,42 +207,14 @@ TEST(SwitchSettingsTest, applyMacAddrsToBlock) {
   auto switchSettingsV1 = stateV1->getSwitchSettings();
   ASSERT_NE(nullptr, switchSettingsV1);
   EXPECT_FALSE(switchSettingsV1->isPublished());
-  EXPECT_EQ(switchSettingsV1->getMacAddrsToBlock().size(), 1);
+  EXPECT_EQ(switchSettingsV1->getMacAddrsToBlock()->size(), 1);
 
   EXPECT_EQ(
-      int(switchSettingsV1->getMacAddrsToBlock()[0].first),
+      int(switchSettingsV1->getMacAddrsToBlock_DEPRECATED()[0].first),
       macAddrToBlock.vlanID());
   EXPECT_EQ(
-      switchSettingsV1->getMacAddrsToBlock()[0].second.toString(),
+      switchSettingsV1->getMacAddrsToBlock_DEPRECATED()[0].second.toString(),
       macAddrToBlock.macAddress());
-}
-
-TEST(SwitchSettingsTest, ToFromJSON) {
-  std::string jsonStr = R"(
-        {
-          "l2LearningMode": 1,
-          "qcmEnable": true,
-          "ptpTcEnable": true,
-          "l2AgeTimerSeconds": 600,
-          "maxRouteCounterIDs": 10,
-          "blockNeighbors": [],
-          "macAddrsToBlock": [],
-          "switchType": 0
-        }
-  )";
-
-  auto switchSettings =
-      SwitchSettings::fromFollyDynamic(folly::parseJson(jsonStr));
-  EXPECT_EQ(cfg::L2LearningMode::SOFTWARE, switchSettings->getL2LearningMode());
-  EXPECT_TRUE(switchSettings->isQcmEnable());
-  EXPECT_TRUE(switchSettings->isPtpTcEnable());
-  EXPECT_EQ(600, switchSettings->getL2AgeTimerSeconds());
-  EXPECT_EQ(10, switchSettings->getMaxRouteCounterIDs());
-
-  auto dyn1 = switchSettings->toFollyDynamic();
-  auto dyn2 = folly::parseJson(jsonStr);
-
-  EXPECT_EQ(dyn1, dyn2);
 }
 
 TEST(SwitchSettingsTest, ThrifyMigration) {
@@ -274,7 +254,7 @@ TEST(SwitchSettingsTest, ThrifyMigration) {
 
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
   EXPECT_NE(nullptr, stateV1);
-  validateThriftyMigration(*stateV1->getSwitchSettings());
+  validateNodeSerialization(*stateV1->getSwitchSettings());
 }
 
 TEST(SwitchSettingsTest, applyVoqSwitch) {
@@ -284,35 +264,205 @@ TEST(SwitchSettingsTest, applyVoqSwitch) {
   // Check default value
   auto switchSettingsV0 = stateV0->getSwitchSettings();
   ASSERT_NE(nullptr, switchSettingsV0);
-  EXPECT_EQ(switchSettingsV0->getBlockNeighbors().size(), 0);
+  EXPECT_EQ(switchSettingsV0->getBlockNeighbors()->size(), 0);
 
   // Check if value is updated
-  cfg::SwitchConfig config;
+  cfg::SwitchConfig config = testConfigA(cfg::SwitchType::VOQ);
   *config.switchSettings()->switchType() = cfg::SwitchType::VOQ;
-  config.switchSettings()->switchId() = 100;
-
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
   EXPECT_NE(nullptr, stateV1);
   auto switchSettingsV1 = stateV1->getSwitchSettings();
   ASSERT_NE(nullptr, switchSettingsV1);
   EXPECT_FALSE(switchSettingsV1->isPublished());
   EXPECT_EQ(switchSettingsV1->getSwitchType(), cfg::SwitchType::VOQ);
-  EXPECT_EQ(switchSettingsV1->getSwitchId(), 100);
-  validateNodeSerilization(*switchSettingsV1);
-  EXPECT_EQ(nullptr, publishAndApplyConfig(stateV1, &config, platform.get()));
+  EXPECT_EQ(switchSettingsV1->getSwitchId(), 1);
+  validateNodeSerialization(*switchSettingsV1);
+}
 
-  // Flip back to NPU switch type
-  *config.switchSettings()->switchType() = cfg::SwitchType::NPU;
-  config.switchSettings()->switchId().reset();
-  EXPECT_FALSE(config.switchSettings()->switchId().has_value());
+TEST(SwitchSettingsTest, applyExactMatchTableConfig) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
 
+  // Check default value
+  auto switchSettingsV0 = stateV0->getSwitchSettings();
+  ASSERT_NE(nullptr, switchSettingsV0);
+  EXPECT_EQ(switchSettingsV0->getExactMatchTableConfig()->size(), 0);
+
+  // Check if value is updated
+  cfg::SwitchConfig config;
+
+  cfg::ExactMatchTableConfig tableConfig;
+  tableConfig.name() = "TeFlowTable";
+  tableConfig.dstPrefixLength() = 59;
+
+  config.switchSettings()->exactMatchTableConfigs() = {tableConfig};
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  EXPECT_NE(nullptr, stateV1);
+  auto switchSettingsV1 = stateV1->getSwitchSettings();
+  ASSERT_NE(nullptr, switchSettingsV1);
+  EXPECT_FALSE(switchSettingsV1->isPublished());
+  EXPECT_EQ(switchSettingsV1->getExactMatchTableConfig()->size(), 1);
+  EXPECT_EQ(
+      switchSettingsV1->getExactMatchTableConfig()
+          ->at(0)
+          ->cref<switch_config_tags::name>()
+          ->toThrift(),
+      "TeFlowTable");
+
+  EXPECT_EQ(
+      switchSettingsV1->getExactMatchTableConfig()
+          ->at(0)
+          ->cref<switch_config_tags::dstPrefixLength>()
+          ->toThrift(),
+      59);
+
+  // update prefix length
+  (*config.switchSettings()->exactMatchTableConfigs())[0].dstPrefixLength() =
+      51;
   auto stateV2 = publishAndApplyConfig(stateV1, &config, platform.get());
-  EXPECT_NE(nullptr, stateV2);
-  auto switchSettingsV2 = stateV2->getSwitchSettings();
-  ASSERT_NE(nullptr, switchSettingsV2);
-  EXPECT_FALSE(switchSettingsV2->isPublished());
-  EXPECT_EQ(switchSettingsV2->getSwitchType(), cfg::SwitchType::NPU);
-  EXPECT_FALSE(switchSettingsV2->getSwitchId().has_value());
-  validateNodeSerilization(*switchSettingsV2);
-  EXPECT_EQ(nullptr, publishAndApplyConfig(stateV2, &config, platform.get()));
+  EXPECT_EQ(
+      stateV2->getSwitchSettings()
+          ->getExactMatchTableConfig()
+          ->at(0)
+          ->cref<switch_config_tags::dstPrefixLength>()
+          ->toThrift(),
+      51);
+
+  // delete the config
+  cfg::SwitchConfig emptyConfig;
+  auto stateV3 = publishAndApplyConfig(stateV2, &emptyConfig, platform.get());
+  EXPECT_NE(nullptr, stateV3);
+  EXPECT_EQ(
+      stateV3->getSwitchSettings()->getExactMatchTableConfig()->size(), 0);
+}
+
+TEST(SwitchSettingsTest, applyDefaultVlanConfig) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+
+  // Check default value
+  auto switchSettingsV0 = stateV0->getSwitchSettings();
+  ASSERT_NE(nullptr, switchSettingsV0);
+  EXPECT_EQ(switchSettingsV0->getDefaultVlan(), std::nullopt);
+
+  // Check whether value is updated
+  cfg::SwitchConfig config = testConfigA();
+  config.defaultVlan() = 1;
+
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  EXPECT_NE(nullptr, stateV1);
+  auto switchSettingsV1 = stateV1->getSwitchSettings();
+  ASSERT_NE(nullptr, switchSettingsV1);
+  EXPECT_FALSE(switchSettingsV1->isPublished());
+  EXPECT_EQ(switchSettingsV1->getDefaultVlan(), 1);
+
+  const auto& thriftState0 = stateV1->toThrift();
+  EXPECT_EQ(thriftState0.defaultVlan(), 1);
+  EXPECT_EQ(thriftState0.switchSettings()->defaultVlan(), 1);
+}
+
+TEST(SwitchSettingsTest, applyArpNdpTimeoutConfig) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+
+  // Check default value
+  auto switchSettingsV0 = stateV0->getSwitchSettings();
+  ASSERT_NE(nullptr, switchSettingsV0);
+  EXPECT_EQ(switchSettingsV0->getArpTimeout(), std::nullopt);
+  EXPECT_EQ(switchSettingsV0->getNdpTimeout(), std::nullopt);
+  EXPECT_EQ(switchSettingsV0->getArpAgerInterval(), std::nullopt);
+  EXPECT_EQ(switchSettingsV0->getStaleEntryInterval(), std::nullopt);
+  EXPECT_EQ(switchSettingsV0->getMaxNeighborProbes(), std::nullopt);
+
+  // Check whether value is updated
+  cfg::SwitchConfig config = testConfigA();
+  config.arpTimeoutSeconds() = 300;
+  config.arpAgerInterval() = 200;
+  config.staleEntryInterval() = 200;
+  config.maxNeighborProbes() = 100;
+
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  EXPECT_NE(nullptr, stateV1);
+  auto switchSettingsV1 = stateV1->getSwitchSettings();
+  ASSERT_NE(nullptr, switchSettingsV1);
+  EXPECT_FALSE(switchSettingsV1->isPublished());
+  EXPECT_EQ(switchSettingsV1->getArpTimeout(), std::chrono::seconds(300));
+  EXPECT_EQ(switchSettingsV1->getNdpTimeout(), std::chrono::seconds(300));
+  EXPECT_EQ(switchSettingsV1->getArpAgerInterval(), std::chrono::seconds(200));
+  EXPECT_EQ(
+      switchSettingsV1->getStaleEntryInterval(), std::chrono::seconds(200));
+  EXPECT_EQ(switchSettingsV1->getMaxNeighborProbes(), 100);
+
+  const auto& thriftState0 = stateV1->toThrift();
+  EXPECT_EQ(thriftState0.arpTimeout(), 300);
+  EXPECT_EQ(thriftState0.ndpTimeout(), 300);
+  EXPECT_EQ(thriftState0.arpAgerInterval(), 200);
+  EXPECT_EQ(thriftState0.staleEntryInterval(), 200);
+  EXPECT_EQ(thriftState0.maxNeighborProbes(), 100);
+  EXPECT_EQ(thriftState0.switchSettings()->arpTimeout(), 300);
+  EXPECT_EQ(thriftState0.switchSettings()->ndpTimeout(), 300);
+  EXPECT_EQ(thriftState0.switchSettings()->arpAgerInterval(), 200);
+  EXPECT_EQ(thriftState0.switchSettings()->staleEntryInterval(), 200);
+  EXPECT_EQ(thriftState0.switchSettings()->maxNeighborProbes(), 100);
+}
+
+TEST(SwitchSettingsTest, applyDhcpConfig) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+
+  const folly::IPAddressV6 kDhcpV6RelaySrc("100::1");
+  const folly::IPAddressV6 kDhcpV6ReplySrc("101::1");
+  const folly::IPAddressV4 kDhcpV4RelaySrc("100.0.0.1");
+  const folly::IPAddressV4 kDhcpV4ReplySrc("101.0.0.1");
+
+  // Check default value
+  auto switchSettingsV0 = stateV0->getSwitchSettings();
+  ASSERT_NE(nullptr, switchSettingsV0);
+  EXPECT_EQ(switchSettingsV0->getDhcpV4RelaySrc(), std::nullopt);
+  EXPECT_EQ(switchSettingsV0->getDhcpV6RelaySrc(), std::nullopt);
+  EXPECT_EQ(switchSettingsV0->getDhcpV4ReplySrc(), std::nullopt);
+  EXPECT_EQ(switchSettingsV0->getDhcpV6ReplySrc(), std::nullopt);
+
+  // Check whether value is updated
+  cfg::SwitchConfig config = testConfigA();
+  config.dhcpRelaySrcOverrideV4() = "100.0.0.1";
+  config.dhcpReplySrcOverrideV4() = "101.0.0.1";
+  config.dhcpRelaySrcOverrideV6() = "100::1";
+  config.dhcpReplySrcOverrideV6() = "101::1";
+
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  EXPECT_NE(nullptr, stateV1);
+  auto switchSettingsV1 = stateV1->getSwitchSettings();
+  ASSERT_NE(nullptr, switchSettingsV1);
+  EXPECT_FALSE(switchSettingsV1->isPublished());
+  EXPECT_EQ(switchSettingsV1->getDhcpV4RelaySrc(), kDhcpV4RelaySrc);
+  EXPECT_EQ(switchSettingsV1->getDhcpV6RelaySrc(), kDhcpV6RelaySrc);
+  EXPECT_EQ(switchSettingsV1->getDhcpV4ReplySrc(), kDhcpV4ReplySrc);
+  EXPECT_EQ(switchSettingsV1->getDhcpV6ReplySrc(), kDhcpV6ReplySrc);
+
+  const auto& thriftState0 = stateV1->toThrift();
+  EXPECT_EQ(
+      thriftState0.dhcpV4RelaySrc(),
+      facebook::network::toBinaryAddress(kDhcpV4RelaySrc));
+  EXPECT_EQ(
+      thriftState0.dhcpV6RelaySrc(),
+      facebook::network::toBinaryAddress(kDhcpV6RelaySrc));
+  EXPECT_EQ(
+      thriftState0.dhcpV4ReplySrc(),
+      facebook::network::toBinaryAddress(kDhcpV4ReplySrc));
+  EXPECT_EQ(
+      thriftState0.dhcpV6ReplySrc(),
+      facebook::network::toBinaryAddress(kDhcpV6ReplySrc));
+  EXPECT_EQ(
+      thriftState0.switchSettings()->dhcpV4RelaySrc(),
+      facebook::network::toBinaryAddress(kDhcpV4RelaySrc));
+  EXPECT_EQ(
+      thriftState0.switchSettings()->dhcpV6RelaySrc(),
+      facebook::network::toBinaryAddress(kDhcpV6RelaySrc));
+  EXPECT_EQ(
+      thriftState0.switchSettings()->dhcpV4ReplySrc(),
+      facebook::network::toBinaryAddress(kDhcpV4ReplySrc));
+  EXPECT_EQ(
+      thriftState0.switchSettings()->dhcpV6ReplySrc(),
+      facebook::network::toBinaryAddress(kDhcpV6ReplySrc));
 }

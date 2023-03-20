@@ -1,8 +1,12 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 #pragma once
 
+#include <thrift/lib/cpp2/TypeClass.h>
 #include "fboss/agent/lldp/LinkNeighbor.h"
+#include "fboss/agent/lldp/gen-cpp2/lldp_fatal_types.h"
+#include "fboss/agent/lldp/gen-cpp2/lldp_types.h"
 #include "fboss/agent/types.h"
+#include "fboss/thrift_storage/CowStorage.h"
 #include "folly/Synchronized.h"
 
 #include <chrono>
@@ -26,21 +30,21 @@ class LinkNeighborDB {
   /*
    * Update the DB with new neighbor information.
    */
-  void update(const LinkNeighbor& neighbor);
+  void update(std::shared_ptr<LinkNeighbor> neighbor);
 
   /*
    * Get all known neighbors.
    *
    * This returns a new copy of the neighbor information.
    */
-  std::vector<LinkNeighbor> getNeighbors();
+  std::vector<std::shared_ptr<LinkNeighbor>> getNeighbors();
 
   /*
    * Get all known neighbors on a specific port.
    *
    * This returns a new copy of the neighbor information.
    */
-  std::vector<LinkNeighbor> getNeighbors(PortID port);
+  std::vector<std::shared_ptr<LinkNeighbor>> getNeighbors(PortID port);
 
   /*
    * Remove expired neighbor entries from the database and return number
@@ -52,31 +56,16 @@ class LinkNeighborDB {
   void portDown(PortID port);
 
  private:
-  class NeighborKey {
-   public:
-    explicit NeighborKey(const LinkNeighbor& neighbor);
-    bool operator<(const NeighborKey& other) const;
-    bool operator==(const NeighborKey& other) const;
-
-   private:
-    lldp::LldpChassisIdType chassisIdType_;
-    lldp::LldpPortIdType portIdType_;
-    std::string chassisId_;
-    std::string portId_;
-  };
-  using NeighborMap = std::map<NeighborKey, LinkNeighbor>;
-  using NeighborsByPort = std::map<PortID, NeighborMap>;
+  using LldpState = fsdb::CowStorage<lldp::LldpState>;
 
   // Returns number of entries left after pruning
-  int pruneLocked(
-      NeighborsByPort& neighborsByPort,
-      std::chrono::steady_clock::time_point now);
+  int pruneLocked(LldpState& state, std::chrono::steady_clock::time_point now);
 
   // Forbidden copy constructor and assignment operator
   LinkNeighborDB(LinkNeighborDB const&) = delete;
   LinkNeighborDB& operator=(LinkNeighborDB const&) = delete;
 
-  folly::Synchronized<NeighborsByPort> byLocalPort_;
+  folly::Synchronized<LldpState> byLocalPort_{LldpState(lldp::LldpState())};
 };
 
 } // namespace facebook::fboss

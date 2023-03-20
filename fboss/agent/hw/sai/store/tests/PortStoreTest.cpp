@@ -26,23 +26,37 @@ class PortStoreTest : public SaiStoreTest {
     std::vector<uint32_t> lanes;
     lanes.push_back(lane);
     return SaiPortTraits::CreateAttributes {
-      lanes, speed, adminStateOpt, std::nullopt, std::nullopt, std::nullopt,
+      lanes, speed, adminStateOpt, std::nullopt,
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+          std::nullopt, std::nullopt,
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+          std::nullopt, // Port Fabric Isolate
+#endif
           std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
-          std::nullopt, std::nullopt, std::nullopt,
+          std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt,
           std::nullopt, // Ingress Mirror Session
           std::nullopt, // Egress Mirror Session
           std::nullopt, // Ingress Sample Packet
           std::nullopt, // Egress Sample Packet
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
           std::nullopt, // Ingress mirror sample session
           std::nullopt, // Egress mirror sample session
-#endif
           std::nullopt, // Ingress macsec acl
           std::nullopt, // Egress macsec acl
           std::nullopt, // System Port Id
           std::nullopt, // PTP Mode
           std::nullopt, // PFC Mode
           std::nullopt, // PFC Priorities
+#if !defined(TAJO_SDK)
+          std::nullopt, // PFC Rx Priorities
+          std::nullopt, // PFC Tx Priorities
+#endif
+          std::nullopt, // TC to Priority Group map
+          std::nullopt, // PFC Priority to Queue map
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+          std::nullopt, // Inter Frame Gap
+#endif
+          std::nullopt, // Link Training Enable
     };
   }
 
@@ -180,6 +194,23 @@ TEST_F(PortStoreTest, portSetMtu) {
       portId, SaiPortTraits::Attributes::Mtu{});
   EXPECT_EQ(apiMtu, kMtu);
 }
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+TEST_F(PortStoreTest, portFabricIsolate) {
+  auto portId = createPort(0);
+  SaiObject<SaiPortTraits> portObj = createObj<SaiPortTraits>(portId);
+  EXPECT_EQ(GET_OPT_ATTR(Port, FabricIsolate, portObj.attributes()), false);
+  auto newAttrs = makeAttrs(0, 25000);
+  constexpr bool kFabricIsolate{true};
+  std::get<std::optional<SaiPortTraits::Attributes::FabricIsolate>>(newAttrs) =
+      kFabricIsolate;
+  portObj.setAttributes(newAttrs);
+  EXPECT_EQ(
+      GET_OPT_ATTR(Port, FabricIsolate, portObj.attributes()), kFabricIsolate);
+  auto apiFabricIsolate = saiApiTable->portApi().getAttribute(
+      portId, SaiPortTraits::Attributes::FabricIsolate{});
+  EXPECT_EQ(apiFabricIsolate, kFabricIsolate);
+}
+#endif
 
 TEST_F(PortStoreTest, portSetQoSMaps) {
   auto portId = createPort(0);
@@ -262,4 +293,24 @@ TEST_F(PortStoreTest, portSetPtpMode) {
   auto apiPtpMode = saiApiTable->portApi().getAttribute(
       portId, SaiPortTraits::Attributes::PtpMode{});
   EXPECT_EQ(apiPtpMode, kPtpMode);
+}
+
+TEST_F(PortStoreTest, portSetDisableLinkTraining) {
+  auto portId = createPort(0);
+  SaiObject<SaiPortTraits> portObj = createObj<SaiPortTraits>(portId);
+  EXPECT_FALSE(GET_OPT_ATTR(Port, LinkTrainingEnable, portObj.attributes()));
+  auto newAttrs = makeAttrs(0, 25000);
+  std::get<std::optional<SaiPortTraits::Attributes::LinkTrainingEnable>>(
+      newAttrs) = true;
+  portObj.setAttributes(newAttrs);
+  EXPECT_TRUE(GET_OPT_ATTR(Port, LinkTrainingEnable, portObj.attributes()));
+  EXPECT_TRUE(saiApiTable->portApi().getAttribute(
+      portId, SaiPortTraits::Attributes::LinkTrainingEnable{}));
+
+  std::get<std::optional<SaiPortTraits::Attributes::LinkTrainingEnable>>(
+      newAttrs) = false;
+  portObj.setAttributes(newAttrs);
+  EXPECT_FALSE(GET_OPT_ATTR(Port, LinkTrainingEnable, portObj.attributes()));
+  EXPECT_FALSE(saiApiTable->portApi().getAttribute(
+      portId, SaiPortTraits::Attributes::LinkTrainingEnable{}));
 }

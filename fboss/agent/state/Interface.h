@@ -15,7 +15,6 @@
 #include <folly/dynamic.h>
 #include "fboss/agent/AddressUtil.h"
 #include "fboss/agent/FbossError.h"
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeBase.h"
@@ -24,154 +23,189 @@
 
 #include <boost/container/flat_map.hpp>
 
+#include "fboss/agent/state/ArpTable.h"
+#include "fboss/agent/state/NdpTable.h"
+
 namespace facebook::fboss {
 
 class SwitchState;
 
-struct InterfaceFields
-    : public ThriftyFields<InterfaceFields, state::InterfaceFields> {
-  using ThriftyFields::ThriftyFields;
-  typedef boost::container::flat_map<folly::IPAddress, uint8_t> Addresses;
-  InterfaceFields(
-      InterfaceID id,
-      RouterID router,
-      VlanID vlan,
-      folly::StringPiece name,
-      folly::MacAddress mac,
-      int mtu,
-      bool isVirtual,
-      bool isStateSyncDisabled) {
-    writableData().interfaceId() = id;
-    writableData().routerId() = router;
-    writableData().vlanId() = vlan;
-    writableData().name() = name;
-    writableData().mac() = mac.u64NBO();
-    writableData().mtu() = mtu;
-    writableData().isVirtual() = isVirtual;
-    writableData().isStateSyncDisabled() = isStateSyncDisabled;
-  }
-
-  state::InterfaceFields toThrift() const override {
-    return data();
-  }
-  static InterfaceFields fromThrift(
-      state::InterfaceFields const& interfaceFields) {
-    return InterfaceFields(interfaceFields);
-  }
-  bool operator==(const InterfaceFields& other) const {
-    return data() == other.data();
-  }
-
-  /*
-   * Deserialize from a folly::dynamic object
-   */
-  static InterfaceFields fromFollyDynamic(const folly::dynamic& json);
-  /*
-   * Serialize to folly::dynamic
-   */
-  folly::dynamic toFollyDynamic() const;
-
-  template <typename Fn>
-  void forEachChild(Fn /*fn*/) {}
-};
+// both arp table and ndp table have same thrift type representation as map of
+// string to neighbor entry fields. define which of these two members of struct
+// resolves to which class.
+class Interface;
+RESOLVE_STRUCT_MEMBER(Interface, switch_state_tags::arpTable, ArpTable)
+RESOLVE_STRUCT_MEMBER(Interface, switch_state_tags::ndpTable, NdpTable)
 
 /*
  * Interface stores a routing domain on the switch
  */
-class Interface : public NodeBaseT<Interface, InterfaceFields> {
+class Interface : public ThriftStructNode<Interface, state::InterfaceFields> {
  public:
-  typedef InterfaceFields::Addresses Addresses;
+  using Base = ThriftStructNode<Interface, state::InterfaceFields>;
+  using Base::modify;
+  using AddressesType = Base::Fields::TypeFor<switch_state_tags::addresses>;
+  using Addresses = std::map<folly::IPAddress, uint8_t>;
   Interface(
       InterfaceID id,
       RouterID router,
-      VlanID vlan,
+      std::optional<VlanID> vlan,
       folly::StringPiece name,
       folly::MacAddress mac,
       int mtu,
       bool isVirtual,
-      bool isStateSyncDisabled)
-      : NodeBaseT(
-            id,
-            router,
-            vlan,
-            name,
-            mac,
-            mtu,
-            isVirtual,
-            isStateSyncDisabled) {}
+      bool isStateSyncDisabled,
+      cfg::InterfaceType type = cfg::InterfaceType::VLAN) {
+    set<switch_state_tags::interfaceId>(id);
+    setRouterID(router);
+    if (vlan) {
+      setVlanID(*vlan);
+    }
+    setName(name.str());
+    setMac(mac);
+    setMtu(mtu);
+    setIsVirtual(isVirtual);
+    setIsStateSyncDisabled(isStateSyncDisabled);
+    setType(type);
+  }
 
   InterfaceID getID() const {
-    return InterfaceID(*getFields()->data().interfaceId());
+    return InterfaceID(get<switch_state_tags::interfaceId>()->cref());
   }
+  std::optional<SystemPortID> getSystemPortID() const;
 
   RouterID getRouterID() const {
-    return RouterID(*getFields()->data().routerId());
+    return RouterID(get<switch_state_tags::routerId>()->cref());
   }
   void setRouterID(RouterID id) {
-    writableFields()->writableData().routerId() = id;
+    set<switch_state_tags::routerId>(id);
   }
-
+  cfg::InterfaceType getType() const {
+    return get<switch_state_tags::type>()->cref();
+  }
+  void setType(cfg::InterfaceType type) {
+    set<switch_state_tags::type>(type);
+  }
   VlanID getVlanID() const {
-    return VlanID(*getFields()->data().vlanId());
+    CHECK(getType() == cfg::InterfaceType::VLAN);
+    return VlanID(get<switch_state_tags::vlanId>()->cref());
+  }
+  std::optional<VlanID> getVlanIDIf() const {
+    if (getType() == cfg::InterfaceType::VLAN) {
+      return getVlanID();
+    } else {
+      return std::nullopt;
+    }
   }
   void setVlanID(VlanID id) {
-    writableFields()->writableData().vlanId() = id;
+    CHECK(getType() == cfg::InterfaceType::VLAN);
+    set<switch_state_tags::vlanId>(id);
   }
 
+  VlanID getVlanIDHelper() const {
+    // TODO(skhare)
+    // VOQ/Fabric switches require that the packets are not tagged with any
+    // VLAN. We are gradually enhancing wedge_agent to handle tagged as well as
+    // untagged packets. During this transition, we will use VlanID 0 to
+    // populate SwitchState/Neighbor cache etc. data structures. Once the
+    // wedge_agent changes are complete, we will no longer need this function.
+    return getType() == cfg::InterfaceType::VLAN ? getVlanID() : VlanID(0);
+  }
+
+  Interface* modify(std::shared_ptr<SwitchState>* state);
   int getMtu() const {
-    return *getFields()->data().mtu();
+    return get<switch_state_tags::mtu>()->cref();
   }
   void setMtu(int mtu) {
-    writableFields()->writableData().mtu() = mtu;
+    set<switch_state_tags::mtu>(mtu);
   }
 
-  const std::string& getName() const {
-    return *getFields()->data().name();
+  std::string getName() const {
+    return get<switch_state_tags::name>()->cref();
   }
   void setName(const std::string& name) {
-    writableFields()->writableData().name() = name;
+    set<switch_state_tags::name>(name);
   }
 
   folly::MacAddress getMac() const {
-    return folly::MacAddress::fromNBO(*getFields()->data().mac());
+    return folly::MacAddress::fromNBO(get<switch_state_tags::mac>()->cref());
   }
   void setMac(folly::MacAddress mac) {
-    writableFields()->writableData().mac() = mac.u64NBO();
+    set<switch_state_tags::mac>(mac.u64NBO());
   }
 
   bool isVirtual() const {
-    return *getFields()->data().isVirtual();
+    return get<switch_state_tags::isVirtual>()->cref();
   }
   void setIsVirtual(bool isVirtual) {
-    writableFields()->writableData().isVirtual() = isVirtual;
+    set<switch_state_tags::isVirtual>(isVirtual);
   }
 
   bool isStateSyncDisabled() const {
-    return *getFields()->data().isStateSyncDisabled();
+    return get<switch_state_tags::isStateSyncDisabled>()->cref();
   }
   void setIsStateSyncDisabled(bool isStateSyncDisabled) {
-    writableFields()->writableData().isStateSyncDisabled() =
-        isStateSyncDisabled;
+    set<switch_state_tags::isStateSyncDisabled>(isStateSyncDisabled);
   }
 
-  Addresses getAddresses() const {
-    Addresses addresses;
-    for (const auto& [ipStr, mask] : *getFields()->data().addresses()) {
-      addresses.emplace(folly::CIDRNetwork(ipStr, mask));
+  template <typename NTableT>
+  auto getTable() const {
+    if constexpr (std::is_same_v<NTableT, ArpTable>) {
+      return getArpTable();
+    } else if constexpr (std::is_same_v<NTableT, NdpTable>) {
+      return getNdpTable();
     }
-    return addresses;
+  }
+
+  std::shared_ptr<ArpTable> getArpTable() const {
+    return get<switch_state_tags::arpTable>();
+  }
+  std::shared_ptr<NdpTable> getNdpTable() const {
+    return get<switch_state_tags::ndpTable>();
+  }
+  template <
+      typename AddressType,
+      std::enable_if_t<std::is_same_v<AddressType, folly::IPAddressV4>, bool> =
+          true>
+  auto getNeighborEntryTable() const {
+    return getArpTable();
+  }
+
+  template <
+      typename AddressType,
+      std::enable_if_t<std::is_same_v<AddressType, folly::IPAddressV6>, bool> =
+          true>
+  auto getNeighborEntryTable() const {
+    return getNdpTable();
+  }
+
+  void setArpTable(state::NeighborEntries arpTable) {
+    set<switch_state_tags::arpTable>(std::move(arpTable));
+  }
+  void setNdpTable(state::NeighborEntries ndpTable) {
+    set<switch_state_tags::ndpTable>(std::move(ndpTable));
+  }
+  template <typename AddressType>
+  void setNeighborEntryTable(state::NeighborEntries nbrTable) {
+    if constexpr (std::is_same_v<AddressType, folly::IPAddressV4>) {
+      return setArpTable(std::move(nbrTable));
+    }
+    return setNdpTable(std::move(nbrTable));
+  }
+
+  auto getAddresses() const {
+    return get<switch_state_tags::addresses>();
   }
   void setAddresses(Addresses addrs) {
     std::map<std::string, int16_t> addresses;
     for (const auto& [addr, mask] : addrs) {
       addresses.emplace(addr.str(), mask);
     }
-    writableFields()->writableData().addresses() = std::move(addresses);
+    set<switch_state_tags::addresses>(std::move(addresses));
   }
   bool hasAddress(folly::IPAddress ip) const {
-    auto ipStr = ip.str();
-    const auto& addrs = getFields()->data().addresses();
-    return addrs->find(ipStr) != addrs->end();
+    auto& addresses = std::as_const(*getAddresses());
+    return (addresses.find(ip.str()) != addresses.end());
   }
 
   /**
@@ -185,11 +219,11 @@ class Interface : public NodeBaseT<Interface, InterfaceFields> {
    */
   bool canReachAddress(const folly::IPAddress& dest) const;
 
-  const cfg::NdpConfig& getNdpConfig() const {
-    return *getFields()->data().ndpConfig();
+  auto getNdpConfig() const {
+    return get<switch_state_tags::ndpConfig>();
   }
-  void setNdpConfig(const cfg::NdpConfig& ndp) {
-    writableFields()->writableData().ndpConfig() = ndp;
+  void setNdpConfig(cfg::NdpConfig ndp) {
+    set<switch_state_tags::ndpConfig>(std::move(ndp));
   }
 
   /*
@@ -204,23 +238,62 @@ class Interface : public NodeBaseT<Interface, InterfaceFields> {
       InterfaceID intfID,
       const std::shared_ptr<SwitchState>& state);
 
-  // defer all bellow methods to the fields
-  state::InterfaceFields toThrift() const {
-    return getFields()->toThrift();
+  bool operator!=(const Interface& other) const {
+    return !(*this == other);
   }
-  static std::shared_ptr<Interface> fromThrift(
-      state::InterfaceFields const& interfaceFields) {
-    return std::make_shared<Interface>(InterfaceFields(interfaceFields));
+
+  Addresses getAddressesCopy() const {
+    // THRIFT_COPY: evaluate if this function can be retired..
+    Addresses addrs{};
+    for (auto iter : std::as_const(*getAddresses())) {
+      addrs.emplace(folly::IPAddress(iter.first), iter.second->cref());
+    }
+    return addrs;
   }
-  bool operator==(const Interface& other) const {
-    return *getFields() == *other.getFields();
+
+  int32_t routerAdvertisementSeconds() const {
+    return getNdpConfig()
+        ->get<switch_config_tags::routerAdvertisementSeconds>()
+        ->cref();
   }
-  static std::shared_ptr<Interface> fromFollyDynamic(
-      const folly::dynamic& json) {
-    return std::make_shared<Interface>(InterfaceFields::fromFollyDynamic(json));
+
+  int32_t curHopLimit() const {
+    return getNdpConfig()->get<switch_config_tags::curHopLimit>()->cref();
   }
-  folly::dynamic toFollyDynamic() const override {
-    return getFields()->toFollyDynamic();
+
+  int32_t routerLifetime() const {
+    return getNdpConfig()->get<switch_config_tags::routerLifetime>()->cref();
+  }
+
+  int32_t prefixValidLifetimeSeconds() const {
+    return getNdpConfig()
+        ->get<switch_config_tags::prefixValidLifetimeSeconds>()
+        ->cref();
+  }
+
+  int32_t prefixPreferredLifetimeSeconds() const {
+    return getNdpConfig()
+        ->get<switch_config_tags::prefixPreferredLifetimeSeconds>()
+        ->cref();
+  }
+
+  bool routerAdvertisementManagedBit() const {
+    return getNdpConfig()
+        ->get<switch_config_tags::routerAdvertisementManagedBit>()
+        ->cref();
+  }
+
+  bool routerAdvertisementOtherBit() const {
+    return getNdpConfig()
+        ->get<switch_config_tags::routerAdvertisementOtherBit>()
+        ->cref();
+  }
+
+  std::optional<std::string> routerAddress() const {
+    if (auto addr = getNdpConfig()->get<switch_config_tags::routerAddress>()) {
+      return addr->cref();
+    }
+    return std::nullopt;
   }
 
   /*
@@ -231,7 +304,7 @@ class Interface : public NodeBaseT<Interface, InterfaceFields> {
   inline static const int kDefaultMtu{1500};
 
  private:
-  using NodeBaseT::NodeBaseT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 

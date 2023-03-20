@@ -53,8 +53,6 @@ class SaiPlatform : public Platform, public StateObserver {
   std::unique_ptr<ThriftHandler> createHandler(SwSwitch* sw) override;
   TransceiverIdxThrift getPortMapping(PortID port, cfg::PortSpeed speed)
       const override;
-  virtual std::optional<std::string> getPlatformAttribute(
-      cfg::PlatformAttributes platformAttribute);
   virtual SaiPlatformPort* getPort(PortID id) const;
   PlatformPort* getPlatformPort(PortID port) const override;
   void initPorts() override;
@@ -122,6 +120,11 @@ class SaiPlatform : public Platform, public StateObserver {
   const std::set<sai_api_t>& getDefaultSwitchAsicSupportedApis() const;
   const std::set<sai_api_t>& getDefaultPhyAsicSupportedApis() const;
   virtual const std::set<sai_api_t>& getSupportedApiList() const;
+
+  virtual const std::unordered_map<std::string, std::string>
+  getSaiProfileVendorExtensionValues() const {
+    return std::unordered_map<std::string, std::string>();
+  }
 
  protected:
   std::unique_ptr<SaiSwitch> saiSwitch_;

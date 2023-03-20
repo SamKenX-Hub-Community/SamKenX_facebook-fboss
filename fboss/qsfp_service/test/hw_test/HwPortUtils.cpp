@@ -11,13 +11,15 @@
 
 #include "fboss/agent/AgentConfig.h"
 
+#ifndef IS_OSS
 #include "fboss/agent/hw/sai/api/PortApi.h"
 #include "fboss/agent/hw/sai/api/SaiApiTable.h"
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
-#include "fboss/lib/phy/PhyManager.h"
 #include "fboss/lib/phy/SaiPhyManager.h"
+#endif
+#include "fboss/lib/phy/PhyManager.h"
 #include "fboss/qsfp_service/test/hw_test/HwQsfpEnsemble.h"
 
 #include <folly/logging/xlog.h>
@@ -41,7 +43,8 @@ void fillDefaultTxSettings(PhyManager* phyManager, phy::PhyPortConfig& config) {
 void verifyPhyPortConfig(
     PortID portID,
     PhyManager* phyManager,
-    const phy::PhyPortConfig& expectedConfig) {
+    const phy::PhyPortConfig& expectedConfig,
+    PlatformMode platformMode) {
   phy::PhyPortConfig filledConfig = expectedConfig;
   // fill default TX settings in the expectedConfig
   fillDefaultTxSettings(phyManager, filledConfig);
@@ -75,7 +78,9 @@ void verifyPhyPortConfig(
   // Only check phy::ExternalPhyConfig when the actual config exists
   const auto& actualSysLanesConf = actualPortConfig.config.system.lanes;
   const auto& acutualLineLanesConf = actualPortConfig.config.line.lanes;
-  if (!actualSysLanesConf.empty() && !acutualLineLanesConf.empty()) {
+  // FIXME: remove Sandia check when we start reading tx settings on Sandia XPHY
+  if (!actualSysLanesConf.empty() && !acutualLineLanesConf.empty() &&
+      platformMode != PlatformMode::SANDIA) {
     EXPECT_EQ(filledConfig.config, actualPortConfig.config)
         << " Mismatch between expected and actual port config.\nExpected "
         << filledConfig.config.toDynamic()
@@ -86,10 +91,16 @@ void verifyPhyPortConfig(
 }
 
 void verifyPhyPortConnector(PortID portID, HwQsfpEnsemble* qsfpEnsemble) {
-  if (!qsfpEnsemble->isSaiPlatform()) {
+  // FIXME: remove Sandia check when Sandia XPHY supports getattr for
+  // PortConnector object in SAI
+  if (!qsfpEnsemble->isSaiPlatform() ||
+      qsfpEnsemble->getWedgeManager()->getPlatformMode() ==
+          PlatformMode::SANDIA) {
     return;
   }
-
+  // FIXME: [oss-fix] Remove this when linking to a SAI library is supported in
+  // OSS build
+#ifndef IS_OSS
   auto saiPhyManager =
       static_cast<SaiPhyManager*>(qsfpEnsemble->getPhyManager());
   // The goal here is to check whether:
@@ -121,6 +132,7 @@ void verifyPhyPortConnector(PortID portID, HwQsfpEnsemble* qsfpEnsemble) {
       saiPortHandle->sysPort->adapterKey(),
       SaiPortTraits::Attributes::AdminState{});
   EXPECT_TRUE(adminState);
+#endif
 }
 
 std::optional<TransceiverID> getTranscieverIdx(
@@ -226,11 +238,13 @@ std::set<PortID> getCabledPorts(const AgentConfig& config) {
 std::vector<TransceiverID> getCabledPortTranceivers(
     const AgentConfig& config,
     const HwQsfpEnsemble* ensemble) {
-  std::vector<TransceiverID> transceivers;
+  std::unordered_set<TransceiverID> transceivers;
+  // There could be multiple ports in a single transceiver. Therefore use a set
+  // to get unique cabled transceivers
   for (auto port : getCabledPorts(config)) {
-    transceivers.push_back(*getTranscieverIdx(port, ensemble));
+    transceivers.insert(*getTranscieverIdx(port, ensemble));
   }
-  return transceivers;
+  return std::vector<TransceiverID>(transceivers.begin(), transceivers.end());
 }
 
 bool match(std::vector<TransceiverID> l, std::vector<TransceiverID> r) {
@@ -273,7 +287,10 @@ void verifyXphyPort(
       expectedPhyPortConfig.profile.speed);
 
   utility::verifyPhyPortConfig(
-      portID, ensemble->getPhyManager(), expectedPhyPortConfig);
+      portID,
+      ensemble->getPhyManager(),
+      expectedPhyPortConfig,
+      ensemble->getWedgeManager()->getPlatformMode());
 
   utility::verifyPhyPortConnector(portID, ensemble);
 }

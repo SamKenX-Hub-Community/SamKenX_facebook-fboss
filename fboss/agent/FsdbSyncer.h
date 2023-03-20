@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "fboss/agent/FsdbStateDeltaConverter.h"
 #include "fboss/agent/StateObserver.h"
 #include "fboss/agent/gen-cpp2/agent_stats_types.h"
 #include "fboss/fsdb/client/FsdbPubSubManager.h"
@@ -12,6 +11,8 @@
 
 namespace facebook::fboss {
 class SwSwitch;
+class AgentFsdbSyncManager;
+
 namespace fsdb {
 class FsdbPubSubManager;
 }
@@ -43,20 +44,16 @@ class FsdbSyncer : public StateObserver {
   static std::vector<std::string> getAgentSwitchConfigPath();
 
  private:
-  void fsdbStatePublisherStateChanged(
-      fsdb::FsdbStreamClient::State oldState,
-      fsdb::FsdbStreamClient::State newState);
   void fsdbStatPublisherStateChanged(
       fsdb::FsdbStreamClient::State oldState,
       fsdb::FsdbStreamClient::State newState);
-
-  void publishDeltas(std::vector<fsdb::OperDeltaUnit>&& deltas);
+  std::optional<std::string> getBitsflowLockdownLevel();
 
   SwSwitch* sw_;
-  std::unique_ptr<fsdb::FsdbPubSubManager> fsdbPubSubMgr_;
+  std::shared_ptr<fsdb::FsdbPubSubManager> fsdbPubSubMgr_;
   std::atomic<bool> readyForStatePublishing_{false};
   std::atomic<bool> readyForStatPublishing_{false};
-  FsdbStateDeltaConverter deltaConverter_;
+  std::unique_ptr<AgentFsdbSyncManager> agentFsdbSyncManager_;
 };
 
 } // namespace facebook::fboss

@@ -28,46 +28,76 @@ using std::make_shared;
 using std::shared_ptr;
 using ::testing::Return;
 
-TEST(Interface, addrToReach) {
-  auto platform = createMockPlatform();
-  cfg::SwitchConfig config;
-  config.vlans()->resize(2);
-  *config.vlans()[0].id() = 1;
-  *config.vlans()[1].id() = 2;
-  config.interfaces()->resize(2);
-  auto* intfConfig = &config.interfaces()[0];
-  *intfConfig->intfID() = 1;
-  *intfConfig->vlanID() = 1;
-  *intfConfig->routerID() = 1;
-  intfConfig->mac() = "00:02:00:11:22:33";
-  intfConfig->ipAddresses()->resize(5);
-  intfConfig->ipAddresses()[0] = "10.1.1.1/24";
-  intfConfig->ipAddresses()[1] = "20.1.1.2/24";
-  intfConfig->ipAddresses()[2] = "::22:33:44/120";
-  intfConfig->ipAddresses()[3] = "::11:11:11/120";
-  intfConfig->ipAddresses()[4] = "fe80::face:b00c/64";
+namespace {
+void validateSerialization(const InterfaceMap& node) {
+  auto nodeBack = std::make_shared<InterfaceMap>(node.toThrift());
+  EXPECT_EQ(node.toThrift(), nodeBack->toThrift());
+}
+} // namespace
 
-  intfConfig = &config.interfaces()[1];
-  *intfConfig->intfID() = 2;
-  *intfConfig->vlanID() = 2;
-  *intfConfig->routerID() = 2;
-  intfConfig->mac() = "00:02:00:11:22:33";
-  intfConfig->ipAddresses()->resize(4);
-  intfConfig->ipAddresses()[0] = "10.1.1.1/24";
-  intfConfig->ipAddresses()[1] = "20.1.1.2/24";
-  intfConfig->ipAddresses()[2] = "::22:33:44/120";
-  intfConfig->ipAddresses()[3] = "::11:11:11/120";
+class InterfaceTest : public ::testing::Test {
+ private:
+  cfg::SwitchConfig genConfigWithLLs(
+      std::set<std::string> intfLinkLocals,
+      std::optional<std::string> raRouterAddr) {
+    cfg::SwitchConfig config;
+    config.vlans()->resize(2);
+    *config.vlans()[0].id() = 1;
+    *config.vlans()[1].id() = 2;
+    config.interfaces()->resize(2);
+    auto* intfConfig = &config.interfaces()[0];
+    *intfConfig->intfID() = 1;
+    *intfConfig->vlanID() = 1;
+    *intfConfig->routerID() = 1;
+    intfConfig->ipAddresses()->resize(4 + intfLinkLocals.size());
+    auto idx = 0;
+    intfConfig->ipAddresses()[idx++] = "10.1.1.1/24";
+    intfConfig->ipAddresses()[idx++] = "20.1.1.2/24";
+    intfConfig->ipAddresses()[idx++] = "::22:33:44/120";
+    intfConfig->ipAddresses()[idx++] = "::11:11:11/120";
+    for (const auto& intfAddr : intfLinkLocals) {
+      intfConfig->ipAddresses()[idx++] = intfAddr;
+    }
+    if (raRouterAddr) {
+      intfConfig->ndp() = cfg::NdpConfig{};
+      intfConfig->ndp()->routerAddress() = *raRouterAddr;
+    }
 
-  InterfaceID id(1);
-  shared_ptr<SwitchState> oldState = make_shared<SwitchState>();
-  auto state = publishAndApplyConfig(oldState, &config, platform.get());
+    intfConfig = &config.interfaces()[1];
+    *intfConfig->intfID() = 2;
+    *intfConfig->vlanID() = 2;
+    *intfConfig->routerID() = 2;
+    intfConfig->ipAddresses()->resize(4);
+    intfConfig->ipAddresses()[0] = "10.1.1.1/24";
+    intfConfig->ipAddresses()[1] = "20.1.1.2/24";
+    intfConfig->ipAddresses()[2] = "::22:33:44/120";
+    intfConfig->ipAddresses()[3] = "::11:11:11/120";
+    return config;
+  }
+
+ protected:
+  std::shared_ptr<SwitchState> setup(
+      std::set<std::string> intfLinkLocals,
+      std::optional<std::string> raRouterAddr) {
+    platform_ = createMockPlatform();
+    auto config = genConfigWithLLs(intfLinkLocals, raRouterAddr);
+    return publishAndApplyConfig(
+        std::make_shared<SwitchState>(), &config, platform_.get());
+  }
+
+ private:
+  std::unique_ptr<Platform> platform_;
+};
+
+TEST_F(InterfaceTest, addrToReach) {
+  auto state = setup({"fe80::face:b00c/64"}, std::nullopt);
   ASSERT_NE(nullptr, state);
   const auto& intfs = state->getInterfaces();
   const auto& intf1 = intfs->getInterface(InterfaceID(1));
   const auto& intf2 = intfs->getInterface(InterfaceID(2));
 
-  validateNodeSerilization(*intf1);
-  validateNodeSerilization(*intf2);
+  validateThriftStructNodeSerialization(*intf1);
+  validateThriftStructNodeSerialization(*intf2);
 
   EXPECT_TRUE(intf1->hasAddress(IPAddress("10.1.1.1")));
   EXPECT_FALSE(intf1->hasAddress(IPAddress("10.1.2.1")));
@@ -97,6 +127,113 @@ TEST(Interface, addrToReach) {
   EXPECT_EQ(
       IPAddress("fe80::face:b00c"),
       intf1->getAddressToReach(IPAddress("fe80::9a03:9bff:fe7d:656a"))->first);
+}
+
+TEST_F(InterfaceTest, addrToReachBackendNw) {
+  auto state =
+      setup({"fe80::face:b00b/64", "fe80::be:face:b00c/64"}, std::nullopt);
+  const auto& intf1 = state->getInterfaces()->getInterface(InterfaceID(1));
+  EXPECT_EQ(
+      IPAddress("fe80::face:b00b"),
+      intf1->getAddressToReach(IPAddress("fe80::9a03:9bff:fe7d:656a"))->first);
+}
+
+TEST_F(InterfaceTest, addrToReachBackendNwNewConfig) {
+  auto platform = createMockPlatform();
+  auto state = setup({"fe80::be:face:b00c/64"}, std::nullopt);
+  const auto& intf1 = state->getInterfaces()->getInterface(InterfaceID(1));
+  EXPECT_EQ(
+      IPAddress("fe80::be:face:b00c"),
+      intf1->getAddressToReach(IPAddress("fe80::9a03:9bff:fe7d:656a"))->first);
+}
+
+TEST_F(InterfaceTest, addrToReachWithRouterAddrConfigured) {
+  auto state = setup({"fe80::face:b00c/64"}, "fe80::face:b00c");
+  const auto& intf1 = state->getInterfaces()->getInterface(InterfaceID(1));
+  EXPECT_EQ(
+      MockPlatform::getMockLinkLocalIp6(),
+      intf1->getAddressToReach(IPAddress("fe80::9a03:9bff:fe7d:656a"))->first);
+}
+
+TEST_F(InterfaceTest, addrToReachBackendRouterAddrConfigured) {
+  auto state =
+      setup({"fe80::face:b00b/64", "fe80::be:face:b00c/64"}, "fe80::face:b00b");
+  const auto& intf1 = state->getInterfaces()->getInterface(InterfaceID(1));
+  EXPECT_EQ(
+      MockPlatform::getMockLinkLocalIp6(),
+      intf1->getAddressToReach(IPAddress("fe80::9a03:9bff:fe7d:656a"))->first);
+}
+
+TEST_F(InterfaceTest, addrToReachBackendNewConfigRouterAddrConfigured) {
+  auto state = setup({"fe80::be:face:b00c/64"}, "fe80::be:face:b00c");
+  const auto& intf1 = state->getInterfaces()->getInterface(InterfaceID(1));
+  EXPECT_EQ(
+      MockPlatform::getMockLinkLocalIp6(),
+      intf1->getAddressToReach(IPAddress("fe80::9a03:9bff:fe7d:656a"))->first);
+}
+
+TEST_F(InterfaceTest, getSetArpTable) {
+  auto state = setup({}, std::nullopt);
+  state::NeighborEntries arpTable;
+  state::NeighborEntryFields arp;
+  arp.ipaddress() = "10.1.1.100";
+  arp.mac() = "02:00:00:00:00:01";
+  cfg::PortDescriptor port;
+  port.portId() = 1;
+  port.portType() = cfg::PortDescriptorType::Physical;
+  arp.portId() = port;
+  arp.interfaceId() = 1;
+  arp.state() = state::NeighborState::Reachable;
+  arpTable.insert({*arp.ipaddress(), arp});
+  auto intf1 = state->getInterfaces()->getInterface(InterfaceID(1))->clone();
+  intf1->setArpTable(arpTable);
+  EXPECT_EQ(arpTable, intf1->getArpTable()->toThrift());
+  EXPECT_EQ(
+      arpTable, intf1->getNeighborEntryTable<folly::IPAddressV4>()->toThrift());
+  EXPECT_NE(
+      arpTable, intf1->getNeighborEntryTable<folly::IPAddressV6>()->toThrift());
+}
+
+TEST_F(InterfaceTest, getSetNdpTable) {
+  auto state = setup({}, std::nullopt);
+  state::NeighborEntries ndpTable;
+  state::NeighborEntryFields ndp;
+  ndp.ipaddress() = "::22:33:4f";
+  ndp.mac() = "02:00:00:00:00:01";
+  cfg::PortDescriptor port;
+  port.portId() = 1;
+  port.portType() = cfg::PortDescriptorType::Physical;
+  ndp.portId() = port;
+  ndp.interfaceId() = 1;
+  ndp.state() = state::NeighborState::Reachable;
+  ndpTable.insert({*ndp.ipaddress(), ndp});
+  auto intf1 = state->getInterfaces()->getInterface(InterfaceID(1))->clone();
+  intf1->setNdpTable(ndpTable);
+  EXPECT_EQ(ndpTable, intf1->getNdpTable()->toThrift());
+  EXPECT_EQ(
+      ndpTable, intf1->getNeighborEntryTable<folly::IPAddressV6>()->toThrift());
+  EXPECT_NE(
+      ndpTable, intf1->getNeighborEntryTable<folly::IPAddressV4>()->toThrift());
+}
+
+TEST(Interface, Modify) {
+  {
+    auto state = std::make_shared<SwitchState>();
+    auto origIntfs = state->getInterfaces();
+    EXPECT_EQ(origIntfs.get(), origIntfs->modify(&state));
+    state->publish();
+    EXPECT_NE(origIntfs.get(), origIntfs->modify(&state));
+    EXPECT_NE(origIntfs.get(), state->getInterfaces().get());
+  }
+  {
+    // Remote sys ports modify
+    auto state = std::make_shared<SwitchState>();
+    auto origRemoteIntfs = state->getRemoteInterfaces();
+    EXPECT_EQ(origRemoteIntfs.get(), origRemoteIntfs->modify(&state));
+    state->publish();
+    EXPECT_NE(origRemoteIntfs.get(), origRemoteIntfs->modify(&state));
+    EXPECT_NE(origRemoteIntfs.get(), state->getRemoteInterfaces().get());
+  }
 }
 
 TEST(Interface, applyConfig) {
@@ -136,8 +273,8 @@ TEST(Interface, applyConfig) {
   EXPECT_EQ(RouterID(0), interface->getRouterID());
   EXPECT_EQ("Interface 1", interface->getName());
   EXPECT_EQ(MacAddress("00:02:00:11:22:33"), interface->getMac());
-  EXPECT_EQ(1, interface->getAddresses().size()); // 1 ipv6 link local address
-  EXPECT_EQ(0, *interface->getNdpConfig().routerAdvertisementSeconds());
+  EXPECT_EQ(1, interface->getAddresses()->size()); // 1 ipv6 link local address
+  EXPECT_EQ(0, interface->routerAdvertisementSeconds());
   auto vlan1 = state->getVlans()->getVlanIf(VlanID(1));
   EXPECT_EQ(InterfaceID(1), vlan1->getInterfaceID());
   // same configuration cause nothing changed
@@ -162,7 +299,7 @@ TEST(Interface, applyConfig) {
   EXPECT_EQ(RouterID(0), interface->getRouterID());
   EXPECT_EQ(oldInterface->getName(), interface->getName());
   EXPECT_EQ(oldInterface->getMac(), interface->getMac());
-  EXPECT_EQ(oldInterface->getAddresses(), interface->getAddresses());
+  EXPECT_EQ(oldInterface->getAddressesCopy(), interface->getAddressesCopy());
   auto vlan2 = state->getVlans()->getVlanIf(VlanID(2));
   auto newvlan1 = state->getVlans()->getVlanIf(VlanID(1));
   EXPECT_EQ(InterfaceID(1), vlan2->getInterfaceID());
@@ -178,7 +315,7 @@ TEST(Interface, applyConfig) {
   EXPECT_EQ(InterfaceID(1), interface->getID());
   EXPECT_EQ(oldInterface->getName(), interface->getName());
   EXPECT_EQ(oldInterface->getMac(), interface->getMac());
-  EXPECT_EQ(oldInterface->getAddresses(), interface->getAddresses());
+  EXPECT_EQ(oldInterface->getAddressesCopy(), interface->getAddressesCopy());
 
   // MAC address change
   config.interfaces()[0].mac() = "00:02:00:12:34:56";
@@ -214,7 +351,7 @@ TEST(Interface, applyConfig) {
   EXPECT_EQ(oldInterface->getName(), interface->getName());
   EXPECT_EQ(oldInterface->getMac(), interface->getMac());
   // Link-local addrs will be added automatically
-  EXPECT_EQ(5, interface->getAddresses().size());
+  EXPECT_EQ(5, interface->getAddresses()->size());
 
   // change the order of IP address shall not change the interface
   config.interfaces()[0].ipAddresses()[0] = "10.1.1.1/24";
@@ -243,7 +380,7 @@ TEST(Interface, applyConfig) {
   EXPECT_EQ(oldInterface->getVlanID(), interface->getVlanID());
   EXPECT_EQ(oldInterface->getRouterID(), interface->getRouterID());
   EXPECT_EQ(oldInterface->getMac(), interface->getMac());
-  EXPECT_EQ(oldInterface->getAddresses(), interface->getAddresses());
+  EXPECT_EQ(oldInterface->getAddressesCopy(), interface->getAddressesCopy());
   // Reset the name back to it's default value
   config.interfaces()[0].name().reset();
   updateState();
@@ -253,8 +390,10 @@ TEST(Interface, applyConfig) {
   EXPECT_EQ(oldInterface->getVlanID(), interface->getVlanID());
   EXPECT_EQ(oldInterface->getRouterID(), interface->getRouterID());
   EXPECT_EQ(oldInterface->getMac(), interface->getMac());
-  EXPECT_EQ(oldInterface->getAddresses(), interface->getAddresses());
-  EXPECT_EQ(oldInterface->getNdpConfig(), interface->getNdpConfig());
+  EXPECT_EQ(oldInterface->getAddressesCopy(), interface->getAddressesCopy());
+  EXPECT_EQ(
+      oldInterface->getNdpConfig()->toThrift(),
+      interface->getNdpConfig()->toThrift());
 
   // Change the NDP configuration
   config.interfaces()[0].ndp() = cfg::NdpConfig();
@@ -266,23 +405,25 @@ TEST(Interface, applyConfig) {
   EXPECT_EQ(oldInterface->getVlanID(), interface->getVlanID());
   EXPECT_EQ(oldInterface->getRouterID(), interface->getRouterID());
   EXPECT_EQ(oldInterface->getMac(), interface->getMac());
-  EXPECT_EQ(oldInterface->getAddresses(), interface->getAddresses());
+  EXPECT_EQ(
+      oldInterface->getAddresses()->toThrift(),
+      interface->getAddresses()->toThrift());
   EXPECT_NE(oldInterface->getNdpConfig(), interface->getNdpConfig());
-  EXPECT_EQ(4, *interface->getNdpConfig().routerAdvertisementSeconds());
+  EXPECT_EQ(4, interface->routerAdvertisementSeconds());
   // Update the RA interval to 30 seconds
   *config.interfaces()[0].ndp()->routerAdvertisementSeconds() = 30;
   updateState();
   EXPECT_EQ(nodeID, interface->getNodeID());
   EXPECT_EQ(oldInterface->getGeneration() + 1, interface->getGeneration());
   EXPECT_NE(oldInterface->getNdpConfig(), interface->getNdpConfig());
-  EXPECT_EQ(30, *interface->getNdpConfig().routerAdvertisementSeconds());
+  EXPECT_EQ(30, interface->routerAdvertisementSeconds());
   // Drop the NDP configuration
   config.interfaces()[0].ndp().reset();
   updateState();
   EXPECT_EQ(nodeID, interface->getNodeID());
   EXPECT_EQ(oldInterface->getGeneration() + 1, interface->getGeneration());
   EXPECT_NE(oldInterface->getNdpConfig(), interface->getNdpConfig());
-  EXPECT_EQ(0, *interface->getNdpConfig().routerAdvertisementSeconds());
+  EXPECT_EQ(0, interface->routerAdvertisementSeconds());
 
   // Changing the ID creates a new interface
   *config.interfaces()[0].intfID() = 2;
@@ -295,8 +436,8 @@ TEST(Interface, applyConfig) {
   EXPECT_EQ(oldInterface->getRouterID(), interface->getRouterID());
   EXPECT_EQ("Interface 2", interface->getName());
   EXPECT_EQ(oldInterface->getMac(), interface->getMac());
-  EXPECT_EQ(oldInterface->getAddresses(), interface->getAddresses());
-  validateNodeSerilization(*interface);
+  EXPECT_EQ(oldInterface->getAddressesCopy(), interface->getAddressesCopy());
+  validateThriftStructNodeSerialization(*interface);
 }
 
 /*
@@ -340,6 +481,9 @@ void checkChangedIntfs(
   EXPECT_EQ(changedIDs, foundChanged);
   EXPECT_EQ(addedIDs, foundAdded);
   EXPECT_EQ(removedIDs, foundRemoved);
+
+  validateSerialization(*oldIntfs);
+  validateSerialization(*newIntfs);
 }
 
 TEST(InterfaceMap, applyConfig) {
@@ -397,7 +541,7 @@ TEST(InterfaceMap, applyConfig) {
   EXPECT_EQ(2, intfsV2->getGeneration());
   EXPECT_EQ(2, intfsV2->size());
   auto intf2 = intfsV2->getInterface(InterfaceID(2));
-  EXPECT_EQ(3, intf2->getAddresses().size()); // v6 link-local is added
+  EXPECT_EQ(3, intf2->getAddresses()->size()); // v6 link-local is added
 
   checkChangedIntfs(intfsV1, intfsV2, {2}, {}, {});
 
@@ -421,7 +565,7 @@ TEST(InterfaceMap, applyConfig) {
   EXPECT_EQ(3, intfsV3->getGeneration());
   EXPECT_EQ(3, intfsV3->size());
   auto intf3 = intfsV3->getInterface(InterfaceID(3));
-  EXPECT_EQ(1, intf3->getAddresses().size());
+  EXPECT_EQ(1, intf3->getAddresses()->size());
   EXPECT_EQ(
       config.interfaces()[0].mac().value_or({}), intf3->getMac().toString());
   // intf 1 should not be there anymroe
@@ -442,4 +586,179 @@ TEST(InterfaceMap, applyConfig) {
   EXPECT_NE(intfsV3, intfsV4);
   EXPECT_EQ(4, intfsV4->getGeneration());
   EXPECT_EQ(1337, intfsV4->getInterface(InterfaceID(3))->getMtu());
+}
+
+TEST(Interface, getLocalInterfacesBySwitchId) {
+  auto platform = createMockPlatform();
+  auto stateV0 = std::make_shared<SwitchState>();
+  auto config = testConfigA(cfg::SwitchType::VOQ);
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+  auto mySwitchId = stateV1->getSwitchSettings()->getSwitchId();
+  CHECK(mySwitchId) << "Switch ID must be set for VOQ switch";
+  auto myRif = stateV1->getInterfaces(SwitchID(*mySwitchId));
+  EXPECT_EQ(myRif->size(), stateV1->getInterfaces()->size());
+  // No remote sys ports
+  EXPECT_EQ(stateV1->getInterfaces(SwitchID(*mySwitchId + 1))->size(), 0);
+}
+
+TEST(Interface, getRemoteInterfacesBySwitchId) {
+  auto platform = createMockPlatform();
+  auto stateV0 = std::make_shared<SwitchState>();
+  auto config = testConfigA(cfg::SwitchType::VOQ);
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+  auto mySwitchId = stateV1->getSwitchSettings()->getSwitchId();
+  CHECK(mySwitchId) << "Switch ID must be set for VOQ switch";
+  auto myRif = stateV1->getInterfaces(SwitchID(*mySwitchId));
+  EXPECT_EQ(myRif->size(), stateV1->getInterfaces()->size());
+  int64_t remoteSwitchId = 100;
+  auto sysPort1 = makeSysPort("olympic", 1001, remoteSwitchId);
+  auto stateV2 = stateV1->clone();
+  auto remoteSysPorts = stateV2->getRemoteSystemPorts()->modify(&stateV2);
+  remoteSysPorts->addSystemPort(sysPort1);
+  auto remoteInterfaces = stateV2->getRemoteInterfaces()->modify(&stateV2);
+  auto rif = std::make_shared<Interface>(
+      InterfaceID(1001),
+      RouterID(0),
+      std::optional<VlanID>(std::nullopt),
+      folly::StringPiece("1001"),
+      folly::MacAddress{},
+      9000,
+      false,
+      false,
+      cfg::InterfaceType::SYSTEM_PORT);
+
+  remoteInterfaces->addInterface(rif);
+
+  EXPECT_EQ(stateV2->getInterfaces(SwitchID(remoteSwitchId))->size(), 1);
+}
+
+TEST(Interface, getInterfaceSysPortIDVoqSwitch) {
+  auto platform = createMockPlatform();
+  auto stateV0 = std::make_shared<SwitchState>();
+  auto config = testConfigA(cfg::SwitchType::VOQ);
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+  auto intf = stateV1->getInterfaces()->begin()->second;
+  EXPECT_TRUE(intf->getSystemPortID().has_value());
+  EXPECT_EQ(
+      static_cast<int64_t>(intf->getID()),
+      static_cast<int64_t>(intf->getSystemPortID().value()));
+}
+
+TEST(Interface, getInterfaceSysPortID) {
+  auto platform = createMockPlatform();
+  auto stateV0 = std::make_shared<SwitchState>();
+  auto config = testConfigA();
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+  auto intf = stateV1->getInterfaces()->begin()->second;
+  EXPECT_FALSE(intf->getSystemPortID().has_value());
+}
+
+TEST(Interface, getInterfacePortsVoqSwitch) {
+  auto platform = createMockPlatform();
+  auto stateV0 = std::make_shared<SwitchState>();
+  auto config = testConfigA(cfg::SwitchType::VOQ);
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+  auto intf = stateV1->getInterfaces()->begin()->second;
+  EXPECT_EQ(getPortsForInterface(intf->getID(), stateV1).size(), 1);
+}
+
+TEST(Interface, getInterfacePorts) {
+  auto platform = createMockPlatform();
+  auto stateV0 = std::make_shared<SwitchState>();
+  auto config = testConfigA();
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+  auto intf = stateV1->getInterfaces()->begin()->second;
+  EXPECT_EQ(getPortsForInterface(intf->getID(), stateV1).size(), 11);
+}
+
+TEST(Interface, verifyPseudoVlanProcessing) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+
+  auto verifyConfigPseudoVlansMatch = [](const auto& config,
+                                         const auto& state) {
+    for (const auto& interfaceCfg : *config.interfaces()) {
+      for (const auto& addr : *interfaceCfg.ipAddresses()) {
+        auto ipAddr = folly::IPAddress::createNetwork(addr, -1, false).first;
+        auto expectedMac = interfaceCfg.mac();
+        auto expectedIntfID = interfaceCfg.intfID();
+
+        if (ipAddr.isV4()) {
+          auto arpResponseEntry = state->getVlans()
+                                      ->getVlan(VlanID(0))
+                                      ->getArpResponseTable()
+                                      ->getEntry(ipAddr.asV4());
+          EXPECT_TRUE(arpResponseEntry != nullptr);
+          // no MAC for recycle port RIFs
+          if (expectedMac) {
+            EXPECT_EQ(*expectedMac, arpResponseEntry->getMac().toString());
+          }
+          EXPECT_EQ(
+              InterfaceID(*expectedIntfID), arpResponseEntry->getInterfaceID());
+        } else {
+          auto ndpResponseEntry = state->getVlans()
+                                      ->getVlan(VlanID(0))
+                                      ->getNdpResponseTable()
+                                      ->getEntry(ipAddr.asV6());
+          EXPECT_TRUE(ndpResponseEntry != nullptr);
+          // no MAC for recycle port RIFs
+          if (expectedMac) {
+            EXPECT_EQ(*expectedMac, ndpResponseEntry->getMac().toString());
+          }
+          EXPECT_EQ(
+              InterfaceID(*expectedIntfID), ndpResponseEntry->getInterfaceID());
+        }
+      }
+    }
+  };
+
+  // Verify if pseudo vlans are populated correctly
+  auto config = testConfigA(cfg::SwitchType::VOQ);
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  verifyConfigPseudoVlansMatch(config, stateV1);
+
+  // Apply same config, and verify no change in pseudo vlans
+  auto stateV2 = publishAndApplyConfig(stateV1, &config, platform.get());
+  EXPECT_EQ(nullptr, stateV2);
+
+  // Apply modified config (2 interfaces => 1 interface), and verify if pseudo
+  // vlans are populated correctly
+  auto config2 = testConfigA(cfg::SwitchType::VOQ);
+  config2.interfaces()->resize(1);
+  auto stateV3 = publishAndApplyConfig(stateV1, &config2, platform.get());
+  verifyConfigPseudoVlansMatch(config2, stateV3);
+
+  // Modify an interface (e.g. MAC addr for an interface), and verify if pseudo
+  // vlans are populated correctly
+  auto config3 = testConfigA(cfg::SwitchType::VOQ);
+  auto currMac = folly::MacAddress(*config3.interfaces()[0].mac());
+  auto newMac = folly::MacAddress::fromHBO(currMac.u64HBO() + 1);
+  config3.interfaces()[0].mac() = newMac.toString();
+  auto stateV4 = publishAndApplyConfig(stateV1, &config3, platform.get());
+  verifyConfigPseudoVlansMatch(config3, stateV4);
+}
+
+TEST(Interface, modify) {
+  auto platform = createMockPlatform();
+  auto stateV0 = std::make_shared<SwitchState>();
+  auto config = testConfigA();
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+  auto intf = stateV1->getInterfaces()->begin()->second;
+  auto intfModified = intf->modify(&stateV1);
+  EXPECT_EQ(intf.get(), intfModified);
+  intf->publish();
+  intfModified = intf->modify(&stateV1);
+  EXPECT_NE(intf.get(), intfModified);
+  auto oldMtu = intfModified->getMtu();
+  auto newMtu = oldMtu + 1000;
+  intfModified->setMtu(newMtu);
+  EXPECT_EQ(
+      stateV1->getInterfaces()->getInterface(intf->getID())->getMtu(), newMtu);
 }

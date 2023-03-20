@@ -49,7 +49,7 @@ class HwSflowMirrorTest : public HwLinkStateDependentTest {
      * for now on Tajo to enable sflow with mirroring.
      */
     return getPlatform()->getAsic()->getAsicType() ==
-            HwAsic::AsicType::ASIC_TYPE_EBRO
+            cfg::AsicType::ASIC_TYPE_EBRO
         ? std::vector<PortID>(portIds.begin(), portIds.begin() + 16)
         : portIds;
   }
@@ -76,7 +76,7 @@ class HwSflowMirrorTest : public HwLinkStateDependentTest {
      * dest_port_encoding : 3, reserved : 23
      */
     if (getPlatform()->getAsic()->getAsicType() ==
-        HwAsic::AsicType::ASIC_TYPE_EBRO) {
+        cfg::AsicType::ASIC_TYPE_EBRO) {
       auto systemPortId = sflowPayload[0] << 8 | sflowPayload[1];
       return static_cast<PortID>(
           systemPortId - getPlatform()->getAsic()->getSystemPortIDOffset());
@@ -111,8 +111,8 @@ class HwSflowMirrorTest : public HwLinkStateDependentTest {
   }
 
   cfg::SwitchConfig initialConfig() const override {
-    return utility::onePortPerVlanConfig(
-        getHwSwitch(), getPortsForSampling(), cfg::PortLoopbackMode::MAC);
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), getPortsForSampling(), getAsic()->desiredLoopbackMode());
   }
 
   HwSwitchEnsemble::Features featuresDesired() const override {
@@ -153,8 +153,7 @@ class HwSflowMirrorTest : public HwLinkStateDependentTest {
   }
 
   void resolveMirror() {
-    auto vlanId = utility::firstVlanID(initialConfig());
-    auto mac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto mac = utility::getFirstInterfaceMac(getProgrammedState());
     auto state = getProgrammedState()->clone();
     auto mirrors = state->getMirrors()->clone();
     auto mirror = mirrors->getMirrorIf("mirror")->clone();
@@ -191,10 +190,9 @@ class HwSflowMirrorTest : public HwLinkStateDependentTest {
       nhops.insert(PortDescriptor(ports[i]));
     }
 
-    auto vlanId = utility::firstVlanID(initialConfig());
     utility::EcmpSetupTargetedPorts<folly::IPAddressV6> helper6{
         getProgrammedState(),
-        utility::getInterfaceMac(getProgrammedState(), vlanId)};
+        utility::getFirstInterfaceMac(getProgrammedState())};
     auto state = helper6.resolveNextHops(getProgrammedState(), nhops);
     state = applyNewState(state);
 
@@ -238,7 +236,7 @@ class HwSflowMirrorTest : public HwLinkStateDependentTest {
       expectedSampleCount +=
           (*portStats.inUnicastPkts_() / FLAGS_sflow_test_rate);
     }
-    XLOG(INFO) << "total packets rx " << allPortRx;
+    XLOG(DBG2) << "total packets rx " << allPortRx;
     return expectedSampleCount;
   }
 
@@ -277,8 +275,8 @@ class HwSflowMirrorTest : public HwLinkStateDependentTest {
           : (actualSampleCount - expectedSampleCount);
       auto percentError = (difference * 100) / actualSampleCount;
       EXPECT_LE(percentError, percentErrorThreshold);
-      XLOG(INFO) << "expected number of " << expectedSampleCount << " samples";
-      XLOG(INFO) << "captured number of " << actualSampleCount << " samples";
+      XLOG(DBG2) << "expected number of " << expectedSampleCount << " samples";
+      XLOG(DBG2) << "captured number of " << actualSampleCount << " samples";
       bringUpPorts(std::vector<PortID>(ports.begin() + 1, ports.end()));
     };
     verifyAcrossWarmBoots(setup, verify);
@@ -325,7 +323,7 @@ TEST_F(HwSflowMirrorTest, VerifySampledPacket) {
     EXPECT_EQ(getSflowPacketSrcPort(payload), getPortsForSampling()[1]);
 
     if (getPlatform()->getAsic()->getAsicType() !=
-        HwAsic::AsicType::ASIC_TYPE_EBRO) {
+        cfg::AsicType::ASIC_TYPE_EBRO) {
       // Call parseSflowShim here. And verify
       // 1. Src port is correct
       // 2. Parser correctly identified whether the pkt is from TH3 or TH4.
@@ -334,7 +332,7 @@ TEST_F(HwSflowMirrorTest, VerifySampledPacket) {
       auto buf = folly::IOBuf::wrapBuffer(payload.data(), payload.size());
       folly::io::Cursor cursor{buf.get()};
       auto shim = utility::parseSflowShim(cursor);
-      XLOG(INFO) << fmt::format(
+      XLOG(DBG2) << fmt::format(
           "srcPort = {}, dstPort = {}", shim.srcPort, shim.dstPort);
       EXPECT_EQ(shim.srcPort, static_cast<uint32_t>(getPortsForSampling()[1]));
       if (getPlatform()->getAsic()->isSupported(
@@ -374,7 +372,7 @@ TEST_F(HwSflowMirrorTest, VerifySampledPacketWithTruncateV4) {
 
     auto _ = capturedPkt->getTxPacket(getHwSwitch());
     auto __ = folly::io::Cursor(_->buf());
-    XLOG(INFO) << PktUtil::hexDump(__);
+    XLOG(DBG2) << PktUtil::hexDump(__);
 
     // packet's payload is truncated before it was mirrored
     EXPECT_LE(capturedPkt->length(), pkt.length());
@@ -416,7 +414,7 @@ TEST_F(HwSflowMirrorTest, VerifySampledPacketWithTruncateV6) {
 
     auto _ = capturedPkt->getTxPacket(getHwSwitch());
     auto __ = folly::io::Cursor(_->buf());
-    XLOG(INFO) << PktUtil::hexDump(__);
+    XLOG(DBG2) << PktUtil::hexDump(__);
 
     // packet's payload is truncated before it was mirrored
     EXPECT_LE(capturedPkt->length(), pkt.length());
@@ -439,7 +437,7 @@ TEST_F(HwSflowMirrorTest, VerifySampledPacketCountWithLargePackets) {
   size_t percentErrorThreshold = kDefaultPercentErrorThreshold;
   // raise percent error threshold for Ebro to reduce test flakiness
   if (getPlatform()->getAsic()->getAsicType() ==
-      HwAsic::AsicType::ASIC_TYPE_EBRO) {
+      cfg::AsicType::ASIC_TYPE_EBRO) {
     percentErrorThreshold += 2;
   }
   runSampleRateTest(8192, percentErrorThreshold);
@@ -474,7 +472,7 @@ TEST_F(HwSflowMirrorTest, VerifySampledPacketWithLagMemberAsEgressPort) {
 
     auto _ = capturedPkt->getTxPacket(getHwSwitch());
     auto __ = folly::io::Cursor(_->buf());
-    XLOG(INFO) << PktUtil::hexDump(__);
+    XLOG(DBG2) << PktUtil::hexDump(__);
 
     // packet's payload is truncated before it was mirrored
     EXPECT_LE(capturedPkt->length(), pkt.length());

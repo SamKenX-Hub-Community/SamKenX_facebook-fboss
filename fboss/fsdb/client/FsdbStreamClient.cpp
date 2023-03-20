@@ -26,23 +26,20 @@ FsdbStreamClient::FsdbStreamClient(
       streamEvb_(streamEvb),
       connRetryEvb_(connRetryEvb),
       counterPrefix_(counterPrefix),
-      clientEvbThread_(
-          std::make_unique<folly::ScopedEventBaseThread>(clientId)),
       stateChangeCb_(stateChangeCb),
       timer_(folly::AsyncTimeout::make(
           *connRetryEvb,
           [this]() noexcept { timeoutExpired(); })),
       disconnectEvents_(
-          fb303::ThreadCachedServiceData::get()->getThreadStats(),
           counterPrefix_ + ".disconnects",
           fb303::SUM,
           fb303::RATE) {
-  if (!streamEvb_ || !connRetryEvb) {
+  if (!streamEvb_ || !connRetryEvb_) {
     throw std::runtime_error(
         "Must pass valid stream, connRetry evbs to ctor, but passed null");
   }
   fb303::fbData->setCounter(getConnectedCounterName(), 0);
-  connRetryEvb->runInEventBaseThread(
+  connRetryEvb_->runInEventBaseThread(
       [this] { timer_->scheduleTimeout(FLAGS_fsdb_reconnect_ms); });
 }
 
@@ -76,27 +73,25 @@ void FsdbStreamClient::setState(State state) {
 #endif
     fb303::fbData->setCounter(getConnectedCounterName(), 0);
   } else if (state == State::DISCONNECTED) {
-    disconnectEvents_.addValue(1);
+    disconnectEvents_.add(1);
     fb303::fbData->setCounter(getConnectedCounterName(), 0);
   }
   stateChangeCb_(oldState, state);
 }
 
-void FsdbStreamClient::setServerToConnect(
-    const std::string& ip,
-    uint16_t port,
+void FsdbStreamClient::setServerOptions(
+    ServerOptions&& options,
     bool allowReset) {
-  if (!allowReset && *serverAddress_.rlock()) {
+  if (!allowReset && *serverOptions_.rlock()) {
     throw std::runtime_error("Cannot reset server address");
   }
-  *serverAddress_.wlock() = folly::SocketAddress(ip, port);
+  *serverOptions_.wlock() = std::move(options);
 }
 
 void FsdbStreamClient::timeoutExpired() noexcept {
-  auto serverAddress = *serverAddress_.rlock();
-  if (getState() == State::DISCONNECTED && serverAddress) {
-    connectToServer(
-        serverAddress->getIPAddress().str(), serverAddress->getPort());
+  auto serverOptions = *serverOptions_.rlock();
+  if (getState() == State::DISCONNECTED && serverOptions) {
+    connectToServer(*serverOptions);
   }
   timer_->scheduleTimeout(FLAGS_fsdb_reconnect_ms);
 }
@@ -105,12 +100,11 @@ bool FsdbStreamClient::isConnectedToServer() const {
   return (getState() == State::CONNECTED);
 }
 
-void FsdbStreamClient::connectToServer(const std::string& ip, uint16_t port) {
+void FsdbStreamClient::connectToServer(const ServerOptions& options) {
   CHECK(getState() == State::DISCONNECTED);
-
-  streamEvb_->runInEventBaseThreadAndWait([this, ip, port]() {
+  streamEvb_->runImmediatelyOrRunInEventBaseThreadAndWait([this, &options]() {
     try {
-      createClient(ip, port);
+      createClient(options);
       setState(State::CONNECTED);
     } catch (const std::exception& ex) {
       XLOG(ERR) << "Connect to server failed with ex:" << ex.what();
@@ -153,13 +147,12 @@ void FsdbStreamClient::cancel() {
     XLOG(WARNING) << clientId() << " already cancelled";
     return;
   }
-  serverAddress_.wlock()->reset();
-  connRetryEvb_->runInEventBaseThreadAndWait(
+  serverOptions_.wlock()->reset();
+  connRetryEvb_->runImmediatelyOrRunInEventBaseThreadAndWait(
       [this] { timer_->cancelTimeout(); });
   setState(State::CANCELLED);
-  resetClient();
-  // terminate event base getting ready for clean-up
-  clientEvbThread_->getEventBase()->terminateLoopSoon();
+  streamEvb_->getEventBase()->runImmediatelyOrRunInEventBaseThreadAndWait(
+      [this] { resetClient(); });
   XLOG(DBG2) << " Cancelled: " << clientId();
 }
 

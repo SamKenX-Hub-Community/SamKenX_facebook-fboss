@@ -14,19 +14,52 @@
 namespace facebook::fboss {
 
 class EbroAsic;
+class CloudRipperVoqPlatformMapping;
+class CloudRipperFabricPlatformMapping;
 
 class SaiCloudRipperPlatform : public SaiTajoPlatform {
  public:
   explicit SaiCloudRipperPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
+  SaiCloudRipperPlatform(
+      std::unique_ptr<PlatformProductInfo> productInfo,
+      std::unique_ptr<CloudRipperVoqPlatformMapping> mapping,
+      folly::MacAddress localMac);
+  SaiCloudRipperPlatform(
+      std::unique_ptr<PlatformProductInfo> productInfo,
+      std::unique_ptr<CloudRipperFabricPlatformMapping> mapping,
       folly::MacAddress localMac);
   ~SaiCloudRipperPlatform() override;
   HwAsic* getAsic() const override;
 
   std::string getHwConfig() override;
 
- protected:
+ private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
+  std::vector<sai_system_port_config_t> getInternalSystemPortConfig()
+      const override;
   std::unique_ptr<EbroAsic> asic_;
+};
+
+class SaiCloudRipperVoqPlatform : public SaiCloudRipperPlatform {
+ public:
+  SaiCloudRipperVoqPlatform(
+      std::unique_ptr<PlatformProductInfo> productInfo,
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
+};
+
+class SaiCloudRipperFabricPlatform : public SaiCloudRipperPlatform {
+ public:
+  SaiCloudRipperFabricPlatform(
+      std::unique_ptr<PlatformProductInfo> productInfo,
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
 };
 
 } // namespace facebook::fboss

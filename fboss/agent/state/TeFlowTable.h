@@ -3,7 +3,6 @@
 #pragma once
 
 #include <string>
-#pragma once
 
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeMap.h"
@@ -13,43 +12,44 @@
 
 namespace facebook::fboss {
 
+void toAppend(const TeFlow& flow, std::string* result);
+std::string getTeFlowStr(const TeFlow& flow);
+
 class SwitchState;
 
 using TeFlowTableTraits = NodeMapTraits<TeFlow, TeFlowEntry>;
 
-struct TeFlowTableThriftTraits
-    : public ThriftyNodeMapTraits<std::string, state::TeFlowEntryFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "flow";
-    return _key;
-  }
-  static const KeyType parseKey(const folly::dynamic& key) {
-    return key.asString();
-  }
-  static const KeyType convertKey(const TeFlow& key) {
-    std::string flowJson;
-    apache::thrift::SimpleJSONSerializer::serialize(key, &flowJson);
-    return flowJson;
-  }
-};
+using TeFlowTableTypeClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::string,
+    apache::thrift::type_class::structure>;
+using TeFlowTableThriftType = std::map<std::string, state::TeFlowEntryFields>;
+
+class TeFlowTable;
+using TeFlowTableThriftTraits = ThriftMapNodeTraits<
+    TeFlowTable,
+    TeFlowTableTypeClass,
+    TeFlowTableThriftType,
+    TeFlowEntry>;
 
 /*
  * A container for TE flow entries
  */
-class TeFlowTable : public ThriftyNodeMapT<
-                        TeFlowTable,
-                        TeFlowTableTraits,
-                        TeFlowTableThriftTraits> {
+class TeFlowTable : public ThriftMapNode<TeFlowTable, TeFlowTableThriftTraits> {
  public:
+  using Base = ThriftMapNode<TeFlowTable, TeFlowTableThriftTraits>;
+  using Base::modify;
+
   TeFlowTable();
   ~TeFlowTable() override;
 
   const std::shared_ptr<TeFlowEntry>& getTeFlow(TeFlow id) const {
-    return getNode(id);
+    return this->cref(getTeFlowStr(id));
   }
+
   std::shared_ptr<TeFlowEntry> getTeFlowIf(TeFlow id) const {
-    return getNodeIf(id);
+    return getNodeIf(getTeFlowStr(id));
   }
+
   TeFlowTable* addTeFlowEntry(
       std::shared_ptr<SwitchState>* state,
       const FlowEntry& entry);
@@ -63,8 +63,14 @@ class TeFlowTable : public ThriftyNodeMapT<
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyNodeMapT::ThriftyNodeMapT;
+  using Base::Base;
   friend class CloneAllocator;
+  void fillTeFlowEntry(
+      std::shared_ptr<TeFlowEntry>& teFlowEntry,
+      const FlowEntry& entry,
+      std::shared_ptr<SwitchState>* state);
+  std::shared_ptr<TeFlowEntry> createTeFlowEntry(
+      const FlowEntry& entry,
+      std::shared_ptr<SwitchState>* state);
 };
-void toAppend(const TeFlow& flow, std::string* result);
 } // namespace facebook::fboss

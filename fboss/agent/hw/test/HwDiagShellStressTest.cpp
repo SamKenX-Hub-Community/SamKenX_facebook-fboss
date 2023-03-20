@@ -18,28 +18,30 @@ namespace facebook::fboss {
 class HwDiagShellStressTest : public HwLinkStateDependentTest {
  protected:
   cfg::SwitchConfig initialConfig() const override {
-    return utility::onePortPerVlanConfig(getHwSwitch(), masterLogicalPortIds());
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
   }
 
   void runDiagCmds() {
     auto asic = getPlatform()->getAsic()->getAsicType();
     switch (asic) {
-      case HwAsic::AsicType::ASIC_TYPE_FAKE:
-      case HwAsic::AsicType::ASIC_TYPE_MOCK:
-      case HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD:
-      case HwAsic::AsicType::ASIC_TYPE_SANDIA_PHY:
-      case HwAsic::AsicType::ASIC_TYPE_INDUS:
-      case HwAsic::AsicType::ASIC_TYPE_BEAS:
+      case cfg::AsicType::ASIC_TYPE_FAKE:
+      case cfg::AsicType::ASIC_TYPE_MOCK:
+      case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
+      case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
+      case cfg::AsicType::ASIC_TYPE_JERICHO2:
+      case cfg::AsicType::ASIC_TYPE_RAMON:
         // No diag shell to test for these ASICs
         break;
-      case HwAsic::AsicType::ASIC_TYPE_EBRO:
-      case HwAsic::AsicType::ASIC_TYPE_GARONNE:
+      case cfg::AsicType::ASIC_TYPE_EBRO:
+      case cfg::AsicType::ASIC_TYPE_GARONNE:
         runTajoDiagCmds();
         break;
-      case HwAsic::AsicType::ASIC_TYPE_TRIDENT2:
-      case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK:
-      case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3:
-      case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4:
+      case cfg::AsicType::ASIC_TYPE_TRIDENT2:
+      case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
+      case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
+      case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
+      case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
         runBcmDiagCmds();
     }
   }

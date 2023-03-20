@@ -17,6 +17,8 @@
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/thrift_cow/nodes/Types.h"
 
+#include <variant>
+
 namespace facebook::fboss::thrift_cow {
 
 template <typename Fields>
@@ -461,6 +463,17 @@ class ThriftUnionNode
   template <typename Name>
   const typename Fields::template TypeFor<Name>& cref() const {
     return this->getFields()->template cref<Name>();
+  }
+
+  // prefer safe_ref/safe_cref for safe access
+  template <typename Name>
+  auto safe_ref() {
+    return detail::ref(this->writableFields()->template ref<Name>());
+  }
+
+  template <typename Name>
+  auto safe_cref() const {
+    return detail::cref(this->getFields()->template cref<Name>());
   }
 
   template <typename Name>

@@ -16,6 +16,7 @@ include "fboss/qsfp_service/if/transceiver.thrift"
 
 enum PlatformAttributes {
   CONNECTION_HANDLE = 1,
+  MAC = 2,
 }
 
 union ChipConfig {
@@ -38,6 +39,9 @@ struct PlatformPortMapping {
   2: string name;
   3: i32 controllingPort;
   4: list<phy.PinConnection> pins;
+  5: switch_config.PortType portType = switch_config.PortType.INTERFACE_PORT;
+  6: optional i32 attachedCoreId;
+  7: optional i32 attachedCorePortIndex;
 }
 
 struct PlatformPortConfig {

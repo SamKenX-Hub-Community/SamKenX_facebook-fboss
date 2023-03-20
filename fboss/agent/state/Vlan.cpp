@@ -50,246 +50,24 @@ constexpr auto kMacTable = "macTable";
 
 namespace facebook::fboss {
 
-folly::dynamic VlanFields::PortInfo::toFollyDynamic() const {
-  folly::dynamic port = folly::dynamic::object;
-  port[kTagged] = tagged;
-  return port;
+Vlan::Vlan(VlanID id, string name) {
+  set<switch_state_tags::vlanId>(id);
+  setName(name);
 }
 
-VlanFields::PortInfo VlanFields::PortInfo::fromFollyDynamic(
-    const folly::dynamic& json) {
-  return PortInfo(json[kTagged].asBool());
-}
-
-VlanFields::VlanFields(VlanID _id, string _name)
-    : id(_id),
-      name(std::move(_name)),
-      arpTable(make_shared<ArpTable>()),
-      arpResponseTable(make_shared<ArpResponseTable>()),
-      ndpTable(make_shared<NdpTable>()),
-      ndpResponseTable(make_shared<NdpResponseTable>()),
-      macTable(make_shared<MacTable>()) {}
-
-VlanFields::VlanFields(
-    VlanID _id,
-    string _name,
-    InterfaceID _intfID,
-    IPAddressV4 v4Relay,
-    IPAddressV6 v6Relay,
-    MemberPorts&& ports)
-    : id(_id),
-      name(std::move(_name)),
-      intfID(_intfID),
-      dhcpV4Relay(v4Relay),
-      dhcpV6Relay(v6Relay),
-      ports(std::move(ports)),
-      arpTable(make_shared<ArpTable>()),
-      arpResponseTable(make_shared<ArpResponseTable>()),
-      ndpTable(make_shared<NdpTable>()),
-      ndpResponseTable(make_shared<NdpResponseTable>()),
-      macTable(make_shared<MacTable>()) {}
-
-state::VlanFields VlanFields::toThrift() const {
-  auto vlanTh = state::VlanFields();
-  vlanTh.vlanId() = id;
-  vlanTh.vlanName() = name;
-  vlanTh.intfID() = intfID;
-  vlanTh.dhcpV4Relay() = dhcpV4Relay.str();
-  vlanTh.dhcpV6Relay() = dhcpV6Relay.str();
-  for (const auto& [mac, ip] : dhcpRelayOverridesV4) {
-    vlanTh.dhcpRelayOverridesV4()[mac.toString()] = ip.str();
+Vlan::Vlan(const cfg::Vlan* config, MemberPorts ports) {
+  set<switch_state_tags::vlanId>(*config->id());
+  setName(*config->name());
+  if (auto intfId = config->intfID()) {
+    setInterfaceID(InterfaceID(*intfId));
   }
-  for (const auto& [mac, ip] : dhcpRelayOverridesV6) {
-    vlanTh.dhcpRelayOverridesV6()[mac.toString()] = ip.str();
+  if (auto dhcpRelayAddressV4 = config->dhcpRelayAddressV4()) {
+    setDhcpV4Relay(folly::IPAddressV4(*dhcpRelayAddressV4));
   }
-  for (const auto& [portId, memberPort] : ports) {
-    folly::dynamic portInfo = folly::dynamic::object;
-    vlanTh.ports()[portId] = memberPort.tagged;
+  if (auto dhcpRelayAddressV6 = config->dhcpRelayAddressV6()) {
+    setDhcpV6Relay(folly::IPAddressV6(*dhcpRelayAddressV6));
   }
-  vlanTh.arpTable() = arpTable->toThrift();
-  vlanTh.ndpTable() = ndpTable->toThrift();
-  vlanTh.arpResponseTable() = arpResponseTable->toThrift();
-  vlanTh.ndpResponseTable() = ndpResponseTable->toThrift();
-  vlanTh.macTable() = macTable->toThrift();
-
-  return vlanTh;
-}
-
-VlanFields VlanFields::fromThrift(const state::VlanFields& vlanTh) {
-  auto id = VlanID(vlanTh.get_vlanId());
-  auto name = vlanTh.get_vlanName();
-  auto intfID = InterfaceID(vlanTh.get_intfID());
-  auto dhcpV4Relay = folly::IPAddressV4(vlanTh.get_dhcpV4Relay());
-  auto dhcpV6Relay = folly::IPAddressV6(vlanTh.get_dhcpV6Relay());
-  MemberPorts ports;
-  for (const auto& [portId, tagged] : vlanTh.get_ports()) {
-    ports.emplace(portId, tagged);
-  }
-
-  auto vlan =
-      VlanFields(id, name, intfID, dhcpV4Relay, dhcpV6Relay, std::move(ports));
-
-  for (const auto& [mac, ip] : vlanTh.get_dhcpRelayOverridesV4()) {
-    vlan.dhcpRelayOverridesV4.emplace(MacAddress(mac), folly::IPAddressV4(ip));
-  }
-  for (const auto& [mac, ip] : vlanTh.get_dhcpRelayOverridesV6()) {
-    vlan.dhcpRelayOverridesV6.emplace(MacAddress(mac), folly::IPAddressV6(ip));
-  }
-
-  vlan.arpTable = ArpTable::fromThrift(vlanTh.get_arpTable());
-  vlan.ndpTable = NdpTable::fromThrift(vlanTh.get_ndpTable());
-  vlan.arpResponseTable =
-      ArpResponseTable::fromThrift(vlanTh.get_arpResponseTable());
-  vlan.ndpResponseTable =
-      NdpResponseTable::fromThrift(vlanTh.get_ndpResponseTable());
-  vlan.macTable = MacTable::fromThrift(vlanTh.get_macTable());
-
-  return vlan;
-}
-
-folly::dynamic VlanFields::toFollyDynamicLegacy() const {
-  folly::dynamic vlan = folly::dynamic::object;
-  vlan[kVlanId] = static_cast<uint16_t>(id);
-  vlan[kVlanName] = name;
-  vlan[kIntfID] = static_cast<uint32_t>(intfID);
-  vlan[kDhcpV4Relay] = dhcpV4Relay.str();
-  vlan[kDhcpV6Relay] = dhcpV6Relay.str();
-  vlan[kDhcpV4RelayOverrides] = folly::dynamic::object;
-  for (const auto& o : dhcpRelayOverridesV4) {
-    vlan[kDhcpV4RelayOverrides][o.first.toString()] = o.second.str();
-  }
-  vlan[kDhcpV6RelayOverrides] = folly::dynamic::object;
-  for (const auto& o : dhcpRelayOverridesV6) {
-    vlan[kDhcpV6RelayOverrides][o.first.toString()] = o.second.str();
-  }
-  folly::dynamic memberPorts = folly::dynamic::object;
-  for (const auto& port : ports) {
-    folly::dynamic portInfo = folly::dynamic::object;
-    memberPorts[to<string>(static_cast<uint16_t>(port.first))] =
-        port.second.toFollyDynamic();
-  }
-  vlan[kMemberPorts] = memberPorts;
-  vlan[kArpTable] = arpTable->toFollyDynamicLegacy();
-  vlan[kNdpTable] = ndpTable->toFollyDynamicLegacy();
-  vlan[kArpResponseTable] = arpResponseTable->toFollyDynamicLegacy();
-  vlan[kNdpResponseTable] = ndpResponseTable->toFollyDynamicLegacy();
-  vlan[kMacTable] = macTable->toFollyDynamicLegacy();
-  return vlan;
-}
-
-VlanFields VlanFields::fromFollyDynamicLegacy(const folly::dynamic& vlanJson) {
-  VlanFields vlan(
-      VlanID(vlanJson[kVlanId].asInt()), vlanJson[kVlanName].asString());
-  vlan.intfID = InterfaceID(vlanJson[kIntfID].asInt());
-  vlan.dhcpV4Relay = folly::IPAddressV4(vlanJson[kDhcpV4Relay].stringPiece());
-  vlan.dhcpV6Relay = folly::IPAddressV6(vlanJson[kDhcpV6Relay].stringPiece());
-  for (const auto& o : vlanJson[kDhcpV4RelayOverrides].items()) {
-    vlan.dhcpRelayOverridesV4[MacAddress(o.first.asString())] =
-        folly::IPAddressV4(o.second.stringPiece());
-  }
-  for (const auto& o : vlanJson[kDhcpV6RelayOverrides].items()) {
-    vlan.dhcpRelayOverridesV6[MacAddress(o.first.asString())] =
-        folly::IPAddressV6(o.second.stringPiece());
-  }
-  for (const auto& portInfo : vlanJson[kMemberPorts].items()) {
-    vlan.ports.emplace(
-        PortID(to<uint16_t>(portInfo.first.asString())),
-        PortInfo::fromFollyDynamic(portInfo.second));
-  }
-  vlan.arpTable = ArpTable::fromFollyDynamic(vlanJson[kArpTable]);
-  vlan.ndpTable = NdpTable::fromFollyDynamic(vlanJson[kNdpTable]);
-  vlan.arpResponseTable =
-      ArpResponseTable::fromFollyDynamic(vlanJson[kArpResponseTable]);
-  vlan.ndpResponseTable =
-      NdpResponseTable::fromFollyDynamic(vlanJson[kNdpResponseTable]);
-  if (vlanJson.find(kMacTable) != vlanJson.items().end()) {
-    vlan.macTable = MacTable::fromFollyDynamic(vlanJson[kMacTable]);
-  }
-  return vlan;
-}
-
-folly::dynamic VlanFields::migrateToThrifty(const folly::dynamic& dyn) {
-  folly::dynamic newDyn = dyn;
-
-  // memberPorts used to be a map<id, PortInfo> but changing this to
-  // map<id, bool> since the tagged field is the only thing in PortInfo.
-  // renaming to "port" so we can support both for backwards compatibility
-  folly::dynamic newPorts = folly::dynamic::object();
-  for (const auto& [portId, info] : newDyn[kMemberPorts].items()) {
-    auto portInfo = PortInfo::fromFollyDynamic(info);
-    newPorts[portId] = portInfo.tagged;
-  }
-  newDyn["ports"] = newPorts;
-  newDyn[kArpTable] = ArpTable::migrateToThrifty(newDyn[kArpTable]);
-  newDyn[kNdpTable] = NdpTable::migrateToThrifty(newDyn[kNdpTable]);
-  newDyn[kArpResponseTable] =
-      ArpResponseTable::migrateToThrifty(newDyn[kArpResponseTable]);
-  newDyn[kNdpResponseTable] =
-      NdpResponseTable::migrateToThrifty(newDyn[kNdpResponseTable]);
-  newDyn[kMacTable] = MacTable::migrateToThrifty(newDyn[kMacTable]);
-
-  return newDyn;
-}
-void VlanFields::migrateFromThrifty(folly::dynamic& dyn) {
-  folly::dynamic legacyMemberPorts = folly::dynamic::object();
-  for (const auto& [portId, tagged] : dyn["ports"].items()) {
-    auto portInfo = PortInfo(tagged.asBool());
-    legacyMemberPorts[portId] = portInfo.toFollyDynamic();
-  }
-  dyn[kMemberPorts] = legacyMemberPorts;
-
-  ArpTable::migrateFromThrifty(dyn[kArpTable]);
-  NdpTable::migrateFromThrifty(dyn[kNdpTable]);
-  ArpResponseTable::migrateFromThrifty(dyn[kArpResponseTable]);
-  NdpResponseTable::migrateFromThrifty(dyn[kNdpResponseTable]);
-  MacTable::migrateFromThrifty(dyn[kMacTable]);
-}
-
-bool VlanFields::operator==(const VlanFields& o) const {
-  return std::tie(
-             id,
-             name,
-             intfID,
-             dhcpV4Relay,
-             dhcpV6Relay,
-             dhcpRelayOverridesV4,
-             dhcpRelayOverridesV6,
-             ports,
-             *arpTable,
-             *ndpTable,
-             *arpResponseTable,
-             *ndpResponseTable,
-             *macTable) ==
-      std::tie(
-             o.id,
-             o.name,
-             o.intfID,
-             o.dhcpV4Relay,
-             o.dhcpV6Relay,
-             o.dhcpRelayOverridesV4,
-             o.dhcpRelayOverridesV6,
-             o.ports,
-             *o.arpTable,
-             *o.ndpTable,
-             *o.arpResponseTable,
-             *o.ndpResponseTable,
-             *o.macTable);
-}
-
-Vlan::Vlan(VlanID id, string name) : ThriftyBaseT(id, std::move(name)) {}
-
-Vlan::Vlan(const cfg::Vlan* config, MemberPorts ports)
-    : ThriftyBaseT(
-          VlanID(*config->id()),
-          *config->name(),
-          (config->intfID() ? InterfaceID(*config->intfID()) : InterfaceID(0)),
-          (config->dhcpRelayAddressV4()
-               ? IPAddressV4(*config->dhcpRelayAddressV4())
-               : IPAddressV4()),
-          (config->dhcpRelayAddressV6()
-               ? IPAddressV6(*config->dhcpRelayAddressV6())
-               : IPAddressV6()),
-          std::move(ports)) {
+  setPorts(std::move(ports));
   DhcpV4OverrideMap map4;
   for (const auto& o : config->dhcpRelayOverridesV4().value_or({})) {
     map4[MacAddress(o.first)] = folly::IPAddressV4(o.second);
@@ -317,9 +95,9 @@ Vlan* Vlan::modify(std::shared_ptr<SwitchState>* state) {
 }
 
 void Vlan::addPort(PortID id, bool tagged) {
-  writableFields()->ports.insert(make_pair(id, PortInfo(tagged)));
+  ref<switch_state_tags::ports>()->emplace(id, tagged);
 }
 
-template class NodeBaseT<Vlan, VlanFields>;
+template class ThriftStructNode<Vlan, state::VlanFields>;
 
 } // namespace facebook::fboss

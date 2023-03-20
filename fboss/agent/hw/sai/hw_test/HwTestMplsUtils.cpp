@@ -9,6 +9,10 @@
  */
 
 #include "fboss/agent/hw/test/HwTestMplsUtils.h"
+
+#include <folly/gen/Base.h>
+#include <gtest/gtest.h>
+
 #include "fboss/agent/hw/sai/api/MplsApi.h"
 #include "fboss/agent/hw/sai/api/RouteApi.h"
 #include "fboss/agent/hw/sai/api/SaiApiTable.h"
@@ -20,8 +24,6 @@
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVirtualRouterManager.h"
 #include "fboss/agent/hw/test/HwSwitchEnsemble.h"
-
-#include <folly/gen/Base.h>
 
 extern "C" {
 #include <sai.h>
@@ -89,7 +91,7 @@ sai_object_id_t getNextHopId(
     throw FbossError("No virtual router with id 0");
   }
   auto routeEntry = SaiRouteTraits::RouteEntry(
-      saiSwitch->getSwitchId(),
+      saiSwitch->getSaiSwitchId(),
       virtualRouterHandle->virtualRouter->adapterKey(),
       follyPrefix);
   return SaiApiTable::getInstance()->routeApi().getAttribute(
@@ -295,7 +297,7 @@ void verifyProgrammedStack(
   auto intfHandle = saiSwitch->managerTable()
                         ->routerInterfaceManager()
                         .getRouterInterfaceHandle(intfID);
-  auto intfKey = intfHandle->routerInterface->adapterKey();
+  auto intfKey = intfHandle->adapterKey();
   bool found = false;
   for (auto nextHopId : nexthopIds) {
     auto intfObjId = nextHopApi.getAttribute(

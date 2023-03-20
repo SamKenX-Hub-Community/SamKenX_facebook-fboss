@@ -2,10 +2,20 @@
 
 #pragma once
 
+#include <optional>
+
+#include <folly/experimental/exception_tracer/ExceptionTracer.h>
+#include <folly/logging/xlog.h>
+
 #include <fb303/ThreadCachedServiceData.h>
 #include <fb303/ThreadLocalStats.h>
-#include <optional>
 #include "fboss/agent/FbossError.h"
+
+// Exception not subclassing std::exception to avoid being caught by user code.
+// Used only in WITH_RETRIES toolkit
+namespace {
+struct _SoftAssertFail {};
+} // namespace
 
 namespace facebook::fboss {
 /*
@@ -50,11 +60,13 @@ inline int64_t getCumulativeValue(
  * checkWithRetry in tests.
  * USAGES:
  *
- * WITH_RETRIES_N_TIMED({
+ * WITH_RETRIES_N_TIMED(
+ *  30, std::chrono::milliseconds(1000),
+ *  {
  *   auto someData = foo();
  *   ASSERT_EVENTUALLY_TRUE(someData.bar());
  *   ASSERT_EVENTUALLY_EQ(someData.bar().baz(), 0) << "baz is not zero!";
- * }, 30, std::chrono::milliseconds(1000));
+ *  });
  *
  * WITH_RETRIES(ASSERT_EVENTUALLY_TRUE(someBoolExpr()));
  *
@@ -67,10 +79,13 @@ inline int64_t getCumulativeValue(
  * EXPECT_EVENTUALLY: Unlike ASSERT_EVENTUALLY, during retries EXPECT_EVENTUALLY
  * will continue execution in case of failure. After all retires we will hard
  * EXPECT all checks
+
+ * Using ... to capture everything (the logic to test) and replace whatever has
+ * been passed with the single __VA_ARGS__. Without ..., if 'test' is a code
+ * block, the parser could separate that into multiple tokens and cause
+ * compilation errors
  */
-// Exception not subclassing std::exception to avoid being caught by user code
-struct _SoftAssertFail {};
-#define WITH_RETRIES_N_TIMED(tests, maxRetries, sleepTime)              \
+#define WITH_RETRIES_N_TIMED(maxRetries, sleepTime, ...)                \
   {                                                                     \
     int WITH_RETRIES_tries = 0;                                         \
     while (WITH_RETRIES_tries++ < maxRetries) {                         \
@@ -87,7 +102,7 @@ struct _SoftAssertFail {};
        * - soft asserts will throw _SoftAssertFail so we can loop again \
        */                                                               \
       try {                                                             \
-        tests;                                                          \
+        __VA_ARGS__;                                                    \
       } catch (const _SoftAssertFail&) {                                \
         continue;                                                       \
       }                                                                 \
@@ -99,11 +114,12 @@ struct _SoftAssertFail {};
   }
 
 // Helper with default sleep time
-#define WITH_RETRIES_N(tests, maxRetries) \
-  WITH_RETRIES_N_TIMED(tests, maxRetries, std::chrono::milliseconds(1000));
+#define WITH_RETRIES_N(maxRetries, ...) \
+  WITH_RETRIES_N_TIMED(                 \
+      maxRetries, std::chrono::milliseconds(1000), __VA_ARGS__);
 
 // Helper with default retries and sleep time
-#define WITH_RETRIES(tests) WITH_RETRIES_N(tests, 30);
+#define WITH_RETRIES(...) WITH_RETRIES_N(30, __VA_ARGS__);
 
 // Should ONLY be used inside WITH_RETIRES*. See helpers below
 #define _ASSERT_EVENTUALLY(softTest, hardTest)                         \
@@ -158,5 +174,28 @@ struct _SoftAssertFail {};
   _EXPECT_EVENTUALLY(expr1 >= expr2, EXPECT_GE(expr1, expr2))
 #define EXPECT_EVENTUALLY_LT(expr1, expr2) \
   _EXPECT_EVENTUALLY(expr1 < expr2, EXPECT_LT(expr1, expr2))
+#define EXPECT_EVENTUALLY_LE(expr1, expr2) \
+  _EXPECT_EVENTUALLY(expr1 <= expr2, EXPECT_LE(expr1, expr2))
+
+#ifndef IS_OSS
+// Folly::folly_exception_tracer* is not available in OSS.
+// Skip its compilation in OSS for now.
+// TODO: Need to check this with folly team and fix this
+// properly so that exception_tracer can be made available
+// in OSS also.
+template <typename Fn>
+void runWithExceptionTrace(Fn fn) {
+  try {
+    return fn();
+  } catch (std::exception& ex) {
+    XLOG(CRITICAL) << "Exception " << folly::exceptionStr(ex);
+    XLOG(CRITICAL) << "Trace:";
+    for (const auto& exInfo : folly::exception_tracer::getCurrentExceptions()) {
+      XLOG(CRITICAL) << "\n" << exInfo;
+    }
+    throw;
+  }
+}
+#endif
 
 } // namespace facebook::fboss

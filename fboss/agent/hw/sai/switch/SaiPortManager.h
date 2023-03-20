@@ -14,6 +14,7 @@
 #include "fboss/agent/hw/sai/api/PortApi.h"
 #include "fboss/agent/hw/sai/store/SaiObjectWithCounters.h"
 #include "fboss/agent/hw/sai/switch/SaiBridgeManager.h"
+#include "fboss/agent/hw/sai/switch/SaiBufferManager.h"
 #include "fboss/agent/hw/sai/switch/SaiMirrorManager.h"
 #include "fboss/agent/hw/sai/switch/SaiQosMapManager.h"
 #include "fboss/agent/hw/sai/switch/SaiQueueManager.h"
@@ -26,9 +27,12 @@
 #include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
 
+DECLARE_bool(sai_configure_six_tap);
+
 namespace facebook::fboss {
 
 struct ConcurrentIndices;
+struct SaiIngressPriorityGroupHandleAndProfile;
 class SaiManagerTable;
 class SaiPlatform;
 class HwPortFb303Stats;
@@ -76,13 +80,20 @@ struct SaiPortHandle {
   std::shared_ptr<SaiPort> port;
   std::shared_ptr<SaiPort> sysPort;
   std::shared_ptr<SaiPortSerdes> serdes;
+  std::shared_ptr<SaiPortSerdes> sysSerdes;
   std::shared_ptr<SaiPortConnector> connector;
   std::shared_ptr<SaiBridgePort> bridgePort;
   std::vector<SaiQueueHandle*> configuredQueues;
   std::shared_ptr<SaiSamplePacket> ingressSamplePacket;
   std::shared_ptr<SaiSamplePacket> egressSamplePacket;
   SaiQueueHandles queues;
+
+  void resetQueues();
   SaiPortMirrorInfo mirrorInfo;
+  folly::F14FastMap<
+      IngressPriorityGroupID,
+      SaiIngressPriorityGroupHandleAndProfile>
+      configuredIngressPriorityGroups;
 };
 
 class SaiPortManager {
@@ -96,6 +107,7 @@ class SaiPortManager {
       SaiPlatform* platform,
       ConcurrentIndices* concurrentIndices_);
   ~SaiPortManager();
+  void resetQueues();
   PortSaiId addPort(const std::shared_ptr<Port>& swPort);
   void removePort(const std::shared_ptr<Port>& swPort);
   void changePort(
@@ -127,12 +139,13 @@ class SaiPortManager {
       const SaiQueueConfig& saiQueueConfig);
   std::map<PortID, HwPortStats> getPortStats() const;
   void changeQueue(
-      PortID swId,
+      const std::shared_ptr<Port>& swPort,
       const QueueConfig& oldQueueConfig,
       const QueueConfig& newQueueConfig);
 
   const HwPortFb303Stats* getLastPortStat(PortID port) const;
 
+  std::map<PortID, FabricEndpoint> getFabricReachability() const;
   const Stats& getLastPortStats() const {
     return portStats_;
   }
@@ -154,7 +167,8 @@ class SaiPortManager {
 
   std::shared_ptr<Port> swPortFromAttributes(
       SaiPortTraits::CreateAttributes attributees,
-      PortSaiId portSaiId) const;
+      PortSaiId portSaiId,
+      cfg::SwitchType switchType) const;
 
   void updateStats(PortID portID, bool updateWatermarks = false);
 
@@ -171,8 +185,6 @@ class SaiPortManager {
 
   bool isUp(PortID portID) const;
 
-  bool isUp(PortSaiId saiPortId) const;
-
   void setPtpTcEnable(bool enable);
   bool isPtpTcEnabled() const;
 
@@ -180,10 +192,36 @@ class SaiPortManager {
       PortSaiId saiPortId) const;
   std::vector<sai_port_err_status_t> getPortErrStatus(
       PortSaiId saiPortId) const;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+  std::vector<sai_port_lane_latch_status_t> getRxSignalDetect(
+      PortSaiId saiPortId,
+      uint8_t numPmdLanes) const;
+  std::vector<sai_port_lane_latch_status_t> getRxLockStatus(
+      PortSaiId saiPortId,
+      uint8_t numPmdLanes) const;
+  std::vector<sai_port_lane_latch_status_t> getFecAlignmentLockStatus(
+      PortSaiId saiPortId,
+      uint8_t numFecLanes) const;
+  std::optional<sai_latch_status_t> getPcsRxLinkStatus(
+      PortSaiId saiPortId) const;
+#endif
 
   void enableAfeAdaptiveMode(PortID portId);
 
   phy::FecMode getFECMode(PortID portId) const;
+
+  phy::InterfaceType getInterfaceType(PortID portID) const;
+
+  TransmitterTechnology getMedium(PortID portID) const;
+
+  uint8_t getNumPmdLanes(PortSaiId saiPortId) const;
+  void loadPortQueuesForAddedPort(const std::shared_ptr<Port>& swPort);
+  void loadPortQueuesForChangedPort(
+      const std::shared_ptr<Port>& oldPort,
+      const std::shared_ptr<Port>& newPort);
+  std::optional<FabricEndpoint> getFabricReachabilityForPort(
+      const PortID& portId) const;
+  cfg::PortType getPortType(PortID portId) const;
 
  private:
   PortSaiId addPortImpl(const std::shared_ptr<Port>& swPort);
@@ -193,20 +231,25 @@ class SaiPortManager {
   void addRemovedHandle(PortID portID);
   void removeRemovedHandleIf(PortID portID);
   void releasePorts();
+  void releasePortPfcBuffers();
 
   void setQosMaps(
-      QosMapSaiId dscpToTc,
-      QosMapSaiId tcToQueue,
+      std::vector<std::pair<sai_qos_map_type_t, QosMapSaiId>>& qosMaps,
       const folly::F14FastSet<PortID>& ports);
+  std::vector<std::pair<sai_qos_map_type_t, QosMapSaiId>>
+  getNullSaiIdsForQosMaps();
+  std::vector<std::pair<sai_qos_map_type_t, QosMapSaiId>> getSaiIdsForQosMaps();
 
-  void setQosMapsOnAllPorts(QosMapSaiId dscpToTc, QosMapSaiId tcToQueue);
-  const std::vector<sai_stat_id_t>& supportedStats() const;
-  const std::vector<sai_stat_id_t>& fecStatIds(PortID portID) const;
+  void setQosMapsOnAllPorts(
+      std::vector<std::pair<sai_qos_map_type_t, QosMapSaiId>>& qosMaps);
+  const std::vector<sai_stat_id_t>& supportedStats(PortID port);
+  void fillInSupportedStats(PortID port);
+  bool fecStatsSupported(PortID portID) const;
   SaiPortHandle* getPortHandleImpl(PortID swId) const;
   SaiQueueHandle* getQueueHandleImpl(
       PortID swId,
       const SaiQueueConfig& saiQueueConfig) const;
-  void loadPortQueues(SaiPortHandle* portHandle);
+  void loadPortQueues(const Port& swPort);
   void programSerdes(
       std::shared_ptr<SaiPort> saiPort,
       std::shared_ptr<Port> swPort,
@@ -255,6 +298,22 @@ class SaiPortManager {
       const std::shared_ptr<Port>& oldPort,
       const std::shared_ptr<Port>& newPort);
   void removePfc(const std::shared_ptr<Port>& swPort);
+  void setPortType(PortID portId, cfg::PortType portType);
+  void programPfcBuffers(const std::shared_ptr<Port>& swPort);
+  void removePfcBuffers(const std::shared_ptr<Port>& swPort);
+  void removeIngressPriorityGroupMappings(SaiPortHandle* portHandle);
+  void applyPriorityGroupBufferProfile(
+      const std::shared_ptr<Port>& swPort,
+      std::shared_ptr<SaiBufferProfile> bufferProfile,
+      IngressPriorityGroupSaiId ingressPgSaiId);
+  std::vector<IngressPriorityGroupSaiId> getIngressPriorityGroupSaiIds(
+      const std::shared_ptr<Port>& swPort);
+  void changePortByRecreate(
+      const std::shared_ptr<Port>& oldPort,
+      const std::shared_ptr<Port>& newPort);
+  std::optional<FabricEndpoint> getFabricReachabilityForPort(
+      const PortID& portId,
+      const SaiPortHandle* portHandle) const;
 
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;
@@ -271,7 +330,11 @@ class SaiPortManager {
   std::shared_ptr<SaiQosMap> globalTcToQueueQosMap_;
 
   std::optional<SaiPortTraits::Attributes::PtpMode> getPtpMode() const;
-  cfg::PortType portType_{cfg::PortType::INTERFACE_PORT};
+  std::unordered_map<PortID, cfg::PortType> port2PortType_;
+  std::unordered_map<PortID, std::vector<sai_stat_id_t>> port2SupportedStats_;
+  std::unordered_map<PortID, std::shared_ptr<Port>> pendingNewPorts_;
+  bool hwLaneListIsPmdLaneList_;
+  bool tcToQueueMapAllowedOnPort_;
 };
 
 } // namespace facebook::fboss

@@ -52,7 +52,8 @@ bool LookupClassRouteUpdater::vlanHasOtherPortsWithClassIDs(
     const std::shared_ptr<SwitchState>& switchState,
     const std::shared_ptr<Vlan>& vlan,
     const std::shared_ptr<Port>& removedPort) {
-  for (auto& [portID, portInfo] : vlan->getPorts()) {
+  for (auto& [id, portInfo] : vlan->getPorts()) {
+    auto portID = PortID(id);
     std::ignore = portInfo;
     auto port = switchState->getPorts()->getPortIf(portID);
 
@@ -117,13 +118,13 @@ LookupClassRouteUpdater::getClassIDForLinkLocal(
    */
   auto mac = ipAddressV6.getMacAddressFromLinkLocal();
   if (!mac) {
-    auto ndpEntry = vlan->getNdpTable()->getNodeIf(ipAddressV6);
+    auto ndpEntry = vlan->getNdpTable()->getNodeIf(ipAddressV6.str());
     if (ndpEntry) {
       mac = ndpEntry->getMac();
     }
   }
   if (mac) {
-    auto macEntry = vlan->getMacTable()->getNodeIf(*mac);
+    auto macEntry = vlan->getMacTable()->getMacIf(*mac);
     return macEntry ? macEntry->getClassID() : std::nullopt;
   }
   return std::nullopt;
@@ -190,7 +191,9 @@ void LookupClassRouteUpdater::updateSubnetsCache(
     auto interface =
         newState->getInterfaces()->getInterfaceIf(vlan->getInterfaceID());
     if (interface) {
-      for (auto address : interface->getAddresses()) {
+      for (auto iter : std::as_const(*interface->getAddresses())) {
+        auto address =
+            std::make_pair(folly::IPAddress(iter.first), iter.second->cref());
         subnetCacheUpdated = subnetsCache.insert(address).second;
       }
     }
@@ -249,7 +252,9 @@ void LookupClassRouteUpdater::processPortRemovedForVlan(
   }
 
   auto& subnetsCache = vlan2SubnetsCache_[vlanID];
-  for (auto address : interface->getAddresses()) {
+  for (auto iter : std::as_const(*interface->getAddresses())) {
+    std::pair<folly::IPAddress, uint8_t> address(
+        folly::IPAddress(iter.first), iter.second->ref());
     removeNextHopsForSubnet(stateDelta, address, vlan);
     subnetsCache.erase(address);
   }
@@ -325,6 +330,11 @@ void LookupClassRouteUpdater::processInterfaceAdded(
     const StateDelta& stateDelta,
     const std::shared_ptr<Interface>& addedInterface) {
   CHECK(addedInterface);
+  if (addedInterface->getType() != cfg::InterfaceType::VLAN) {
+    // TODO: Start handling interface types for PORT once we
+    // we support class IDs on VOQ switches
+    return;
+  }
 
   auto switchState = stateDelta.newState();
 
@@ -334,7 +344,8 @@ void LookupClassRouteUpdater::processInterfaceAdded(
     return;
   }
 
-  for (auto& [portID, portInfo] : vlan->getPorts()) {
+  for (auto& [id, portInfo] : vlan->getPorts()) {
+    PortID portID(id);
     std::ignore = portInfo;
     auto port = switchState->getPorts()->getPortIf(portID);
     // routes are re-added once outside the for loop
@@ -347,13 +358,19 @@ void LookupClassRouteUpdater::processInterfaceAdded(
    * added blocked neighbor if there is no interface for that subnet.
    * Thus, when an interface is added, process blocked neighbor list again.
    */
-  for (const auto& [blockedVlanID, blockedNeighborIP] :
-       switchState->getSwitchSettings()->getBlockNeighbors()) {
+  for (const auto& iter :
+       *(switchState->getSwitchSettings()->getBlockNeighbors())) {
+    auto blockedVlanID = VlanID(
+        iter->cref<switch_state_tags::blockNeighborVlanID>()->toThrift());
+    auto blockedNeighborIP = network::toIPAddress(
+        iter->cref<switch_state_tags::blockNeighborIP>()->toThrift());
     if (blockedVlanID != vlanID) {
       continue;
     }
 
-    for (const auto& address : addedInterface->getAddresses()) {
+    for (auto iter : std::as_const(*addedInterface->getAddresses())) {
+      std::pair<folly::IPAddress, uint8_t> address(
+          folly::IPAddress(iter.first), iter.second->ref());
       if (blockedNeighborIP.inSubnet(address.first, address.second)) {
         auto& subnetsCache = vlan2SubnetsCache_[vlanID];
         subnetsCache.insert(address);
@@ -366,29 +383,39 @@ void LookupClassRouteUpdater::processInterfaceAdded(
    * added blocked mac address if there is no interface for that subnet.
    * Thus, when an interface is added, process blocked mac address list again.
    */
-  for (const auto& [blockedVlanID, blockedNeighborMac] :
-       switchState->getSwitchSettings()->getMacAddrsToBlock()) {
+  for (const auto& iter :
+       *(switchState->getSwitchSettings()->getMacAddrsToBlock())) {
+    auto blockedVlanID = VlanID(
+        iter->cref<switch_state_tags::macAddrToBlockVlanID>()->toThrift());
+    auto blockedNeighborMac = folly::MacAddress(
+        iter->cref<switch_state_tags::macAddrToBlockAddr>()->toThrift());
     if (blockedVlanID != vlanID) {
       continue;
     }
 
     std::vector<folly::IPAddress> neighborIPAddr;
-    for (const auto& neighborEntry :
-         *VlanTableDeltaCallbackGenerator::getTable<folly::IPAddressV4>(vlan)) {
+    for (auto iter : std::as_const(
+             *VlanTableDeltaCallbackGenerator::getTable<folly::IPAddressV4>(
+                 vlan))) {
+      auto neighborEntry = iter.second;
       if (neighborEntry->getMac() == blockedNeighborMac) {
         neighborIPAddr.push_back(neighborEntry->getIP());
       }
     }
 
-    for (const auto& neighborEntry :
-         *VlanTableDeltaCallbackGenerator::getTable<folly::IPAddressV6>(vlan)) {
+    for (auto iter : std::as_const(
+             *VlanTableDeltaCallbackGenerator::getTable<folly::IPAddressV6>(
+                 vlan))) {
+      auto neighborEntry = iter.second;
       if (neighborEntry->getMac() == blockedNeighborMac &&
           !isNoHostRoute(neighborEntry)) {
         neighborIPAddr.push_back(neighborEntry->getIP());
       }
     }
 
-    for (const auto& address : addedInterface->getAddresses()) {
+    for (auto iter : std::as_const(*addedInterface->getAddresses())) {
+      std::pair<folly::IPAddress, uint8_t> address(
+          folly::IPAddress(iter.first), iter.second->ref());
       for (auto& neighborIP : neighborIPAddr) {
         if (neighborIP.inSubnet(address.first, address.second)) {
           auto& subnetsCache = vlan2SubnetsCache_[vlanID];
@@ -406,6 +433,11 @@ void LookupClassRouteUpdater::processInterfaceRemoved(
     const StateDelta& stateDelta,
     const std::shared_ptr<Interface>& removedInterface) {
   CHECK(removedInterface);
+  if (removedInterface->getType() != cfg::InterfaceType::VLAN) {
+    // TODO: Start handling interface types for PORT once we
+    // we support class IDs on VOQ switches
+    return;
+  }
 
   auto switchState = stateDelta.newState();
 
@@ -415,7 +447,8 @@ void LookupClassRouteUpdater::processInterfaceRemoved(
     return;
   }
 
-  for (auto& [portID, portInfo] : vlan->getPorts()) {
+  for (auto& [id, portInfo] : vlan->getPorts()) {
+    PortID portID(id);
     std::ignore = portInfo;
     auto port = switchState->getPorts()->getPortIf(portID);
     /*
@@ -687,8 +720,9 @@ void LookupClassRouteUpdater::processNeighborUpdates(
     if (!newVlan) {
       auto oldVlan = vlanDelta.getOld();
 
-      for (const auto& entry :
-           *VlanTableDeltaCallbackGenerator::getTable<AddrT>(oldVlan)) {
+      for (auto iter : std::as_const(
+               *VlanTableDeltaCallbackGenerator::getTable<AddrT>(oldVlan))) {
+        auto entry = iter.second;
         processNeighborRemoved(stateDelta, oldVlan->getID(), entry);
       }
       continue;
@@ -1122,7 +1156,9 @@ LookupClassRouteUpdater::getInterfaceSubnetForIPIf(
   auto interface =
       switchState->getInterfaces()->getInterfaceIf(vlan->getInterfaceID());
   if (interface) {
-    for (const auto& address : interface->getAddresses()) {
+    for (auto iter : std::as_const(*interface->getAddresses())) {
+      std::pair<folly::IPAddress, uint8_t> address(
+          folly::IPAddress(iter.first), iter.second->ref());
       if (ipAddress.inSubnet(address.first, address.second)) {
         return std::make_pair(address.first, address.second);
       }
@@ -1136,8 +1172,12 @@ bool LookupClassRouteUpdater::isSubnetCachedByBlockedNeighborIP(
     const std::shared_ptr<SwitchState>& switchState,
     VlanID vlanID,
     const folly::CIDRNetwork& addressToSearch) const {
-  for (const auto& [blockedVlanID, blockedNeighborIP] :
-       switchState->getSwitchSettings()->getBlockNeighbors()) {
+  for (const auto& iter :
+       *(switchState->getSwitchSettings()->getBlockNeighbors())) {
+    auto blockedVlanID = VlanID(
+        iter->cref<switch_state_tags::blockNeighborVlanID>()->toThrift());
+    auto blockedNeighborIP = network::toIPAddress(
+        iter->cref<switch_state_tags::blockNeighborIP>()->toThrift());
     if (blockedVlanID != vlanID) {
       continue;
     }
@@ -1168,14 +1208,14 @@ bool LookupClassRouteUpdater::isSubnetCachedByLookupClasses(
   }
 
   bool searchInterfaceAddresses = false;
-  for (const auto& port : *switchState->getPorts()) {
-    if (port->getLookupClassesToDistributeTrafficOn().size() == 0) {
+  for (const auto& port : std::as_const(*switchState->getPorts())) {
+    if (port.second->getLookupClassesToDistributeTrafficOn().size() == 0) {
       continue;
     }
 
     // port is member of vlan for addressToSearch i.e. blocked IP
-    auto it = port->getVlans().find(vlanID);
-    if (it == port->getVlans().end()) {
+    auto it = port.second->getVlans().find(vlanID);
+    if (it == port.second->getVlans().end()) {
       continue;
     }
 
@@ -1188,8 +1228,10 @@ bool LookupClassRouteUpdater::isSubnetCachedByLookupClasses(
   }
 
   if (searchInterfaceAddresses) {
-    for (const auto& address : interface->getAddresses()) {
-      if (address == addressToSearch) {
+    for (auto iter : std::as_const(*interface->getAddresses())) {
+      if (folly::CIDRNetwork(
+              folly::IPAddress(iter.first), iter.second->cref()) ==
+          addressToSearch) {
         return true;
       }
     }
@@ -1259,8 +1301,10 @@ void LookupClassRouteUpdater::processBlockNeighborUpdates(
   auto oldState = stateDelta.oldState();
   auto newState = stateDelta.newState();
 
-  auto oldBlockedNeighbors{oldState->getSwitchSettings()->getBlockNeighbors()};
-  auto newBlockedNeighbors{newState->getSwitchSettings()->getBlockNeighbors()};
+  auto oldBlockedNeighbors{
+      oldState->getSwitchSettings()->getBlockNeighbors_DEPRECATED()};
+  auto newBlockedNeighbors{
+      newState->getSwitchSettings()->getBlockNeighbors_DEPRECATED()};
 
   sort(oldBlockedNeighbors.begin(), oldBlockedNeighbors.end());
   sort(newBlockedNeighbors.begin(), newBlockedNeighbors.end());
@@ -1296,8 +1340,9 @@ bool LookupClassRouteUpdater::addBlockedNeighborIPtoSubnetCache(
     const std::shared_ptr<SwitchState>& newState) {
   bool subnetCacheUpdated = false;
   auto vlan = newState->getVlans()->getVlanIf(vlanID);
-  for (const auto& neighborEntry :
-       *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan)) {
+  for (auto iter :
+       std::as_const(*VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan))) {
+    auto neighborEntry = iter.second;
     if (neighborEntry->getMac() != blockedNeighborMac ||
         isNoHostRoute(neighborEntry)) {
       continue;
@@ -1321,8 +1366,9 @@ void LookupClassRouteUpdater::removeBlockedNeighborIPfromSubnetCache(
     const StateDelta& stateDelta) {
   auto newState = stateDelta.newState();
   auto vlan = newState->getVlans()->getVlanIf(vlanID);
-  for (const auto& neighborEntry :
-       *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan)) {
+  for (auto iter :
+       std::as_const(*VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan))) {
+    auto neighborEntry = iter.second;
     if (neighborEntry->getMac() != blockedNeighborMac ||
         isNoHostRoute(neighborEntry)) {
       continue;
@@ -1402,10 +1448,10 @@ void LookupClassRouteUpdater::processMacAddrsToBlockUpdates(
   auto newState = stateDelta.newState();
 
   std::vector<std::pair<VlanID, folly::MacAddress>> oldMacAddrsToBlock(
-      oldState->getSwitchSettings()->getMacAddrsToBlock());
+      oldState->getSwitchSettings()->getMacAddrsToBlock_DEPRECATED());
 
   std::vector<std::pair<VlanID, folly::MacAddress>> newMacAddrsToBlock(
-      newState->getSwitchSettings()->getMacAddrsToBlock());
+      newState->getSwitchSettings()->getMacAddrsToBlock_DEPRECATED());
 
   sort(oldMacAddrsToBlock.begin(), oldMacAddrsToBlock.end());
   sort(newMacAddrsToBlock.begin(), newMacAddrsToBlock.end());

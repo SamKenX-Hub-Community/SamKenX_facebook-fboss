@@ -8,6 +8,7 @@
  *
  */
 #include "fboss/agent/state/SwitchSettings.h"
+#include <fboss/agent/gen-cpp2/switch_config_types.h>
 #include "common/network/if/gen-cpp2/Address_types.h"
 #include "fboss/agent/AddressUtil.h"
 #include "fboss/agent/state/SwitchState.h"
@@ -30,89 +31,13 @@ constexpr auto kMacAddrToBlockVlanID = "macAddrToBlockVlanID";
 constexpr auto kMacAddrToBlockAddr = "macAddrToBlockAddr";
 constexpr auto kSwitchType = "switchType";
 constexpr auto kSwitchId = "switchId";
+constexpr auto kExactMatchTableConfigs = "exactMatchTableConfigs";
+constexpr auto kExactMatchTableName = "name";
+constexpr auto kExactMatchTableDstPrefixLength = "dstPrefixLength";
 
 } // namespace
 
 namespace facebook::fboss {
-
-folly::dynamic SwitchSettingsFields::toFollyDynamicLegacy() const {
-  folly::dynamic switchSettings = folly::dynamic::object;
-
-  switchSettings[kL2LearningMode] = static_cast<int>(l2LearningMode);
-  switchSettings[kQcmEnable] = static_cast<bool>(qcmEnable);
-  switchSettings[kPtpTcEnable] = static_cast<bool>(ptpTcEnable);
-  switchSettings[kL2AgeTimerSeconds] = static_cast<int>(l2AgeTimerSeconds);
-  switchSettings[kMaxRouteCounterIDs] = static_cast<int>(maxRouteCounterIDs);
-
-  switchSettings[kBlockNeighbors] = folly::dynamic::array;
-  for (const auto& [vlanID, ipAddress] : blockNeighbors) {
-    folly::dynamic jsonEntry = folly::dynamic::object;
-    jsonEntry[kBlockNeighborVlanID] = folly::to<std::string>(vlanID);
-    jsonEntry[kBlockNeighborIP] = folly::to<std::string>(ipAddress);
-    switchSettings[kBlockNeighbors].push_back(jsonEntry);
-  }
-
-  switchSettings[kMacAddrsToBlock] = folly::dynamic::array;
-  for (const auto& [vlanID, macAddr] : macAddrsToBlock) {
-    folly::dynamic jsonEntry = folly::dynamic::object;
-    jsonEntry[kMacAddrToBlockVlanID] = folly::to<std::string>(vlanID);
-    jsonEntry[kMacAddrToBlockAddr] = folly::to<std::string>(macAddr);
-    switchSettings[kMacAddrsToBlock].push_back(jsonEntry);
-  }
-  switchSettings[kSwitchType] = static_cast<int>(switchType);
-  if (switchId) {
-    switchSettings[kSwitchId] = *switchId;
-  }
-
-  return switchSettings;
-}
-
-SwitchSettingsFields SwitchSettingsFields::fromFollyDynamicLegacy(
-    const folly::dynamic& json) {
-  SwitchSettingsFields switchSettings = SwitchSettingsFields();
-
-  if (json.find(kL2LearningMode) != json.items().end()) {
-    switchSettings.l2LearningMode =
-        cfg::L2LearningMode(json[kL2LearningMode].asInt());
-  }
-  if (json.find(kQcmEnable) != json.items().end()) {
-    switchSettings.qcmEnable = json[kQcmEnable].asBool();
-  }
-  if (json.find(kPtpTcEnable) != json.items().end()) {
-    switchSettings.ptpTcEnable = json[kPtpTcEnable].asBool();
-  }
-  if (json.find(kL2AgeTimerSeconds) != json.items().end()) {
-    switchSettings.l2AgeTimerSeconds = json[kL2AgeTimerSeconds].asInt();
-  }
-  if (json.find(kMaxRouteCounterIDs) != json.items().end()) {
-    switchSettings.maxRouteCounterIDs = json[kMaxRouteCounterIDs].asInt();
-  }
-
-  if (json.find(kBlockNeighbors) != json.items().end()) {
-    for (const auto& entry : json[kBlockNeighbors]) {
-      switchSettings.blockNeighbors.emplace_back(
-          entry[kBlockNeighborVlanID].asInt(),
-          entry[kBlockNeighborIP].asString());
-    }
-  }
-
-  if (json.find(kMacAddrsToBlock) != json.items().end()) {
-    for (const auto& entry : json[kMacAddrsToBlock]) {
-      switchSettings.macAddrsToBlock.emplace_back(
-          entry[kMacAddrToBlockVlanID].asInt(),
-          entry[kMacAddrToBlockAddr].asString());
-    }
-  }
-  if (json.find(kSwitchType) != json.items().end()) {
-    switchSettings.switchType =
-        static_cast<cfg::SwitchType>(json[kSwitchType].asInt());
-  }
-  if (json.find(kSwitchId) != json.items().end()) {
-    switchSettings.switchId = json[kSwitchId].asInt();
-  }
-
-  return switchSettings;
-}
 
 SwitchSettings* SwitchSettings::modify(std::shared_ptr<SwitchState>* state) {
   if (!isPublished()) {
@@ -127,144 +52,6 @@ SwitchSettings* SwitchSettings::modify(std::shared_ptr<SwitchState>* state) {
   return ptr;
 }
 
-bool SwitchSettings::operator==(const SwitchSettings& switchSettings) const {
-  return (
-      (getFields()->l2LearningMode == switchSettings.getL2LearningMode()) &&
-      (getFields()->qcmEnable == switchSettings.isQcmEnable()) &&
-      (getFields()->ptpTcEnable == switchSettings.isPtpTcEnable()) &&
-      (getFields()->qcmEnable == switchSettings.isQcmEnable()) &&
-      (getFields()->l2AgeTimerSeconds ==
-       switchSettings.getL2AgeTimerSeconds()) &&
-      (getFields()->maxRouteCounterIDs ==
-       switchSettings.getMaxRouteCounterIDs()) &&
-      getFields()->blockNeighbors == switchSettings.getBlockNeighbors() &&
-      getFields()->macAddrsToBlock == switchSettings.getMacAddrsToBlock() &&
-      getFields()->switchType == switchSettings.getSwitchType() &&
-      getFields()->switchId == switchSettings.getSwitchId());
-}
-
-state::SwitchSettingsFields SwitchSettingsFields::toThrift() const {
-  state::SwitchSettingsFields thriftFields{};
-  thriftFields.l2LearningMode() = l2LearningMode;
-  thriftFields.qcmEnable() = qcmEnable;
-  thriftFields.ptpTcEnable() = ptpTcEnable;
-  thriftFields.l2AgeTimerSeconds() = l2AgeTimerSeconds;
-  thriftFields.maxRouteCounterIDs() = maxRouteCounterIDs;
-  for (auto neighbor : blockNeighbors) {
-    auto [vlan, ip] = neighbor;
-    state::BlockedNeighbor blockedNeighbor;
-    blockedNeighbor.blockNeighborVlanID() = vlan;
-    blockedNeighbor.blockNeighborIP() = facebook::network::toBinaryAddress(ip);
-    thriftFields.blockNeighbors()->push_back(blockedNeighbor);
-  }
-  for (auto macAddr : macAddrsToBlock) {
-    auto [vlan, mac] = macAddr;
-    state::BlockedMacAddress blockedMac;
-    blockedMac.macAddrToBlockVlanID() = vlan;
-    blockedMac.macAddrToBlockAddr() = mac.toString();
-    thriftFields.macAddrsToBlock()->push_back(blockedMac);
-  }
-  thriftFields.switchType() = switchType;
-  if (switchId) {
-    thriftFields.switchId() = *switchId;
-  }
-  return thriftFields;
-}
-
-SwitchSettingsFields SwitchSettingsFields::fromThrift(
-    state::SwitchSettingsFields const& fields) {
-  SwitchSettingsFields settings{};
-  settings.l2LearningMode = *fields.l2LearningMode();
-  settings.qcmEnable = *fields.qcmEnable();
-  settings.ptpTcEnable = *fields.ptpTcEnable();
-  settings.l2AgeTimerSeconds = *fields.l2AgeTimerSeconds();
-  settings.maxRouteCounterIDs = *fields.maxRouteCounterIDs();
-  for (auto blockedNeighbor : *fields.blockNeighbors()) {
-    auto ip =
-        facebook::network::toIPAddress(*blockedNeighbor.blockNeighborIP());
-    auto vlan = static_cast<VlanID>(*blockedNeighbor.blockNeighborVlanID());
-    settings.blockNeighbors.push_back(std::make_pair(vlan, ip));
-  }
-  for (auto macAddr : *fields.macAddrsToBlock()) {
-    auto mac = folly::MacAddress(*macAddr.macAddrToBlockAddr());
-    auto vlan = static_cast<VlanID>(*macAddr.macAddrToBlockVlanID());
-    settings.macAddrsToBlock.push_back(std::make_pair(vlan, mac));
-  }
-  settings.switchType = *fields.switchType();
-  if (fields.switchId()) {
-    settings.switchId = *fields.switchId();
-  }
-
-  return settings;
-}
-
-folly::dynamic SwitchSettingsFields::migrateToThrifty(
-    folly::dynamic const& dynLegacy) {
-  folly::dynamic newDynamic = dynLegacy;
-
-  folly::dynamic blockedNeighborsDynamic = folly::dynamic::array;
-  for (auto neighborDynLegacy : dynLegacy["blockNeighbors"]) {
-    auto addr = facebook::network::toBinaryAddress(
-        folly::IPAddress(neighborDynLegacy["blockNeighborIP"].asString()));
-
-    std::string jsonStr;
-    apache::thrift::SimpleJSONSerializer::serialize(addr, &jsonStr);
-    folly::dynamic neighborDyn = folly::dynamic::object;
-    neighborDyn["blockNeighborIP"] = folly::parseJson(jsonStr);
-    neighborDyn["blockNeighborVlanID"] =
-        static_cast<int16_t>(neighborDynLegacy["blockNeighborVlanID"].asInt());
-
-    blockedNeighborsDynamic.push_back(neighborDyn);
-  }
-  newDynamic["blockNeighbors"] = blockedNeighborsDynamic;
-
-  folly::dynamic macAddrsToBlockDynamic = folly::dynamic::array;
-  if (dynLegacy.find("macAddrsToBlock") != dynLegacy.items().end()) {
-    for (auto macDynLegacy : dynLegacy["macAddrsToBlock"]) {
-      folly::dynamic macDyn = folly::dynamic::object;
-
-      macDyn["macAddrToBlockVlanID"] =
-          static_cast<int16_t>(macDynLegacy["macAddrToBlockVlanID"].asInt());
-      macDyn["macAddrToBlockAddr"] =
-          macDynLegacy["macAddrToBlockAddr"].asString();
-      macAddrsToBlockDynamic.push_back(macDyn);
-    }
-  }
-
-  newDynamic["macAddrsToBlock"] = macAddrsToBlockDynamic;
-  return newDynamic;
-}
-
-void SwitchSettingsFields::migrateFromThrifty(folly::dynamic& dyn) {
-  folly::dynamic& blockedNeighborsDynamic = dyn["blockNeighbors"];
-  folly::dynamic& blockedMacAddrsDynamic = dyn["macAddrsToBlock"];
-
-  folly::dynamic blockedNeighborsLegacy = folly::dynamic::array;
-  for (auto& neighborDyn : blockedNeighborsDynamic) {
-    auto vlan =
-        static_cast<uint16_t>(neighborDyn["blockNeighborVlanID"].asInt());
-    auto jsonStr = folly::toJson(neighborDyn["blockNeighborIP"]);
-    auto inBuf =
-        folly::IOBuf::wrapBufferAsValue(jsonStr.data(), jsonStr.size());
-    auto addr = facebook::network::toIPAddress(
-        apache::thrift::SimpleJSONSerializer::deserialize<
-            facebook::network::thrift::BinaryAddress>(
-            folly::io::Cursor{&inBuf}));
-
-    folly::dynamic blockedNeighborLegacy = folly::dynamic::object;
-    neighborDyn["blockNeighborIP"] = addr.str();
-    neighborDyn["blockNeighborVlanID"] = vlan;
-  }
-
-  for (auto& macDyn : blockedMacAddrsDynamic) {
-    auto vlan = static_cast<uint16_t>(macDyn["macAddrToBlockVlanID"].asInt());
-    macDyn["macAddrToBlockVlanID"] = vlan;
-  }
-}
-
-template class ThriftyBaseT<
-    state::SwitchSettingsFields,
-    SwitchSettings,
-    SwitchSettingsFields>;
+template class ThriftStructNode<SwitchSettings, state::SwitchSettingsFields>;
 
 } // namespace facebook::fboss

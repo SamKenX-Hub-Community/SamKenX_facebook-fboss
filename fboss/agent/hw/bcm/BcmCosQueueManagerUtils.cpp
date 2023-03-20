@@ -29,7 +29,7 @@ using namespace facebook::fboss;
 namespace {
 using facebook::fboss::BcmCosQueueStatType;
 using facebook::fboss::cfg::QueueCongestionBehavior;
-using AqmMap = facebook::fboss::PortQueueFields::AQMMap;
+using AqmMap = facebook::fboss::PortQueue::AQMMap;
 
 constexpr int kWredDiscardProbability = 100;
 
@@ -99,12 +99,92 @@ constexpr int kDefaultTH4PortQueueSharedBytes = 0;
 // 133168898 now. CS00011560232
 constexpr int32_t kDefaultTH4AqmThreshold = 13631418;
 const auto kDefaultTH4PortQueueAqm = makeDefauleAqmMap(kDefaultTH4AqmThreshold);
+
+PortQueueFields getPortQueueFields(
+    uint8_t id,
+    cfg::QueueScheduling scheduling,
+    cfg::StreamType streamType,
+    int weight,
+    std::optional<int> reservedBytes,
+    std::optional<cfg::MMUScalingFactor> scalingFactor,
+    std::optional<std::string> name,
+    std::optional<int> sharedBytes,
+    PortQueue::AQMMap aqms,
+    std::optional<cfg::PortQueueRate> portQueueRate,
+    std::optional<int> bandwidthBurstMinKbits,
+    std::optional<int> bandwidthBurstMaxKbits,
+    std::optional<TrafficClass> trafficClass,
+    std::optional<std::set<PfcPriority>> pfcPriorities) {
+  PortQueueFields queue;
+  *queue.id() = id;
+  *queue.weight() = weight;
+  if (reservedBytes) {
+    queue.reserved() = reservedBytes.value();
+  }
+  if (scalingFactor) {
+    auto scalingFactorName = apache::thrift::util::enumName(*scalingFactor);
+    if (scalingFactorName == nullptr) {
+      CHECK(false) << "Unexpected MMU scaling factor: "
+                   << static_cast<int>(*scalingFactor);
+    }
+    queue.scalingFactor() = scalingFactorName;
+  }
+  auto schedulingName = apache::thrift::util::enumName(scheduling);
+  if (schedulingName == nullptr) {
+    CHECK(false) << "Unexpected scheduling: " << static_cast<int>(scheduling);
+  }
+  *queue.scheduling() = schedulingName;
+  auto streamTypeName = apache::thrift::util::enumName(streamType);
+  if (streamTypeName == nullptr) {
+    CHECK(false) << "Unexpected streamType: " << static_cast<int>(streamType);
+  }
+  *queue.streamType() = streamTypeName;
+  if (name) {
+    queue.name() = name.value();
+  }
+  if (sharedBytes) {
+    queue.sharedBytes() = sharedBytes.value();
+  }
+  if (!aqms.empty()) {
+    std::vector<cfg::ActiveQueueManagement> aqmList;
+    for (const auto& aqm : aqms) {
+      aqmList.push_back(aqm.second);
+    }
+    queue.aqms() = aqmList;
+  }
+
+  if (portQueueRate) {
+    queue.portQueueRate() = portQueueRate.value();
+  }
+
+  if (bandwidthBurstMinKbits) {
+    queue.bandwidthBurstMinKbits() = bandwidthBurstMinKbits.value();
+  }
+
+  if (bandwidthBurstMaxKbits) {
+    queue.bandwidthBurstMaxKbits() = bandwidthBurstMaxKbits.value();
+  }
+
+  if (trafficClass) {
+    queue.trafficClass() = static_cast<int16_t>(trafficClass.value());
+  }
+
+  if (pfcPriorities) {
+    std::vector<int16_t> pfcPris;
+    for (const auto& pfcPriority : pfcPriorities.value()) {
+      pfcPris.push_back(static_cast<int16_t>(pfcPriority));
+    }
+    queue.pfcPriorities() = pfcPris;
+  }
+
+  return queue;
+}
 } // namespace
 
 namespace facebook::fboss::utility {
 bcm_cosq_stat_t getBcmCosqStatType(
     BcmCosQueueStatType type,
-    HwAsic::AsicType asic) {
+    cfg::AsicType asic) {
   static std::map<BcmCosQueueStatType, bcm_cosq_stat_t> cosqStats{};
   if (cosqStats.size() == 0) {
     std::map<BcmCosQueueStatType, bcm_cosq_stat_t> bcmCosqStats = {
@@ -123,11 +203,11 @@ bcm_cosq_stat_t getBcmCosqStatType(
         {BcmCosQueueStatType::OBM_HIGH_WATERMARK, bcmCosqStatOBMHighWatermark},
     };
 
-    if (asic == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3 ||
-        asic == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4) {
+    if (asic == cfg::AsicType::ASIC_TYPE_TOMAHAWK3 ||
+        asic == cfg::AsicType::ASIC_TYPE_TOMAHAWK4) {
       bcmCosqStats[BcmCosQueueStatType::WRED_DROPPED_PACKETS] =
           bcmCosqStatTotalDiscardDroppedPackets;
-    } else if (asic == HwAsic::AsicType::ASIC_TYPE_TOMAHAWK) {
+    } else if (asic == cfg::AsicType::ASIC_TYPE_TOMAHAWK) {
       bcmCosqStats[BcmCosQueueStatType::WRED_DROPPED_PACKETS] =
           bcmCosqStatDiscardUCDroppedPackets;
     }
@@ -140,8 +220,8 @@ bcm_cosq_stat_t getBcmCosqStatType(
 const PortQueue& getTD2DefaultUCPortQueueSettings() {
   // Since the default queue is constant, we can use static to cache this
   // object here.
-  static Trident2Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Trident2Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::UNICAST,
@@ -162,8 +242,8 @@ const PortQueue& getTD2DefaultUCPortQueueSettings() {
 }
 
 const PortQueue& getTHDefaultUCPortQueueSettings() {
-  static TomahawkAsic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static TomahawkAsic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::UNICAST,
@@ -184,8 +264,8 @@ const PortQueue& getTHDefaultUCPortQueueSettings() {
 }
 
 const PortQueue& getTH3DefaultUCPortQueueSettings() {
-  static Tomahawk3Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Tomahawk3Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::UNICAST,
@@ -206,8 +286,8 @@ const PortQueue& getTH3DefaultUCPortQueueSettings() {
 }
 
 const PortQueue& getTH4DefaultUCPortQueueSettings() {
-  static Tomahawk4Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Tomahawk4Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::UNICAST,
@@ -228,8 +308,8 @@ const PortQueue& getTH4DefaultUCPortQueueSettings() {
 }
 
 const PortQueue& getTD2DefaultMCPortQueueSettings() {
-  static Trident2Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Trident2Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
@@ -250,8 +330,8 @@ const PortQueue& getTD2DefaultMCPortQueueSettings() {
 }
 
 const PortQueue& getTHDefaultMCPortQueueSettings() {
-  static TomahawkAsic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static TomahawkAsic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
@@ -272,8 +352,8 @@ const PortQueue& getTHDefaultMCPortQueueSettings() {
 }
 
 const PortQueue& getTH3DefaultMCPortQueueSettings() {
-  static Tomahawk3Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Tomahawk3Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
@@ -294,8 +374,8 @@ const PortQueue& getTH3DefaultMCPortQueueSettings() {
 }
 
 const PortQueue& getTH4DefaultMCPortQueueSettings() {
-  static Tomahawk4Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Tomahawk4Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
@@ -342,6 +422,7 @@ const PortQueue& getDefaultPortQueueSettings(
           return getTH4DefaultMCPortQueueSettings();
       }
     case cfg::StreamType::ALL:
+    case cfg::StreamType::FABRIC_TX:
       break;
   }
   throw FbossError(
@@ -350,8 +431,8 @@ const PortQueue& getDefaultPortQueueSettings(
 }
 
 const PortQueue& getTD2DefaultMCCPUQueueSettings() {
-  static Trident2Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Trident2Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
@@ -372,8 +453,8 @@ const PortQueue& getTD2DefaultMCCPUQueueSettings() {
 }
 
 const PortQueue& getTHDefaultMCCPUQueueSettings() {
-  static TomahawkAsic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static TomahawkAsic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
@@ -394,8 +475,8 @@ const PortQueue& getTHDefaultMCCPUQueueSettings() {
 }
 
 const PortQueue& getTH3DefaultMCCPUQueueSettings() {
-  static Tomahawk3Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Tomahawk3Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
@@ -416,8 +497,8 @@ const PortQueue& getTH3DefaultMCCPUQueueSettings() {
 }
 
 const PortQueue& getTH4DefaultMCCPUQueueSettings() {
-  static Tomahawk4Asic asic;
-  static const PortQueue kPortQueue{PortQueueFields(
+  static Tomahawk4Asic asic{cfg::SwitchType::NPU, std::nullopt, std::nullopt};
+  static const PortQueue kPortQueue{getPortQueueFields(
       kDefaultPortQueueId,
       kDefaultPortQueueScheduling,
       cfg::StreamType::MULTICAST,
@@ -454,7 +535,8 @@ const PortQueue& getDefaultControlPlaneQueueSettings(
       }
     case cfg::StreamType::UNICAST:
     case cfg::StreamType::ALL:
-      throw FbossError("Control Plane doesn't support unicast queue");
+    case cfg::StreamType::FABRIC_TX:
+      break;
   }
   throw FbossError(
       "Control Plane queue doesn't support streamType:",

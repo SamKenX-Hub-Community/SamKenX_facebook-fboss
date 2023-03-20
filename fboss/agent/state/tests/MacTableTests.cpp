@@ -25,12 +25,16 @@ TEST(MacTableTest, thriftyConversion) {
   table.addEntry(std::make_shared<MacEntry>(
       kTestMac1,
       PortDescriptor(PortID(1)),
-      cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_0));
+      std::optional<cfg::AclLookupClass>(
+          cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_0)));
   table.addEntry(std::make_shared<MacEntry>(
       kTestMac2,
       PortDescriptor(PortID(2)),
-      cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_0,
+      std::optional<cfg::AclLookupClass>(
+          cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_0),
       MacEntryType::STATIC_ENTRY));
 
-  validateThriftyMigration(table);
+  auto tableSptr = std::make_shared<MacTable>();
+  tableSptr->fromThrift(table.toThrift());
+  EXPECT_EQ(tableSptr->toThrift(), table.toThrift());
 }

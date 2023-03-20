@@ -68,6 +68,13 @@ struct WrappedSaiType<folly::CIDRNetwork> {
   using value = sai_ip_prefix_t;
 };
 
+#if SAI_API_VERSION >= SAI_VERSION(1, 8, 1)
+template <>
+struct WrappedSaiType<sai_prbs_rx_state_t> {
+  using value = sai_prbs_rx_state_t;
+};
+#endif
+
 template <>
 struct WrappedSaiType<std::vector<sai_object_id_t>> {
   using value = sai_object_list_t;
@@ -117,6 +124,18 @@ template <>
 struct WrappedSaiType<std::vector<sai_port_err_status_t>> {
   using value = sai_port_err_status_list_t;
 };
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+template <>
+struct WrappedSaiType<std::vector<sai_port_lane_latch_status_t>> {
+  using value = sai_port_lane_latch_status_list_t;
+};
+
+template <>
+struct WrappedSaiType<sai_latch_status_t> {
+  using value = sai_latch_status_t;
+};
+#endif
 
 template <>
 struct WrappedSaiType<std::array<char, 32>> {

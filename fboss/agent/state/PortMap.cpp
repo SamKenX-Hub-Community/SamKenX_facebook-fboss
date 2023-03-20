@@ -19,8 +19,13 @@ PortMap::PortMap() {}
 
 PortMap::~PortMap() {}
 
-void PortMap::registerPort(PortID id, const std::string& name) {
-  addNode(std::make_shared<Port>(id, name));
+void PortMap::registerPort(
+    PortID id,
+    const std::string& name,
+    cfg::PortType portType) {
+  auto port = std::make_shared<Port>(id, name);
+  port->setPortType(portType);
+  addNode(std::move(port));
 }
 
 void PortMap::addPort(const std::shared_ptr<Port>& port) {
@@ -54,13 +59,13 @@ std::shared_ptr<Port> PortMap::getPort(const std::string& name) const {
 
 std::shared_ptr<Port> PortMap::getPortIf(const std::string& name) const {
   for (auto port : *this) {
-    if (name == port->getName()) {
-      return port;
+    if (name == port.second->getName()) {
+      return port.second;
     }
   }
   return nullptr;
 }
 
-FBOSS_INSTANTIATE_NODE_MAP(PortMap, PortMapTraits);
+template class ThriftMapNode<PortMap, PortMapTraits>;
 
 } // namespace facebook::fboss

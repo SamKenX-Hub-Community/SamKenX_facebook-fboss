@@ -43,83 +43,109 @@ namespace facebook::fboss {
 
 using ClientToNHopMap = std::map<ClientID, state::RouteNextHopEntry>;
 
+USE_THRIFT_COW(RouteNextHopsMulti);
+
+template <>
+struct thrift_cow::ThriftStructResolver<state::RouteNextHopsMulti> {
+  using type = RouteNextHopsMulti;
+};
+
+struct LegacyRouteNextHopsMulti : public ThriftyFields<
+                                      LegacyRouteNextHopsMulti,
+                                      state::RouteNextHopsMulti> {
+  using Base =
+      ThriftyFields<LegacyRouteNextHopsMulti, state::RouteNextHopsMulti>;
+  using Base::Base;
+  state::RouteNextHopsMulti toThrift() const override {
+    return data();
+  }
+
+  static LegacyRouteNextHopsMulti fromThrift(
+      const state::RouteNextHopsMulti& m) {
+    return LegacyRouteNextHopsMulti(m);
+  }
+};
+
 /**
  * Map form clientId -> RouteNextHopEntry
  */
 class RouteNextHopsMulti
-    : public ThriftyFields<RouteNextHopsMulti, state::RouteNextHopsMulti> {
+    : public thrift_cow::ThriftStructNode<state::RouteNextHopsMulti> {
  private:
-  ClientToNHopMap& map() {
-    return *writableData().client2NextHopEntry();
+  auto map() {
+    return this->safe_ref<switch_state_tags::client2NextHopEntry>();
   }
 
-  const ClientToNHopMap& map() const {
-    return *data().client2NextHopEntry();
+  auto map() const {
+    return this->safe_cref<switch_state_tags::client2NextHopEntry>();
   }
 
  protected:
   ClientID findLowestAdminDistance();
 
  public:
-  state::RouteNextHopsMulti toThrift() const override;
-  static RouteNextHopsMulti fromThrift(const state::RouteNextHopsMulti& prefix);
-  static folly::dynamic migrateToThrifty(folly::dynamic const& dyn);
-  static void migrateFromThrifty(folly::dynamic& dyn);
+  using Base = thrift_cow::ThriftStructNode<state::RouteNextHopsMulti>;
+  using Base::Base;
 
-  folly::dynamic toFollyDynamicLegacy() const;
-  static RouteNextHopsMulti fromFollyDynamicLegacy(const folly::dynamic& json);
+  static std::shared_ptr<RouteNextHopsMulti> fromFollyDynamic(
+      const folly::dynamic& json);
+
+  folly::dynamic toFollyDynamic() const override;
 
   std::vector<ClientAndNextHops> toThriftLegacy() const;
 
   std::string strLegacy() const;
-  void update(ClientID clientid, RouteNextHopEntry nhe);
+  void update(ClientID clientid, const RouteNextHopEntry& nhe);
 
   void clear() {
-    map().clear();
+    auto clientToNHopMap = map();
+    clientToNHopMap->fromThrift(ClientToNHopMap{});
   }
 
+  // THRIFT_COPY
   bool operator==(const RouteNextHopsMulti& p2) const {
-    return map() == p2.map();
+    return map()->toThrift() == p2.map()->toThrift();
   }
 
-  ClientToNHopMap::const_iterator begin() const {
-    return map().begin();
+  auto begin() const {
+    return map()->begin();
   }
 
-  ClientToNHopMap::const_iterator end() const {
-    return map().end();
+  auto end() const {
+    return map()->end();
   }
 
   bool isEmpty() const {
     // The code disallows adding/updating an empty nextHops list. So if the
     // map contains any entries, they are non-zero-length lists.
-    return map().empty();
+    return begin() == end();
   }
 
   size_t size() const {
-    return map().size();
+    return map()->size();
   }
   void delEntryForClient(ClientID clientId);
 
   ClientID lowestAdminDistanceClientId() const {
-    return *this->data().lowestAdminDistanceClientId();
+    return cref<switch_state_tags::lowestAdminDistanceClientId>()->cref();
   }
 
   void setLowestAdminDistanceClientId(ClientID id) {
-    this->writableData().lowestAdminDistanceClientId() = id;
+    set<switch_state_tags::lowestAdminDistanceClientId>(id);
   }
 
-  const state::RouteNextHopEntry* FOLLY_NULLABLE
-  getEntryForClient(ClientID clientId) const;
+  std::shared_ptr<const RouteNextHopEntry> getEntryForClient(
+      ClientID clientId) const;
 
-  std::pair<ClientID, const state::RouteNextHopEntry*> getBestEntry() const;
+  std::pair<ClientID, std::shared_ptr<const RouteNextHopEntry>> getBestEntry()
+      const;
 
   bool isSame(ClientID clientId, const RouteNextHopEntry& nhe) const;
 
-  static std::pair<ClientID, const state::RouteNextHopEntry*> getBestEntry(
-      const state::RouteNextHopsMulti& nexthopsmulti);
+  static std::pair<ClientID, std::shared_ptr<const RouteNextHopEntry>>
+  getBestEntry(const state::RouteNextHopsMulti& nexthopsmulti);
 
-  static const state::RouteNextHopEntry* FOLLY_NULLABLE getEntryForClient(
+  static std::shared_ptr<const RouteNextHopEntry> getEntryForClient(
       ClientID clientId,
       const state::RouteNextHopsMulti& nexthopsmulti);
 

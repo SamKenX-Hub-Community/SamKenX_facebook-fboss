@@ -30,7 +30,9 @@ class HwTransceiverUtils {
       bool skipCheckingIndividualCapability = true);
 
  private:
-  static void verifyOpticsSettings(const TransceiverInfo& transceiver);
+  static void verifyOpticsSettings(
+      const TransceiverInfo& transceiver,
+      cfg::PortProfileID profile);
   static void verifyMediaInterfaceCompliance(
       const TransceiverInfo& transceiver,
       cfg::PortProfileID profile);
@@ -48,6 +50,12 @@ class HwTransceiverUtils {
       const TransceiverManagementInterface mgmtInterface,
       const std::vector<MediaInterfaceId>& mediaInterfaces);
   static void verifyCopper100gProfile(
+      const TransceiverInfo& transceiver,
+      const std::vector<MediaInterfaceId>& mediaInterfaces);
+  static void verifyCopper200gProfile(
+      const TransceiverInfo& transceiver,
+      const std::vector<MediaInterfaceId>& mediaInterfaces);
+  static void verifyCopper53gProfile(
       const TransceiverInfo& transceiver,
       const std::vector<MediaInterfaceId>& mediaInterfaces);
 

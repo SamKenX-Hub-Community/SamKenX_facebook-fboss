@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/state/NodeBase.h"
@@ -13,80 +12,58 @@
 
 namespace facebook::fboss {
 
-struct TeFlowEntryFields
-    : public ThriftyFields<TeFlowEntryFields, state::TeFlowEntryFields> {
-  explicit TeFlowEntryFields(TeFlow flowId) {
-    auto& data = writableData();
-    *data.flow() = flowId;
-  }
+USE_THRIFT_COW(TeFlowEntry);
 
-  template <typename Fn>
-  void forEachChild(Fn /*fn*/) {}
-
-  state::TeFlowEntryFields toThrift() const override {
-    return data();
-  }
-  static TeFlowEntryFields fromThrift(
-      const state::TeFlowEntryFields& teFlowEntryFields);
-};
-
-class TeFlowEntry : public ThriftyBaseT<
-                        state::TeFlowEntryFields,
-                        TeFlowEntry,
-                        TeFlowEntryFields> {
+class TeFlowEntry
+    : public ThriftStructNode<TeFlowEntry, state::TeFlowEntryFields> {
  public:
-  TeFlow getID() const {
-    return *getFields()->data().flow();
+  using Base = ThriftStructNode<TeFlowEntry, state::TeFlowEntryFields>;
+  using Base::modify;
+  explicit TeFlowEntry(TeFlow flowId) {
+    set<switch_state_tags::flow>(flowId);
   }
-  const TeFlow& getFlow() const {
-    return *getFields()->data().flow();
+  std::string getID() const;
+
+  const auto& getFlow() const {
+    return cref<switch_state_tags::flow>();
   }
-  TeCounterID getCounterID() const {
-    return *getFields()->data().counterID();
+  auto& getCounterID() const {
+    return cref<switch_state_tags::counterID>();
   }
   void setCounterID(std::optional<TeCounterID> counter) {
     if (counter.has_value()) {
-      writableFields()->writableData().counterID() = *counter;
+      set<switch_state_tags::counterID>(counter.value());
     } else {
-      writableFields()->writableData().counterID().reset();
+      ref<switch_state_tags::counterID>().reset();
     }
   }
-  const std::vector<NextHopThrift>& getNextHops() const {
-    return *getFields()->data().nexthops();
+  const auto& getNextHops() const {
+    return cref<switch_state_tags::nexthops>();
   }
   void setNextHops(const std::vector<NextHopThrift>& nexthops) {
-    writableFields()->writableData().nexthops() = nexthops;
+    set<switch_state_tags::nexthops>(nexthops);
   }
-  const std::vector<NextHopThrift>& getResolvedNextHops() const {
-    return *getFields()->data().resolvedNexthops();
+  const auto& getResolvedNextHops() const {
+    return cref<switch_state_tags::resolvedNexthops>();
   }
   void setResolvedNextHops(std::vector<NextHopThrift> nexthops) {
-    writableFields()->writableData().resolvedNexthops() = nexthops;
+    set<switch_state_tags::resolvedNexthops>(std::move(nexthops));
   }
   bool getEnabled() const {
-    return *getFields()->data().enabled();
+    return get<switch_state_tags::enabled>()->toThrift();
   }
   void setEnabled(bool enable) {
-    writableFields()->writableData().enabled() = enable;
-  }
-
-  bool operator==(const TeFlowEntry& entry) {
-    return (getID() == entry.getID()) &&
-        (getNextHops() == entry.getNextHops()) &&
-        (getResolvedNextHops() == entry.getResolvedNextHops()) &&
-        (getCounterID() == entry.getCounterID()) &&
-        (getEnabled() == entry.getEnabled());
-  }
-  bool operator!=(const TeFlowEntry& entry) {
-    return !(*this == entry);
+    set<switch_state_tags::enabled>(enable);
   }
 
   TeFlowEntry* modify(std::shared_ptr<SwitchState>* state);
+  std::string str() const;
+
+  TeFlowDetails toDetails() const;
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT<state::TeFlowEntryFields, TeFlowEntry, TeFlowEntryFields>::
-      ThriftyBaseT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 } // namespace facebook::fboss

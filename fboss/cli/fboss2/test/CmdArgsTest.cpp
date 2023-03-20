@@ -9,7 +9,6 @@
 #include <tuple>
 #include <variant>
 #include <vector>
-#include "fboss/cli/fboss2/CmdHandler.h"
 
 using namespace ::testing;
 
@@ -107,11 +106,39 @@ TEST(CmdArgsTest, PortList) {
 
 TEST(CmdArgsTest, FsdbPath) {
   // test valid arguments
-  ASSERT_NO_THROW(utils::FsdbPath({"agent", "config"}));
+  EXPECT_NO_THROW(utils::FsdbPath({"/agent/config"}));
 
   // test parsed results
-  auto fsdbPath = utils::FsdbPath({"agent", "config"});
+  auto fsdbPath = utils::FsdbPath({"/agent/config"});
   EXPECT_THAT(fsdbPath.data(), ElementsAre("agent", "config"));
+
+  fsdbPath = utils::FsdbPath({"/agent/switchState/portMap/eth2\\/1\\/1"});
+  EXPECT_THAT(
+      fsdbPath.data(),
+      ElementsAre("agent", "switchState", "portMap", "eth2/1/1"));
+
+  // empty is no throw
+  EXPECT_NO_THROW(utils::FsdbPath({}));
+
+  // multiple items is a throw
+  EXPECT_THROW(utils::FsdbPath({"invalid", "args"}), std::runtime_error);
+}
+
+TEST(CmdArgsTest, HwObjectList) {
+  // test valid arguments
+  ASSERT_NO_THROW(utils::HwObjectList({"PORT"}));
+  EXPECT_THAT(
+      utils::HwObjectList({"PORT"}).data(), ElementsAre(HwObjectType::PORT));
+  ASSERT_NO_THROW(utils::HwObjectList({"LAG", "MIRROR"}));
+  EXPECT_THAT(
+      utils::HwObjectList({"LAG", "MIRROR"}).data(),
+      ElementsAre(HwObjectType::LAG, HwObjectType::MIRROR));
+
+  // test invalid arguments
+  ASSERT_THROW(utils::HwObjectList({"M"}), std::out_of_range);
+  ASSERT_THROW(utils::HwObjectList({""}), std::out_of_range);
+  ASSERT_THROW(
+      utils::HwObjectList({"QUEUE", "VLAN", "AAA"}), std::out_of_range);
 }
 
 } // namespace facebook::fboss

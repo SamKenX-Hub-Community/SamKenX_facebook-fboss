@@ -31,7 +31,6 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::ERSPANv6:
     case HwAsic::Feature::SFLOWv6:
     case HwAsic::Feature::HASH_FIELDS_CUSTOMIZATION:
-    case HwAsic::Feature::QUEUE:
     case HwAsic::Feature::ECN:
     case HwAsic::Feature::L3_QOS:
     case HwAsic::Feature::SCHEDULER_PPS:
@@ -74,7 +73,6 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::PMD_RX_LOCK_STATUS:
     case HwAsic::Feature::PMD_RX_SIGNAL_DETECT:
     case HwAsic::Feature::SAI_FEC_COUNTERS:
-    case HwAsic::Feature::PFC:
     case HwAsic::Feature::SAI_WEIGHTED_NEXTHOPGROUP_MEMBER:
     case HwAsic::Feature::SAI_ECN_WRED:
     case HwAsic::Feature::MULTIPLE_ACL_TABLES:
@@ -84,6 +82,21 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::ECMP_HASH_V4:
     case HwAsic::Feature::ECMP_HASH_V6:
     case HwAsic::Feature::FEC_CORRECTED_BITS:
+    case HwAsic::Feature::MEDIA_TYPE:
+    case HwAsic::Feature::FEC:
+    case HwAsic::Feature::ECMP_MEMBER_WIDTH_INTROSPECTION:
+    case HwAsic::Feature::SAI_MPLS_QOS:
+    case HwAsic::Feature::QOS_MAP_GLOBAL:
+    case HwAsic::Feature::MACSEC:
+    case HwAsic::Feature::SAI_PORT_GET_PMD_LANES:
+    case HwAsic::Feature::SAI_PORT_VCO_CHANGE:
+    case HwAsic::Feature::ROUTE_METADATA:
+    case HwAsic::Feature::DLB:
+    case HwAsic::Feature::IN_PAUSE_INCREMENTS_DISCARDS:
+    case HwAsic::Feature::WARMBOOT:
+    case HwAsic::Feature::SAI_CONFIGURE_SIX_TAP:
+    case HwAsic::Feature::UDF_HASH_FIELD_QUERY:
+    case HwAsic::Feature::SAI_SAMPLEPACKET_TRAP:
       return true;
     // features only supported by B0 version, or any physical device
     // where used chip is always B0.
@@ -93,9 +106,9 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     // features not working well with bcmsim
     case HwAsic::Feature::MIRROR_PACKET_TRUNCATION:
     case HwAsic::Feature::SFLOW_SAMPLING:
+    case HwAsic::Feature::PFC:
       return getAsicMode() != AsicMode::ASIC_MODE_SIM;
-    case HwAsic::Feature::HOSTTABLE_FOR_HOSTROUTES:
-    case HwAsic::Feature::QOS_MAP_GLOBAL:
+
     case HwAsic::Feature::QCM:
     case HwAsic::Feature::SMAC_EQUALS_DMAC_CHECK_ENABLED:
     case HwAsic::Feature::PORT_TTL_DECREMENT_DISABLE:
@@ -107,17 +120,34 @@ bool Tomahawk4Asic::isSupported(Feature feature) const {
     case HwAsic::Feature::COUNTER_REFRESH_INTERVAL:
     case HwAsic::Feature::WIDE_ECMP:
     case HwAsic::Feature::REMOVE_PORTS_FOR_COLDBOOT: // CS00012066057
-    case HwAsic::Feature::MACSEC:
-    case HwAsic::Feature::SAI_MPLS_QOS:
     case HwAsic::Feature::EMPTY_ACL_MATCHER:
     case HwAsic::Feature::SAI_PORT_SERDES_FIELDS_RESET:
     case HwAsic::Feature::SAI_ACL_TABLE_UPDATE:
     case HwAsic::Feature::PORT_EYE_VALUES:
     case HwAsic::Feature::SAI_MPLS_TTL_1_TRAP:
     case HwAsic::Feature::SAI_MPLS_LABEL_LOOKUP_FAIL_COUNTER:
-    case HwAsic::Feature::VOQ_MODE:
-    case HwAsic::Feature::FABRIC_MODE:
     case HwAsic::Feature::SAI_PORT_ERR_STATUS:
+    case HwAsic::Feature::RX_FREQUENCY_PPM:
+    case HwAsic::Feature::FABRIC_PORTS:
+    case HwAsic::Feature::FABRIC_PORT_MTU:
+    case HwAsic::Feature::SAI_FIRMWARE_PATH:
+    case HwAsic::Feature::EXTENDED_FEC:
+    case HwAsic::Feature::LINK_TRAINING:
+    case HwAsic::Feature::SAI_RX_REASON_COUNTER:
+    case HwAsic::Feature::SAI_MPLS_INSEGMENT:
+    case HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE:
+    case HwAsic::Feature::VOQ:
+    case HwAsic::Feature::RECYCLE_PORTS:
+    case HwAsic::Feature::XPHY_PORT_STATE_TOGGLE:
+    case HwAsic::Feature::FABRIC_TX_QUEUES:
+    case HwAsic::Feature::SAI_TTL0_PACKET_FORWARD_ENABLE:
+    case HwAsic::Feature::SHARED_INGRESS_EGRESS_BUFFER_POOL:
+    case HwAsic::Feature::P4_WARMBOOT:
+    case HwAsic::Feature::FEC_AM_LOCK_STATUS:
+    case HwAsic::Feature::PCS_RX_LINK_STATUS:
+    case HwAsic::Feature::TC_TO_QUEUE_QOS_MAP_ON_SYSTEM_PORT:
+    case HwAsic::Feature::PORT_FABRIC_ISOLATE:
+    case HwAsic::Feature::QUEUE_ECN_COUNTER:
       return false;
   }
   return false;
@@ -179,6 +209,7 @@ int Tomahawk4Asic::getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
     case cfg::StreamType::MULTICAST:
       return cpu ? 10 : 4;
     case cfg::StreamType::ALL:
+    case cfg::StreamType::FABRIC_TX:
       break;
   }
   throw FbossError(

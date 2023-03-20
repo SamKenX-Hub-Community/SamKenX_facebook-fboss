@@ -59,10 +59,10 @@ std::shared_ptr<SwitchState> setupMinAlpmRouteState(
     RouteNextHopEntry entry(
         RouteForwardAction::DROP, AdminDistance::MAX_ADMIN_DISTANCE);
     route->update(ClientID::STATIC_INTERNAL, entry);
-    route->setResolved(entry);
+    route->setResolved(std::move(entry));
   };
-  auto v4Route = std::make_shared<RouteV4>(defaultPrefix4);
-  auto v6Route = std::make_shared<RouteV6>(defaultPrefix6);
+  auto v4Route = std::make_shared<RouteV4>(RouteV4::makeThrift(defaultPrefix4));
+  auto v6Route = std::make_shared<RouteV6>(RouteV6::makeThrift(defaultPrefix6));
   setupRoute(v4Route);
   setupRoute(v6Route);
   defaultVrf->getFibV4()->addNode(v4Route);
@@ -86,15 +86,17 @@ std::shared_ptr<SwitchState> getMinAlpmRouteState(
   // addresses.
   auto noRoutesState{oldState->clone()};
 
-  auto vlans = noRoutesState->getVlans()->modify(&noRoutesState);
-  for (auto& vlan : *vlans) {
-    vlan->modify(&noRoutesState);
+  for (const auto& idAndVlan : std::as_const(*noRoutesState->getVlans())) {
+    auto vlan = idAndVlan.second->modify(&noRoutesState);
     vlan->setArpTable(std::make_shared<ArpTable>());
     vlan->setNdpTable(std::make_shared<NdpTable>());
   }
 
   auto newIntfMap = noRoutesState->getInterfaces()->clone();
-  for (auto& interface : *newIntfMap) {
+  for (const auto& [intfID, interface] :
+       std::as_const(*noRoutesState->getInterfaces())) {
+    std::ignore = intfID;
+    CHECK(interface->isPublished());
     auto newIntf = interface->clone();
     newIntf->setAddresses(Interface::Addresses{});
     newIntfMap->updateNode(newIntf);

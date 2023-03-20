@@ -9,9 +9,10 @@
  */
 #pragma once
 
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
+#include "fboss/agent/if/gen-cpp2/common_types.h"
 #include "fboss/agent/state/NodeBase.h"
+#include "fboss/agent/state/PortQueue.h"
 #include "fboss/agent/state/Thrifty.h"
 #include "fboss/agent/types.h"
 #include "fboss/qsfp_service/if/gen-cpp2/transceiver_types.h"
@@ -20,90 +21,89 @@
 
 namespace facebook::fboss {
 
-struct SystemPortFields
-    : public ThriftyFields<SystemPortFields, state::SystemPortFields> {
-  explicit SystemPortFields(SystemPortID id) {
-    auto& data = writableData();
-    *data.portId() = id;
-  }
+USE_THRIFT_COW(SystemPort);
 
-  bool operator==(const SystemPortFields& other) const {
-    return data() == other.data();
-  }
-
-  state::SystemPortFields toThrift() const override {
-    return data();
-  }
-
-  template <typename Fn>
-  void forEachChild(Fn /*fn*/) {}
-
-  static SystemPortFields fromThrift(
-      const state::SystemPortFields& systemPortThrift);
-};
-
-class SystemPort : public ThriftyBaseT<
-                       state::SystemPortFields,
-                       SystemPort,
-                       SystemPortFields> {
+class SystemPort
+    : public ThriftStructNode<SystemPort, state::SystemPortFields> {
  public:
+  using Base = ThriftStructNode<SystemPort, state::SystemPortFields>;
+  explicit SystemPort(SystemPortID id) {
+    set<ctrl_if_tags::portId>(static_cast<int64_t>(id));
+  }
   SystemPortID getID() const {
-    return SystemPortID(*getFields()->data().portId());
+    return static_cast<SystemPortID>(cref<ctrl_if_tags::portId>()->toThrift());
   }
   SwitchID getSwitchId() const {
-    return SwitchID(*getFields()->data().switchId());
+    return static_cast<SwitchID>(cref<ctrl_if_tags::switchId>()->toThrift());
   }
   void setSwitchId(SwitchID swId) {
-    writableFields()->writableData().switchId() = swId;
+    set<ctrl_if_tags::switchId>(static_cast<int64_t>(swId));
   }
   std::string getPortName() const {
-    return *getFields()->data().portName();
+    return get<ctrl_if_tags::portName>()->toThrift();
   }
   void setPortName(const std::string& portName) {
-    writableFields()->writableData().portName() = portName;
+    set<ctrl_if_tags::portName>(portName);
+  }
+  auto getPortQueues() const {
+    return safe_cref<switch_state_tags::queues>();
+  }
+  void resetPortQueues(const QueueConfig& queues) {
+    // TODO: change type to ThriftListNode
+    std::vector<PortQueueFields> queuesThrift{};
+    for (auto queue : queues) {
+      queuesThrift.push_back(queue->toThrift());
+    }
+    set<switch_state_tags::queues>(std::move(queuesThrift));
   }
   int64_t getCoreIndex() const {
-    return *getFields()->data().coreIndex();
+    return cref<ctrl_if_tags::coreIndex>()->toThrift();
   }
   void setCoreIndex(int64_t coreIndex) {
-    writableFields()->writableData().coreIndex() = coreIndex;
+    set<ctrl_if_tags::coreIndex>(coreIndex);
   }
 
   int64_t getCorePortIndex() const {
-    return *getFields()->data().corePortIndex();
+    return cref<ctrl_if_tags::corePortIndex>()->toThrift();
   }
   void setCorePortIndex(int64_t corePortIndex) {
-    writableFields()->writableData().corePortIndex() = corePortIndex;
+    set<ctrl_if_tags::corePortIndex>(corePortIndex);
   }
   int64_t getSpeedMbps() const {
-    return *getFields()->data().speedMbps();
+    return cref<ctrl_if_tags::speedMbps>()->toThrift();
   }
   void setSpeedMbps(int64_t speedMbps) {
-    writableFields()->writableData().speedMbps() = speedMbps;
+    set<ctrl_if_tags::speedMbps>(speedMbps);
   }
   int64_t getNumVoqs() const {
-    return *getFields()->data().numVoqs();
+    return cref<ctrl_if_tags::numVoqs>()->toThrift();
   }
   void setNumVoqs(int64_t numVoqs) {
-    writableFields()->writableData().numVoqs() = numVoqs;
+    set<ctrl_if_tags::numVoqs>(numVoqs);
   }
   bool getEnabled() const {
-    return *getFields()->data().enabled();
+    return cref<ctrl_if_tags::enabled>()->toThrift();
   }
   void setEnabled(bool enabled) {
-    writableFields()->writableData().enabled() = enabled;
+    set<ctrl_if_tags::enabled>(enabled);
   }
   std::optional<std::string> getQosPolicy() const {
-    return getFields()->data().qosPolicy().to_optional();
+    if (const auto& policy = cref<ctrl_if_tags::qosPolicy>()) {
+      return policy->toThrift();
+    }
+    return std::nullopt;
   }
   void setQosPolicy(const std::optional<std::string>& qosPolicy) {
-    writableFields()->writableData().qosPolicy().from_optional(qosPolicy);
+    if (qosPolicy) {
+      set<ctrl_if_tags::qosPolicy>(qosPolicy.value());
+    } else {
+      ref<ctrl_if_tags::qosPolicy>().reset();
+    }
   }
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT<state::SystemPortFields, SystemPort, SystemPortFields>::
-      ThriftyBaseT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 } // namespace facebook::fboss

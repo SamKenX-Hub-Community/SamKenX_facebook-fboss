@@ -47,5 +47,38 @@ std::optional<unsigned int> sffRxPreemphasisOverride(
   return std::nullopt;
 }
 
+std::optional<unsigned int> sffRxAmplitudeOverride(
+    const cfg::TransceiverOverrides& overrides) {
+  if (auto sffOverride = overrides.sff_ref()) {
+    if (auto rxamp = sffOverride->rxAmplitude()) {
+      return *rxamp;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<unsigned int> sffTxEqualizationOverride(
+    const cfg::TransceiverOverrides& overrides) {
+  if (auto sffOverride = overrides.sff_ref()) {
+    if (auto txeq = sffOverride->txEqualization()) {
+      return *txeq;
+    }
+  }
+  return std::nullopt;
+}
+
+cfg::TransceiverConfigOverrideFactor getModuleConfigOverrideFactor(
+    std::optional<cfg::TransceiverPartNumber> partNumber,
+    std::optional<SMFMediaInterfaceCode> applicationCode) {
+  cfg::TransceiverConfigOverrideFactor moduleFactor;
+  if (partNumber) {
+    moduleFactor.transceiverPartNumber() = *partNumber;
+  }
+  if (applicationCode) {
+    moduleFactor.applicationCode() = *applicationCode;
+  }
+  return moduleFactor;
+}
+
 } // namespace fboss
 } // namespace facebook

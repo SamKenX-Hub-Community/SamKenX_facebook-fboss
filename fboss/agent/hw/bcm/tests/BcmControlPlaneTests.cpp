@@ -100,7 +100,7 @@ class BcmControlPlaneTest : public BcmCosQueueManagerTest {
   }
 
   QueueConfig getSwQueues() override {
-    return getProgrammedState()->getControlPlane()->getQueues();
+    return getProgrammedState()->getControlPlane()->getQueues()->impl();
   }
 };
 
@@ -201,12 +201,10 @@ TEST_F(BcmControlPlaneTest, ChangeCPULowQueueSettings) {
         lowQ->getSharedBytes().value(),
         kLowCpuQueueSharedMmuCellNum * getPlatform()->getMMUCellBytes());
 
-    EXPECT_EQ(
-        lowQ->getPortQueueRate().value().getType(),
-        cfg::PortQueueRate::Type::pktsPerSec);
-    EXPECT_EQ(*lowQ->getPortQueueRate().value().get_pktsPerSec().minimum(), 0);
-    EXPECT_EQ(
-        *lowQ->getPortQueueRate().value().get_pktsPerSec().maximum(), 1000);
+    auto portQueueRate = lowQ->getPortQueueRate()->toThrift();
+    EXPECT_EQ(portQueueRate.getType(), cfg::PortQueueRate::Type::pktsPerSec);
+    EXPECT_EQ(portQueueRate.get_pktsPerSec().minimum(), 0);
+    EXPECT_EQ(portQueueRate.get_pktsPerSec().maximum(), 1000);
 
     // other queues shouldn't be affected
     for (int i = 1; i < swQueuesAfter.size(); i++) {
@@ -299,10 +297,13 @@ TEST_F(BcmControlPlaneTest, VerifyReasonToQueueMapping) {
 
   auto verify = [&]() {
     checkConfSwHwMatch();
+    // THRIFT_COPY
     const auto hwReasonToQueue =
         getHwSwitch()->getControlPlane()->getRxReasonToQueue();
-    const auto swReasonToQueue =
-        getProgrammedState()->getControlPlane()->getRxReasonToQueue();
+    const auto swReasonToQueue = getProgrammedState()
+                                     ->getControlPlane()
+                                     ->getRxReasonToQueue()
+                                     ->toThrift();
     EXPECT_EQ(hwReasonToQueue, cfgReasonToQueue);
     EXPECT_EQ(swReasonToQueue, cfgReasonToQueue);
   };

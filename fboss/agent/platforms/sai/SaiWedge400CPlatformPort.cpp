@@ -10,6 +10,8 @@
 #include "fboss/agent/platforms/sai/SaiWedge400CPlatformPort.h"
 #include "fboss/agent/platforms/common/utils/Wedge400LedUtils.h"
 
+#include <folly/Conv.h>
+
 DEFINE_bool(skip_led_programming, false, "Skip programming LED");
 
 namespace facebook::fboss {
@@ -40,5 +42,4 @@ void SaiWedge400CPlatformPort::externalState(PortLedExternalState lfs) {
 uint32_t SaiWedge400CPlatformPort::getCurrentLedState() const {
   return static_cast<uint32_t>(currentLedState_);
 }
-
 } // namespace facebook::fboss

@@ -72,7 +72,7 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
               entry.get_status(), get_StatusStyle(entry.get_status())),
           Table::StyledCell(entry.get_expectedPeer(), Table::Style::INFO),
           Table::StyledCell(
-              removeFbDomains(entry.get_systemName()),
+              utils::removeFbDomains(entry.get_systemName()),
               get_PeerStyle(entry.get_expectedPeer(), entry.get_systemName())),
           entry.get_remotePort(),
           entry.get_remotePlatform(),
@@ -107,14 +107,6 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
       }
     }
     return returnPort;
-  }
-
-  const std::string removeFbDomains(const std::string& hostname) {
-    // Simple helper function to remove FQDN
-    std::string host_copy = hostname;
-    const RE2 fb_domains(".facebook.com$|.tfbnw.net$");
-    RE2::Replace(&host_copy, fb_domains, "");
-    return host_copy;
   }
 
   bool doPeersMatch(
@@ -209,8 +201,9 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
         const auto operState = portInfo.get_operState();
         const auto expected_peer =
             extractExpectedPort(portInfo.get_description());
-
-        lldpDetails.localPort() = *entry.get_localPortName();
+        if (auto localPortName = entry.get_localPortName()) {
+          lldpDetails.localPort() = *localPortName;
+        }
         lldpDetails.systemName() = entry.get_systemName()
             ? *entry.get_systemName()
             : entry.get_printableChassisId();
@@ -229,7 +222,7 @@ class CmdShowLldp : public CmdHandler<CmdShowLldp, CmdShowLldpTraits> {
         model.lldpEntries()->begin(),
         model.lldpEntries()->end(),
         [](cli::LldpEntry& a, cli::LldpEntry b) {
-          return a.get_localPort() < b.get_localPort();
+          return utils::comparePortName(a.get_localPort(), b.get_localPort());
         });
 
     return model;

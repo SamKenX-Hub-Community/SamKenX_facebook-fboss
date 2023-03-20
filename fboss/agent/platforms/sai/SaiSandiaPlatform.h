@@ -18,11 +18,17 @@ class SaiSandiaPlatform : public SaiTajoPlatform {
  public:
   explicit SaiSandiaPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
-      folly::MacAddress localMac);
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
   ~SaiSandiaPlatform() override;
   std::string getHwConfig() override;
   HwAsic* getAsic() const override;
 
+ private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
   std::unique_ptr<GaronneAsic> asic_;
 };
 

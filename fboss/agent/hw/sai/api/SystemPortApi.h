@@ -28,6 +28,9 @@ extern "C" {
 bool operator==(
     const sai_system_port_config_t& lhs,
     const sai_system_port_config_t& rhs);
+bool operator!=(
+    const sai_system_port_config_t& lhs,
+    const sai_system_port_config_t& rhs);
 namespace facebook::fboss {
 
 class SystemPortApi;
@@ -45,11 +48,14 @@ struct SaiSystemPortTraits {
     using QosVoqList = SaiAttribute<
         EnumType,
         SAI_SYSTEM_PORT_ATTR_QOS_VOQ_LIST,
-        std::vector<SaiObjectIdT>>;
+        std::vector<sai_object_id_t>>;
     using Port =
         SaiAttribute<EnumType, SAI_SYSTEM_PORT_ATTR_PORT, SaiObjectIdT>;
-    using AdminState =
-        SaiAttribute<EnumType, SAI_SYSTEM_PORT_ATTR_ADMIN_STATE, bool>;
+    using AdminState = SaiAttribute<
+        EnumType,
+        SAI_SYSTEM_PORT_ATTR_ADMIN_STATE,
+        bool,
+        SaiBoolDefaultFalse>;
     using ConfigInfo = SaiAttribute<
         EnumType,
         SAI_SYSTEM_PORT_ATTR_CONFIG_INFO,
@@ -57,14 +63,15 @@ struct SaiSystemPortTraits {
     using QosTcToQueueMap = SaiAttribute<
         EnumType,
         SAI_SYSTEM_PORT_ATTR_QOS_TC_TO_QUEUE_MAP,
-        SaiObjectIdT>;
+        SaiObjectIdT,
+        SaiObjectIdDefault>;
   };
   using AdapterKey = SystemPortSaiId;
   using AdapterHostKey = Attributes::ConfigInfo;
 
   using CreateAttributes = std::tuple<
       Attributes::ConfigInfo,
-      std::optional<Attributes::AdminState>,
+      Attributes::AdminState,
       std::optional<Attributes::QosTcToQueueMap>>;
 };
 

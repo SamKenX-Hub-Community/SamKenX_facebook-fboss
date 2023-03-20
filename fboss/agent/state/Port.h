@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include "fboss/agent/EnumUtils.h"
 #include "fboss/agent/gen-cpp2/switch_config_constants.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
@@ -28,7 +29,7 @@ namespace facebook::fboss {
 
 class SwitchState;
 
-struct PortFields : public ThriftyFields<PortFields, state::PortFields> {
+struct PortFields {
   struct VlanInfo {
     explicit VlanInfo(bool emitTags) : tagged(emitTags) {}
     bool operator==(const VlanInfo& other) const {
@@ -44,29 +45,12 @@ struct PortFields : public ThriftyFields<PortFields, state::PortFields> {
 
   using VlanMembership = boost::container::flat_map<VlanID, VlanInfo>;
   using LLDPValidations = std::map<cfg::LLDPTag, std::string>;
+  using NeighborReachability = std::vector<cfg::PortNeighbor>;
 
   enum class OperState {
     DOWN = 0,
     UP = 1,
   };
-
-  PortFields(PortID id, std::string name) : id(id), name(name) {}
-
-  bool operator==(const PortFields& other) const;
-
-  template <typename Fn>
-  void forEachChild(Fn /*fn*/) {}
-
-  static PortFields fromThrift(state::PortFields const& pf);
-  state::PortFields toThrift() const override;
-
-  // Port migration is complete
-  static PortFields fromFollyDynamicLegacy(folly::dynamic const& dyn) {
-    return fromFollyDynamic(dyn);
-  }
-  folly::dynamic toFollyDynamicLegacy() const {
-    return toFollyDynamic();
-  }
 
   struct MKASakKey {
     bool operator<(const MKASakKey& r) const {
@@ -82,180 +66,189 @@ struct PortFields : public ThriftyFields<PortFields, state::PortFields> {
   };
   using RxSaks = std::map<MKASakKey, mka::MKASak>;
 
-  const PortID id{0};
-  std::string name;
-  std::string description;
-  cfg::PortState adminState{cfg::PortState::DISABLED}; // is the port enabled
-  OperState operState{OperState::DOWN}; // is the port actually up
-  std::optional<phy::LinkFaultStatus> iPhyLinkFaultStatus;
-  phy::PortPrbsState asicPrbs = phy::PortPrbsState();
-  phy::PortPrbsState gbSystemPrbs = phy::PortPrbsState();
-  phy::PortPrbsState gbLinePrbs = phy::PortPrbsState();
-  VlanID ingressVlan{0};
-  cfg::PortSpeed speed{cfg::PortSpeed::DEFAULT};
-  cfg::PortPause pause;
-  std::optional<cfg::PortPfc> pfc;
-  std::optional<std::vector<PfcPriority>> pfcPriorities;
-  VlanMembership vlans;
-  // settings for ingress/egress sFlow sampling rate; we sample every 1:N'th
-  // packets randomly based on those settings. Zero means no sampling.
-  int64_t sFlowIngressRate{0};
-  int64_t sFlowEgressRate{0};
-  // specifies whether sFlow sampled packets should be forwarded to the CPU or
-  // to remote Mirror destinations
-  std::optional<cfg::SampleDestination> sampleDest;
-  QueueConfig queues;
-  std::optional<PortPgConfigs> pgConfigs;
-  cfg::PortLoopbackMode loopbackMode{cfg::PortLoopbackMode::NONE};
-  std::optional<std::string> ingressMirror;
-  std::optional<std::string> egressMirror;
-  std::optional<std::string> qosPolicy;
-  LLDPValidations expectedLLDPValues;
-  std::vector<cfg::AclLookupClass> lookupClassesToDistrubuteTrafficOn;
-  cfg::PortProfileID profileID{cfg::PortProfileID::PROFILE_DEFAULT};
-  // Default value from switch_config.thrift
-  int32_t maxFrameSize{cfg::switch_config_constants::DEFAULT_PORT_MTU()};
-  // Currently we use PlatformPort to fetch such config when we are trying to
-  // program Hardware. This config is from PlatformMapping. Since we need to
-  // program all this config into Hardware, it's a good practice to use a
-  // switch state to drive HwSwitch programming.
-  phy::ProfileSideConfig profileConfig;
-  std::vector<phy::PinConfig> pinConfigs;
-  // Due to we also use SW Port to program phy ports, which have system and line
-  // profileConfig and pinConfigs, using these two new fields to represent the
-  // configs of line side if needed
-  std::optional<phy::ProfileSideConfig> lineProfileConfig;
-  std::optional<std::vector<phy::PinConfig>> linePinConfigs;
-  // Macsec configs
-  RxSaks rxSecureAssociationKeys;
-  std::optional<mka::MKASak> txSecureAssociationKey;
-  bool macsecDesired{false};
-  bool dropUnencrypted{false};
-  cfg::PortType portType = cfg::PortType::INTERFACE_PORT;
+  static state::RxSak rxSakToThrift(
+      const MKASakKey& sakKey,
+      const mka::MKASak& sak);
+  static std::pair<MKASakKey, mka::MKASak> rxSakFromThrift(state::RxSak rxSak);
 };
+
+USE_THRIFT_COW(Port);
 
 /*
  * Port stores state about one of the physical ports on the switch.
  */
-class Port : public ThriftyBaseT<state::PortFields, Port, PortFields> {
+class Port : public ThriftStructNode<Port, state::PortFields> {
  public:
+  using BaseT = ThriftStructNode<Port, state::PortFields>;
+  using BaseT::modify;
+  using LegacyFields = PortFields;
   using VlanInfo = PortFields::VlanInfo;
   using VlanMembership = PortFields::VlanMembership;
   using OperState = PortFields::OperState;
   using LLDPValidations = PortFields::LLDPValidations;
+  using NeighborReachability = PortFields::NeighborReachability;
   using MKASakKey = PortFields::MKASakKey;
   using RxSaks = PortFields::RxSaks;
+  using PfcPriorityList = thrift_cow::detail::ReferenceWrapper<
+      const std::shared_ptr<thrift_cow::ThriftListNode<
+          apache::thrift::type_class::list<
+              apache::thrift::type_class::integral>,
+          std::vector<short>>>>;
 
   Port(PortID id, const std::string& name);
 
   PortID getID() const {
-    return getFields()->id;
+    return PortID(cref<switch_state_tags::portId>()->cref());
   }
 
   const std::string& getName() const {
-    return getFields()->name;
+    return cref<switch_state_tags::portName>()->cref();
   }
 
   void setName(const std::string& name) {
-    writableFields()->name = name;
+    set<switch_state_tags::portName>(name);
   }
 
   const std::string& getDescription() const {
-    return getFields()->description;
+    return cref<switch_state_tags::portDescription>()->cref();
   }
 
   void setDescription(const std::string& description) {
-    writableFields()->description = description;
+    set<switch_state_tags::portDescription>(description);
   }
 
   phy::PortPrbsState getAsicPrbs() const {
-    return getFields()->asicPrbs;
+    // THRIFT_COPY
+    return cref<switch_state_tags::asicPrbs>()->toThrift();
   }
 
   void setAsicPrbs(phy::PortPrbsState prbsState) {
-    writableFields()->asicPrbs = prbsState;
+    set<switch_state_tags::asicPrbs>(prbsState);
   }
 
   phy::PortPrbsState getGbSystemPrbs() const {
-    return getFields()->gbSystemPrbs;
+    // THRIFT_COPY
+    return cref<switch_state_tags::gbSystemPrbs>()->toThrift();
   }
 
   void setGbSystemPrbs(phy::PortPrbsState prbsState) {
-    writableFields()->gbSystemPrbs = prbsState;
+    set<switch_state_tags::gbSystemPrbs>(prbsState);
   }
 
   phy::PortPrbsState getGbLinePrbs() const {
-    return getFields()->gbLinePrbs;
+    // THRIFT_COPY
+    return cref<switch_state_tags::gbLinePrbs>()->toThrift();
   }
 
   void setGbLinePrbs(phy::PortPrbsState prbsState) {
-    writableFields()->gbLinePrbs = prbsState;
+    set<switch_state_tags::gbLinePrbs>(prbsState);
   }
 
   cfg::PortState getAdminState() const {
-    return getFields()->adminState;
+    return nameToEnum<cfg::PortState>(
+        cref<switch_state_tags::portState>()->cref());
   }
 
   cfg::PortType getPortType() const {
-    return getFields()->portType;
+    return cref<switch_state_tags::portType>()->cref();
   }
   void setPortType(cfg::PortType portType) {
-    writableFields()->portType = portType;
+    set<switch_state_tags::portType>(portType);
+  }
+
+  cfg::PortDrainState getPortDrainState() const {
+    return cref<switch_state_tags::drainState>()->cref();
+  }
+  void setPortDrainState(cfg::PortDrainState drainState) {
+    set<switch_state_tags::drainState>(drainState);
   }
 
   void setAdminState(cfg::PortState adminState) {
-    writableFields()->adminState = adminState;
+    set<switch_state_tags::portState>(enumToName(adminState));
   }
 
   std::optional<phy::LinkFaultStatus> getIPhyLinkFaultStatus() const {
-    return getFields()->iPhyLinkFaultStatus;
+    if (auto iPhyLinkFaultStatus =
+            cref<switch_state_tags::iPhyLinkFaultStatus>()) {
+      // THRIFT_COPY
+      return iPhyLinkFaultStatus->toThrift();
+    }
+    return std::nullopt;
   }
 
   void setIPhyLinkFaultStatus(std::optional<phy::LinkFaultStatus> faultStatus) {
-    writableFields()->iPhyLinkFaultStatus = faultStatus;
+    if (!faultStatus) {
+      ref<switch_state_tags::iPhyLinkFaultStatus>().reset();
+      return;
+    }
+    set<switch_state_tags::iPhyLinkFaultStatus>(faultStatus.value());
   }
 
   OperState getOperState() const {
-    return getFields()->operState;
+    return cref<switch_state_tags::portOperState>()->cref() ? OperState::UP
+                                                            : OperState::DOWN;
   }
 
   void setOperState(bool isUp) {
-    writableFields()->operState = isUp ? OperState::UP : OperState::DOWN;
+    set<switch_state_tags::portOperState>(isUp);
   }
 
   bool isEnabled() const {
-    return getFields()->adminState == cfg::PortState::ENABLED;
+    return getAdminState() == cfg::PortState::ENABLED;
+  }
+
+  bool isDrained() const {
+    return getPortDrainState() == cfg::PortDrainState::DRAINED;
   }
 
   bool isUp() const {
-    return getFields()->operState == OperState::UP;
+    return cref<switch_state_tags::portOperState>()->cref();
   }
 
   std::optional<mka::MKASak> getTxSak() const {
-    return getFields()->txSecureAssociationKey;
+    if (auto txSak = cref<switch_state_tags::txSecureAssociationKey>()) {
+      // THRIFT_COPY
+      return txSak->toThrift();
+    }
+    return std::nullopt;
   }
   void setTxSak(std::optional<mka::MKASak> txSak) {
-    writableFields()->txSecureAssociationKey = txSak;
+    if (!txSak) {
+      ref<switch_state_tags::txSecureAssociationKey>().reset();
+      return;
+    }
+    set<switch_state_tags::txSecureAssociationKey>(txSak.value());
   }
-  const RxSaks& getRxSaks() const {
-    return getFields()->rxSecureAssociationKeys;
+  // THRIFT_COPY
+  RxSaks getRxSaksMap() const {
+    RxSaks rxSecureAssociationKeys;
+    for (auto rxSak :
+         *(safe_cref<switch_state_tags::rxSecureAssociationKeys>())) {
+      rxSecureAssociationKeys.emplace(
+          PortFields::rxSakFromThrift(rxSak->toThrift()));
+    }
+    return rxSecureAssociationKeys;
   }
-  void setRxSaks(const RxSaks& rxSaks) {
-    writableFields()->rxSecureAssociationKeys = rxSaks;
+  void setRxSaksMap(const RxSaks& rxSecureAssociationKeys) {
+    std::vector<state::RxSak> rxSaks{};
+    for (const auto& [mkaSakKey, mkaSak] : rxSecureAssociationKeys) {
+      rxSaks.push_back(PortFields::rxSakToThrift(mkaSakKey, mkaSak));
+    }
+    setRxSaks(rxSaks);
   }
 
   bool getMacsecDesired() const {
-    return getFields()->macsecDesired;
+    return cref<switch_state_tags::macsecDesired>()->cref();
   }
   void setMacsecDesired(bool macsecDesired) {
-    writableFields()->macsecDesired = macsecDesired;
+    set<switch_state_tags::macsecDesired>(macsecDesired);
   }
 
   bool getDropUnencrypted() const {
-    return getFields()->dropUnencrypted;
+    return cref<switch_state_tags::dropUnencrypted>()->cref();
   }
   void setDropUnencrypted(bool dropUnencrypted) {
-    writableFields()->dropUnencrypted = dropUnencrypted;
+    set<switch_state_tags::dropUnencrypted>(dropUnencrypted);
   }
 
   /**
@@ -266,29 +259,62 @@ class Port : public ThriftyBaseT<state::PortFields, Port, PortFields> {
     return isEnabled() && isUp();
   }
 
-  const VlanMembership& getVlans() const {
-    return getFields()->vlans;
+  VlanMembership getVlans() const {
+    // TODO(zecheng): vlanMembership are stored as map<string, VlanInfo>, which
+    // is not ideal since we should use vlanId.
+    // Keeping the interface same for now, until vlanMembership is moved to
+    // map<VlanId, VlanInfo>.
+    VlanMembership vlanMembership;
+    // THRIFT_COPY
+    for (const auto& [vlanString, vlanInfo] :
+         cref<switch_state_tags::vlanMemberShips>()->toThrift()) {
+      vlanMembership.emplace(
+          VlanID(folly::to<uint32_t>(vlanString)),
+          VlanInfo::fromThrift(vlanInfo));
+    }
+    return vlanMembership;
   }
-  void setVlans(VlanMembership vlans) {
-    writableFields()->vlans.swap(vlans);
+  void setVlans(const VlanMembership& vlans) {
+    std::map<std::string, state::VlanInfo> vlanMembership;
+    for (const auto& [vlanId, vlanInfo] : vlans) {
+      vlanMembership.emplace(
+          folly::to<std::string>(vlanId), vlanInfo.toThrift());
+    }
+    set<switch_state_tags::vlanMemberShips>(vlanMembership);
   }
 
   void addVlan(VlanID id, bool tagged) {
-    writableFields()->vlans.emplace(std::make_pair(id, VlanInfo(tagged)));
+    auto vlanMembership = getVlans();
+    vlanMembership.emplace(std::make_pair(id, VlanInfo(tagged)));
+    setVlans(vlanMembership);
   }
 
-  const QueueConfig& getPortQueues() {
-    return getFields()->queues;
+  auto getPortQueues() const {
+    return safe_cref<switch_state_tags::queues>();
+  }
+  void resetPortQueues(QueueConfig& queues) {
+    // TODO(zecheng): change type to ThriftListNode
+    std::vector<PortQueueFields> queuesThrift{};
+    for (auto queue : queues) {
+      queuesThrift.push_back(queue->toThrift());
+    }
+    set<switch_state_tags::queues>(std::move(queuesThrift));
   }
 
-  bool hasValidPortQueues() {
+  bool hasValidPortQueues() const {
     constexpr auto kDefaultProbability = 100;
-    for (auto& portQueue : getFields()->queues) {
-      for (auto& entry : portQueue->getAqms()) {
-        if (entry.second.behavior() ==
-                facebook::fboss::cfg::QueueCongestionBehavior::ECN &&
-            entry.second.detection()->linear_ref()->probability() !=
-                kDefaultProbability) {
+    for (const auto& portQueue : *getPortQueues()) {
+      const auto& aqms = portQueue->get<ctrl_if_tags::aqms>();
+      if (!aqms) {
+        continue;
+      }
+      for (const auto& entry : std::as_const(*aqms)) {
+        // THRIFT_COPY
+        auto behavior = entry->cref<switch_config_tags::behavior>()->toThrift();
+        auto detection =
+            entry->cref<switch_config_tags::detection>()->toThrift();
+        if (behavior == facebook::fboss::cfg::QueueCongestionBehavior::ECN &&
+            detection.linear_ref()->probability() != kDefaultProbability) {
           return false;
         }
       }
@@ -296,166 +322,257 @@ class Port : public ThriftyBaseT<state::PortFields, Port, PortFields> {
     return true;
   }
 
-  void resetPortQueues(QueueConfig queues) {
-    writableFields()->queues.swap(queues);
-  }
-
-  std::optional<const PortPgConfigs> getPortPgConfigs() {
-    return getFields()->pgConfigs;
+  auto getPortPgConfigs() const {
+    return safe_cref<switch_state_tags::pgConfigs>();
   }
 
   void resetPgConfigs(std::optional<PortPgConfigs>& pgConfigs) {
-    writableFields()->pgConfigs.swap(pgConfigs);
+    if (!pgConfigs) {
+      safe_ref<switch_state_tags::pgConfigs>().reset();
+      return;
+    }
+    std::vector<state::PortPgFields> pgConfigThrift{};
+    for (auto pgConfig : pgConfigs.value()) {
+      pgConfigThrift.push_back(pgConfig->toThrift());
+    }
+    set<switch_state_tags::pgConfigs>(std::move(pgConfigThrift));
+  }
+
+  void resetPgConfigs(std::vector<state::PortPgFields> pgConfigs) {
+    set<switch_state_tags::pgConfigs>(pgConfigs);
   }
 
   VlanID getIngressVlan() const {
-    return getFields()->ingressVlan;
+    return VlanID(cref<switch_config_tags::ingressVlan>()->cref());
   }
   void setIngressVlan(VlanID id) {
-    writableFields()->ingressVlan = id;
+    set<switch_config_tags::ingressVlan>(id);
   }
 
   cfg::PortSpeed getSpeed() const {
-    return getFields()->speed;
+    // TODO(zecheng): change storage type when ready
+    return nameToEnum<cfg::PortSpeed>(
+        cref<switch_state_tags::portSpeed>()->cref());
   }
   void setSpeed(cfg::PortSpeed speed) {
-    writableFields()->speed = speed;
+    // TODO(zecheng): change storage type when ready
+    set<switch_state_tags::portSpeed>(enumToName(speed));
   }
 
   cfg::PortProfileID getProfileID() const {
-    return getFields()->profileID;
+    // TODO(zecheng): change storage type when ready
+    return nameToEnum<cfg::PortProfileID>(
+        cref<switch_state_tags::portProfileID>()->cref());
   }
   void setProfileId(cfg::PortProfileID profileID) {
-    writableFields()->profileID = profileID;
+    // TODO(zecheng): change storage type when ready
+    set<switch_state_tags::portProfileID>(enumToName(profileID));
   }
 
   cfg::PortPause getPause() const {
-    return getFields()->pause;
+    cfg::PortPause portPause;
+    portPause.tx() = cref<switch_state_tags::txPause>()->cref();
+    portPause.rx() = cref<switch_state_tags::rxPause>()->cref();
+    return portPause;
   }
   void setPause(cfg::PortPause pause) {
-    writableFields()->pause = pause;
+    set<switch_state_tags::txPause>(*pause.tx());
+    set<switch_state_tags::rxPause>(*pause.rx());
   }
   std::optional<cfg::PortPfc> getPfc() const {
-    return getFields()->pfc;
+    if (auto pfc = cref<switch_state_tags::pfc>()) {
+      // THRIFT_COPY
+      return pfc->toThrift();
+    }
+    return std::nullopt;
   }
   void setPfc(std::optional<cfg::PortPfc>& pfc) {
-    writableFields()->pfc = pfc;
+    if (!pfc) {
+      ref<switch_state_tags::pfc>().reset();
+      return;
+    }
+    set<switch_state_tags::pfc>(pfc.value());
   }
 
-  std::optional<std::vector<PfcPriority>> getPfcPriorities() const {
-    return getFields()->pfcPriorities;
+  PfcPriorityList getPfcPriorities() const {
+    return safe_cref<switch_state_tags::pfcPriorities>();
   }
-  void setPfcPriorities(std::optional<std::vector<PfcPriority>>& pri) {
-    writableFields()->pfcPriorities = pri;
+  void setPfcPriorities(std::optional<std::vector<int16_t>>& pri) {
+    if (!pri) {
+      ref<switch_state_tags::pfcPriorities>().reset();
+      return;
+    }
+    set<switch_state_tags::pfcPriorities>(pri.value());
   }
 
   int32_t getMaxFrameSize() const {
-    return getFields()->maxFrameSize;
+    return cref<switch_state_tags::maxFrameSize>()->cref();
   }
   void setMaxFrameSize(int32_t maxFrameSize) {
-    writableFields()->maxFrameSize = maxFrameSize;
+    set<switch_state_tags::maxFrameSize>(maxFrameSize);
   }
 
   cfg::PortLoopbackMode getLoopbackMode() const {
-    return getFields()->loopbackMode;
+    // TODO(zecheng): change storage type when ready
+    return nameToEnum<cfg::PortLoopbackMode>(
+        cref<switch_state_tags::portLoopbackMode>()->cref());
   }
   void setLoopbackMode(cfg::PortLoopbackMode loopbackMode) {
-    writableFields()->loopbackMode = loopbackMode;
+    // TODO(zecheng): change storage type when ready
+    set<switch_state_tags::portLoopbackMode>(enumToName(loopbackMode));
   }
 
   int64_t getSflowIngressRate() const {
-    return getFields()->sFlowIngressRate;
+    return cref<switch_state_tags::sFlowIngressRate>()->cref();
   }
   void setSflowIngressRate(int64_t ingressRate) {
-    writableFields()->sFlowIngressRate = ingressRate;
+    set<switch_state_tags::sFlowIngressRate>(ingressRate);
   }
 
   int64_t getSflowEgressRate() const {
-    return getFields()->sFlowEgressRate;
+    return cref<switch_state_tags::sFlowEgressRate>()->cref();
   }
   void setSflowEgressRate(int64_t egressRate) {
-    writableFields()->sFlowEgressRate = egressRate;
+    set<switch_state_tags::sFlowEgressRate>(egressRate);
   }
 
   std::optional<cfg::SampleDestination> getSampleDestination() const {
-    return getFields()->sampleDest;
+    // TODO(zecheng): change storage type when ready
+    if (auto sampleDestination = cref<switch_state_tags::sampleDest>()) {
+      return nameToEnum<cfg::SampleDestination>(sampleDestination->cref());
+    }
+    return std::nullopt;
   }
 
   void setSampleDestination(
       const std::optional<cfg::SampleDestination>& sampleDest) {
-    writableFields()->sampleDest = sampleDest;
+    if (!sampleDest) {
+      ref<switch_state_tags::sampleDest>().reset();
+      return;
+    }
+    set<switch_state_tags::sampleDest>(enumToName(sampleDest.value()));
   }
 
   std::optional<std::string> getIngressMirror() const {
-    return getFields()->ingressMirror;
+    if (auto ingressMirror = cref<switch_state_tags::ingressMirror>()) {
+      return ingressMirror->cref();
+    }
+    return std::nullopt;
   }
 
   void setIngressMirror(const std::optional<std::string>& mirror) {
-    writableFields()->ingressMirror = mirror;
+    if (!mirror) {
+      ref<switch_state_tags::ingressMirror>().reset();
+      return;
+    }
+    set<switch_state_tags::ingressMirror>(mirror.value());
   }
 
   std::optional<std::string> getEgressMirror() const {
-    return getFields()->egressMirror;
+    if (auto egressMirror = cref<switch_state_tags::egressMirror>()) {
+      return egressMirror->cref();
+    }
+    return std::nullopt;
   }
 
   void setEgressMirror(const std::optional<std::string>& mirror) {
-    writableFields()->egressMirror = mirror;
+    if (!mirror) {
+      ref<switch_state_tags::egressMirror>().reset();
+      return;
+    }
+    set<switch_state_tags::egressMirror>(mirror.value());
   }
 
   std::optional<std::string> getQosPolicy() const {
-    return getFields()->qosPolicy;
+    if (auto qosPolicy = cref<switch_state_tags::qosPolicy>()) {
+      return qosPolicy->cref();
+    }
+    return std::nullopt;
   }
 
   void setQosPolicy(const std::optional<std::string>& qosPolicy) {
-    writableFields()->qosPolicy = qosPolicy;
+    if (!qosPolicy) {
+      ref<switch_state_tags::qosPolicy>().reset();
+      return;
+    }
+    set<switch_state_tags::qosPolicy>(qosPolicy.value());
   }
 
-  const LLDPValidations& getLLDPValidations() const {
-    return getFields()->expectedLLDPValues;
+  LLDPValidations getLLDPValidations() const {
+    // THRIFT_COPY
+    return cref<switch_state_tags::expectedLLDPValues>()->toThrift();
+  }
+
+  auto getExpectedNeighborValues() const {
+    return safe_cref<switch_state_tags::expectedNeighborReachability>();
   }
 
   void setExpectedLLDPValues(LLDPValidations vals) {
-    writableFields()->expectedLLDPValues.swap(vals);
+    set<switch_state_tags::expectedLLDPValues>(vals);
   }
 
-  const std::vector<cfg::AclLookupClass>&
-  getLookupClassesToDistributeTrafficOn() const {
-    return getFields()->lookupClassesToDistrubuteTrafficOn;
+  void setExpectedNeighborReachability(const NeighborReachability& vals) {
+    set<switch_state_tags::expectedNeighborReachability>(vals);
+  }
+
+  std::vector<cfg::AclLookupClass> getLookupClassesToDistributeTrafficOn()
+      const {
+    // THRIFT_COPY
+    return cref<switch_state_tags::lookupClassesToDistrubuteTrafficOn>()
+        ->toThrift();
   }
 
   void setLookupClassesToDistributeTrafficOn(
       const std::vector<cfg::AclLookupClass>&
           lookupClassesToDistrubuteTrafficOn) {
-    writableFields()->lookupClassesToDistrubuteTrafficOn =
-        lookupClassesToDistrubuteTrafficOn;
+    set<switch_state_tags::lookupClassesToDistrubuteTrafficOn>(
+        lookupClassesToDistrubuteTrafficOn);
   }
 
-  const phy::ProfileSideConfig& getProfileConfig() const {
-    return getFields()->profileConfig;
+  phy::ProfileSideConfig getProfileConfig() const {
+    // THRIFT_COPY
+    return cref<switch_state_tags::profileConfig>()->toThrift();
   }
   void setProfileConfig(const phy::ProfileSideConfig& profileCfg) {
-    writableFields()->profileConfig = profileCfg;
+    set<switch_state_tags::profileConfig>(profileCfg);
   }
 
-  const std::vector<phy::PinConfig>& getPinConfigs() const {
-    return getFields()->pinConfigs;
+  std::vector<phy::PinConfig> getPinConfigs() const {
+    // THRIFT_COPY
+    return cref<switch_state_tags::pinConfigs>()->toThrift();
   }
   void resetPinConfigs(std::vector<phy::PinConfig> pinCfgs) {
-    writableFields()->pinConfigs.swap(pinCfgs);
+    set<switch_state_tags::pinConfigs>(pinCfgs);
   }
 
   std::optional<phy::ProfileSideConfig> getLineProfileConfig() const {
-    return getFields()->lineProfileConfig;
+    if (auto lineProfileConfig = cref<switch_state_tags::lineProfileConfig>()) {
+      // THRIFT_COPY
+      return lineProfileConfig->toThrift();
+    }
+    return std::nullopt;
   }
   void setLineProfileConfig(const phy::ProfileSideConfig& profileCfg) {
-    writableFields()->lineProfileConfig = profileCfg;
+    set<switch_state_tags::lineProfileConfig>(profileCfg);
   }
 
   std::optional<std::vector<phy::PinConfig>> getLinePinConfigs() const {
-    return getFields()->linePinConfigs;
+    if (auto linePinConfigs = cref<switch_state_tags::linePinConfigs>()) {
+      // THRIFT_COPY
+      return linePinConfigs->toThrift();
+    }
+    return std::nullopt;
   }
   void resetLinePinConfigs(std::vector<phy::PinConfig> pinCfgs) {
-    writableFields()->linePinConfigs = pinCfgs;
+    set<switch_state_tags::linePinConfigs>(pinCfgs);
+  }
+
+  auto getInterfaceIDs() const {
+    return safe_cref<switch_state_tags::interfaceIDs>();
+  }
+
+  void setInterfaceIDs(const std::vector<int32_t>& interfaceIDs) {
+    set<switch_state_tags::interfaceIDs>(interfaceIDs);
   }
 
   Port* modify(std::shared_ptr<SwitchState>* state);
@@ -463,8 +580,15 @@ class Port : public ThriftyBaseT<state::PortFields, Port, PortFields> {
   void fillPhyInfo(phy::PhyInfo* phyInfo);
 
  private:
+  auto getRxSaks() const {
+    return safe_cref<switch_state_tags::rxSecureAssociationKeys>();
+  }
+  void setRxSaks(const std::vector<state::RxSak>& rxSaks) {
+    set<switch_state_tags::rxSecureAssociationKeys>(rxSaks);
+  }
+
   // Inherit the constructors required for clone()
-  using ThriftyBaseT<state::PortFields, Port, PortFields>::ThriftyBaseT;
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 

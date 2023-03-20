@@ -25,13 +25,13 @@ extern "C" {
 namespace facebook::fboss {
 
 // static
-int BcmPtpTcMgr::getTsBitModeArg(HwAsic::AsicType asicType) {
+int BcmPtpTcMgr::getTsBitModeArg(cfg::AsicType asicType) {
   // TODO(rajukumarfb5368): integrate with HwAsic::isSupported() or a variant
   switch (asicType) {
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
       return bcmTimesyncTimestampingMode32bit;
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
       return bcmTimesyncTimestampingMode48bit;
     default:
       throw FbossError(
@@ -142,11 +142,11 @@ bool BcmPtpTcMgr::isPtpTcPcsSupported(const BcmSwitchIf* hw) {
  * PCS based timestamping devices - TH3 */
 void BcmPtpTcMgr::enablePtpTc() {
   if (!isPtpTcSupported(hw_)) {
-    XLOG(INFO) << "[PTP] Ignore configuration of unsupported feature";
+    XLOG(DBG2) << "[PTP] Ignore configuration of unsupported feature";
     return;
   }
 
-  XLOG(INFO) << "[PTP] Start enable";
+  XLOG(DBG2) << "[PTP] Start enable";
 
   const auto unit = hw_->getUnit();
 
@@ -187,16 +187,16 @@ void BcmPtpTcMgr::enablePtpTc() {
   }
 
   enableTimeInterface();
-  XLOG(INFO) << "[PTP] Enabled timestamping on " << count << " ports";
+  XLOG(DBG2) << "[PTP] Enabled timestamping on " << count << " ports";
 }
 
 void BcmPtpTcMgr::disablePtpTc() {
   if (!isPtpTcSupported(hw_)) {
-    XLOG(INFO) << "[PTP] Ignore configuration of unsupported feature";
+    XLOG(DBG2) << "[PTP] Ignore configuration of unsupported feature";
     return;
   }
 
-  XLOG(INFO) << "[PTP] Start disable";
+  XLOG(DBG2) << "[PTP] Start disable";
 
   const auto unit = hw_->getUnit();
   bcm_port_config_t portConfig;
@@ -231,7 +231,7 @@ void BcmPtpTcMgr::disablePtpTc() {
   }
 
   disableTimeInterface();
-  XLOG(INFO) << "[PTP] Disabled timestamping on " << count << " ports";
+  XLOG(DBG2) << "[PTP] Disabled timestamping on " << count << " ports";
 }
 
 // static

@@ -36,7 +36,9 @@ void StaticL2ForNeighborSwSwitchUpdater::ensureMacEntry(
         return newState != state ? newState : nullptr;
       };
 
-  sw_->updateState("updateOrAdd static MAC: ", std::move(staticMacEntryFn));
+  sw_->updateState(
+      "updateOrAdd static MAC: " + neighbor->str(),
+      std::move(staticMacEntryFn));
 }
 
 void StaticL2ForNeighborSwSwitchUpdater::ensureMacEntryForNeighbor(
@@ -55,7 +57,7 @@ template <typename NeighborEntryT>
 void StaticL2ForNeighborSwSwitchUpdater::pruneMacEntry(
     VlanID vlanId,
     const std::shared_ptr<NeighborEntryT>& removedEntry) {
-  XLOG(INFO) << " Neighbor entry removed: " << removedEntry->str();
+  XLOG(DBG2) << " Neighbor entry removed: " << removedEntry->str();
   auto mac = removedEntry->getMac();
   auto removeMacEntryFn = [vlanId,
                            mac](const std::shared_ptr<SwitchState>& state) {
@@ -71,12 +73,14 @@ void StaticL2ForNeighborSwSwitchUpdater::pruneMacEntry(
       newState = MacTableUtils::updateOrAddStaticEntryIfNbrExists(
           newState, vlanId, mac);
       auto vlan = newState->getVlans()->getVlanIf(vlanId);
-      macPruned = vlan->getMacTable()->getNodeIf(mac) == nullptr;
+      macPruned = vlan->getMacTable()->getMacIf(mac) == nullptr;
     }
     return macPruned ? newState : nullptr;
   };
 
-  sw_->updateState("Prune MAC if unreferenced: ", std::move(removeMacEntryFn));
+  sw_->updateState(
+      "Prune MAC if unreferenced: " + removedEntry->str(),
+      std::move(removeMacEntryFn));
 }
 
 void StaticL2ForNeighborSwSwitchUpdater::pruneMacEntryForNeighbor(
@@ -98,6 +102,7 @@ void StaticL2ForNeighborSwSwitchUpdater::ensureMacEntryIfNeighborExists(
   auto ensureMac = [mac, vlan](const std::shared_ptr<SwitchState>& state) {
     return MacTableUtils::updateOrAddStaticEntryIfNbrExists(state, vlan, mac);
   };
-  sw_->updateState("ensure static MAC for nbr", std::move(ensureMac));
+  sw_->updateState(
+      "ensure static MAC for nbr: " + macEntry->str(), std::move(ensureMac));
 }
 } // namespace facebook::fboss

@@ -19,6 +19,7 @@
 #include "fboss/agent/hw/test/HwTestTrunkUtils.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwTestOlympicUtils.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwTestQosUtils.h"
+#include "fboss/agent/packet/DHCPv6Packet.h"
 #include "fboss/agent/packet/PktFactory.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
 #include "fboss/agent/test/ResourceLibUtil.h"
@@ -44,6 +45,12 @@ constexpr uint8_t kNetworkControlDscp = 48;
 
 const auto kMcastMacAddress = folly::MacAddress("01:05:0E:01:02:03");
 
+const auto kDhcpV6AllRoutersIp = folly::IPAddressV6("ff02::1:2");
+const auto kDhcpV6McastMacAddress = folly::MacAddress("33:33:00:01:00:02");
+const auto kDhcpV6ServerGlobalUnicastAddress =
+    folly::IPAddressV6("2401:db00:eef0:a67::1");
+const auto kRandomPort = 54131;
+
 static time_t getCurrentTime() {
   return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 }
@@ -64,7 +71,9 @@ class HwCoppTest : public HwLinkStateDependentTest {
       return getTrunkInitialConfig();
     }
     auto cfg = utility::oneL3IntfConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], cfg::PortLoopbackMode::MAC);
+        getHwSwitch(),
+        masterLogicalPortIds()[0],
+        getAsic()->desiredLoopbackMode());
     utility::addOlympicQosMaps(cfg);
     utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
     utility::addCpuQueueConfig(cfg, getAsic());
@@ -76,7 +85,7 @@ class HwCoppTest : public HwLinkStateDependentTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
     utility::setDefaultCpuTrafficPolicyConfig(cfg, this->getAsic());
     utility::addCpuQueueConfig(cfg, this->getAsic());
     utility::addAggPort(
@@ -105,6 +114,18 @@ class HwCoppTest : public HwLinkStateDependentTest {
     }
   }
 
+  void sendPkt(std::unique_ptr<TxPacket> pkt, bool outOfPort) {
+    XLOG(DBG2) << "Packet Dump::"
+               << folly::hexDump(pkt->buf()->data(), pkt->buf()->length());
+
+    if (outOfPort) {
+      getHwSwitch()->sendPacketOutOfPortSync(
+          std::move(pkt), PortID(masterLogicalPortIds()[0]));
+    } else {
+      getHwSwitch()->sendPacketSwitchedSync(std::move(pkt));
+    }
+  }
+
   void sendUdpPkts(
       int numPktsToSend,
       const folly::IPAddress& dstIpAddress,
@@ -130,14 +151,19 @@ class HwCoppTest : public HwLinkStateDependentTest {
           l4DstPort,
           0 /* dscp */,
           ttl);
-      if (outOfPort) {
-        getHwSwitch()->sendPacketOutOfPortSync(
-            std::move(txPacket), PortID(masterLogicalPortIds()[0]));
-      } else {
-        getHwSwitch()->sendPacketSwitchedSync(std::move(txPacket));
-      }
+
+      XLOG(DBG2) << "UDP packet Dump::"
+                 << folly::hexDump(
+                        txPacket->buf()->data(), txPacket->buf()->length());
+
+      sendPkt(std::move(txPacket), outOfPort);
     }
   }
+
+  /*
+  const auto  srcIp = folly::IPAddress("1::10");
+  auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
+  */
 
   void sendEthPkts(
       int numPktsToSend,
@@ -154,8 +180,7 @@ class HwCoppTest : public HwLinkStateDependentTest {
           dstMac ? *dstMac : intfMac,
           etherType,
           payload);
-      getHwSwitch()->sendPacketOutOfPortSync(
-          std::move(txPacket), PortID(masterLogicalPortIds()[0]));
+      sendPkt(std::move(txPacket), true);
     }
   }
 
@@ -178,12 +203,7 @@ class HwCoppTest : public HwLinkStateDependentTest {
           folly::IPAddress("1.1.1.2"),
           dstIpAddress,
           arpType);
-      if (outOfPort) {
-        getHwSwitch()->sendPacketOutOfPortSync(
-            std::move(txPacket), PortID(masterLogicalPortIds()[0]));
-      } else {
-        getHwSwitch()->sendPacketSwitchedSync(std::move(txPacket));
-      }
+      sendPkt(std::move(txPacket), outOfPort);
     }
   }
 
@@ -214,12 +234,42 @@ class HwCoppTest : public HwLinkStateDependentTest {
                 intfMac, // my mac
                 neighborIp, // sender ip
                 folly::IPAddressV6("1::1")); // sent to me
-      if (outOfPort) {
-        getHwSwitch()->sendPacketOutOfPortSync(
-            std::move(txPacket), PortID(masterLogicalPortIds()[0]));
-      } else {
-        getHwSwitch()->sendPacketSwitchedSync(std::move(txPacket));
-      }
+      sendPkt(std::move(txPacket), outOfPort);
+    }
+  }
+
+  void
+  sendDHCPv6Pkts(int numPktsToSend, DHCPv6Type type, int ttl, bool outOfPort) {
+    auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
+    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto neighborMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
+
+    for (int i = 0; i < numPktsToSend; i++) {
+      auto txPacket = (type == DHCPv6Type::DHCPv6_SOLICIT)
+          ? utility::makeUDPTxPacket(
+                getHwSwitch(),
+                vlanId,
+                neighborMac, // SrcMAC: Client's MAC address
+                kDhcpV6McastMacAddress, // DstMac: 33:33:00:01:00:02
+                kIPv6LinkLocalUcastAddress, // SrcIP: Client's Link Local addr
+                kDhcpV6AllRoutersIp, // DstIP: ff02::1:2
+                DHCPv6Packet::DHCP6_CLIENT_UDPPORT, // SrcPort: 546
+                DHCPv6Packet::DHCP6_SERVERAGENT_UDPPORT, // DstPort: 547
+                0 /* dscp */,
+                ttl)
+          : utility::makeUDPTxPacket( // DHCPv6Type::DHCPv6_ADVERTISE
+                getHwSwitch(),
+                vlanId,
+                neighborMac, // srcMac: Server's MAC
+                intfMac, // dstMac: Switch/our MAC
+                kDhcpV6ServerGlobalUnicastAddress, // srcIp: Server's global
+                                                   // unicast address
+                folly::IPAddressV6("1::"), // dstIp: Switch/our IP
+                kRandomPort, // SrcPort:DHCPv6 server's random port
+                DHCPv6Packet::DHCP6_SERVERAGENT_UDPPORT, // DstPort: 547
+                0 /* dscp */,
+                ttl); // sent to me
+      sendPkt(std::move(txPacket), outOfPort);
     }
   }
 
@@ -412,6 +462,26 @@ class HwCoppTest : public HwLinkStateDependentTest {
     EXPECT_EQ(expectedPktDelta, afterOutPkts - beforeOutPkts);
   }
 
+  void sendPktAndVerifyDHCPv6PacketsCpuQueue(
+      int queueId,
+      DHCPv6Type dhcpType,
+      const int ttl = 1,
+      bool outOfPort = true,
+      const int numPktsToSend = 1,
+      const int expectedPktDelta = 1) {
+    auto beforeOutPkts = getQueueOutPacketsWithRetry(
+        queueId, 0 /* retryTimes */, 0 /* expectedNumPkts */);
+    sendDHCPv6Pkts(numPktsToSend, dhcpType, ttl, outOfPort);
+    auto afterOutPkts = getQueueOutPacketsWithRetry(
+        queueId, kGetQueueOutPktsRetryTimes, beforeOutPkts + expectedPktDelta);
+    auto msgType =
+        dhcpType == DHCPv6Type::DHCPv6_SOLICIT ? "SOLICIT" : "ADVERTISEMENT";
+    XLOG(DBG0) << "DHCPv6 " << msgType << " packet"
+               << ". Queue=" << queueId << ", before pkts:" << beforeOutPkts
+               << ", after pkts:" << afterOutPkts;
+    EXPECT_EQ(expectedPktDelta, afterOutPkts - beforeOutPkts);
+  }
+
   folly::IPAddress getInSubnetNonSwitchIP() const {
     auto configIntf = initialConfig().interfaces()[0];
     auto ipAddress = configIntf.ipAddresses()[0];
@@ -433,15 +503,14 @@ class HwCoppQosTest : public HwLinkStateDependentTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
     utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
     addCustomCpuQueueConfig(cfg, getAsic());
     return cfg;
   }
 
   void setupEcmpDataplaneLoop() {
-    auto vlanId = utility::firstVlanID(initialConfig());
-    auto dstMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto dstMac = utility::getFirstInterfaceMac(initialConfig());
 
     utility::EcmpSetupAnyNPorts6 ecmpHelper(getProgrammedState(), dstMac);
     resolveNeigborAndProgramRoutes(ecmpHelper, 1);
@@ -487,7 +556,7 @@ class HwCoppQosTest : public HwLinkStateDependentTest {
 
   void sendTcpPktsOnPort(
       PortID port,
-      VlanID vlanId,
+      std::optional<VlanID> vlanId,
       int numPktsToSend,
       const folly::IPAddress& dstIpAddress,
       int l4SrcPort,
@@ -495,7 +564,7 @@ class HwCoppQosTest : public HwLinkStateDependentTest {
       const std::optional<folly::MacAddress>& dstMac = std::nullopt,
       uint8_t trafficClass = 0,
       std::optional<std::vector<uint8_t>> payload = std::nullopt) {
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto intfMac = utility::getFirstInterfaceMac(initialConfig());
     utility::sendTcpPkts(
         getHwSwitch(),
         numPktsToSend,
@@ -511,11 +580,11 @@ class HwCoppQosTest : public HwLinkStateDependentTest {
 
   void createLineRateTrafficOnPort(
       PortID port,
-      VlanID vlanId,
+      std::optional<VlanID> vlanId,
       const folly::IPAddress& dstIpAddress) {
     auto minPktsForLineRate =
         getHwSwitchEnsemble()->getMinPktsForLineRate(port);
-    auto dstMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto dstMac = utility::getFirstInterfaceMac(initialConfig());
 
     // Create a loop with specified destination packets.
     // We want to send atleast 2 traffic streams to ensure we dont run
@@ -536,8 +605,9 @@ class HwCoppQosTest : public HwLinkStateDependentTest {
         utility::kNonSpecialPort1 + 1,
         utility::kNonSpecialPort2 + 1,
         dstMac);
+    std::string vlanStr = (vlanId ? folly::to<std::string>(*vlanId) : "None");
     XLOG(DBG0) << "Sent " << minPktsForLineRate << " TCP packets on port "
-               << (int)port << " / VLAN " << (int)vlanId;
+               << (int)port << " / VLAN " << vlanStr;
 
     // Wait for packet loop buildup
     getHwSwitchEnsemble()->waitForLineRateOnPort(port);
@@ -555,7 +625,7 @@ class HwCoppQosTest : public HwLinkStateDependentTest {
    */
   void sendPacketBursts(
       const PortID& port,
-      const VlanID& vlanId,
+      std::optional<VlanID> vlanId,
       const int packetCount,
       const int packetsPerBurst,
       const folly::IPAddress& dstIpAddress,
@@ -613,9 +683,10 @@ class HwCoppQosTest : public HwLinkStateDependentTest {
         hiPriorityCoppQueueDiscardStats = hiPriorityCoppQueueDiscardStats_1;
       }
     }
+    std::string vlanStr = (vlanId ? folly::to<std::string>(*vlanId) : "None");
     XLOG(DBG0) << "Sent " << packetCount << " TCP packets on port " << (int)port
-               << " / VLAN " << (int)vlanId << " in bursts of "
-               << packetsPerBurst << " packets";
+               << " / VLAN " << vlanStr << " in bursts of " << packetsPerBurst
+               << " packets";
   }
 
   /*
@@ -706,7 +777,7 @@ class HwCoppQueueStuckTest : public HwCoppQosTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
     utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
     addCustomCpuQueueConfig(cfg, getAsic(), true /*addEcnConfig*/);
     return cfg;
@@ -1072,7 +1143,7 @@ TYPED_TEST(HwCoppTest, ArpRequestAndReplyToHighPriQ) {
 TYPED_TEST(HwCoppTest, NdpSolicitationToHighPriQ) {
   auto setup = [=]() { this->setup(); };
   auto verify = [=]() {
-    XLOG(INFO) << "verifying solicitation";
+    XLOG(DBG2) << "verifying solicitation";
     this->sendPktAndVerifyNdpPacketsCpuQueue(
         utility::getCoppHighPriQueueId(this->getAsic()),
         folly::IPAddressV6("1::2"), // sender of solicitation
@@ -1105,7 +1176,7 @@ TYPED_TEST(HwCoppTest, NdpSolicitNeighbor) {
   // More explanation in the test plan section of - D34782575
   auto setup = [=]() { this->setup(); };
   auto verify = [=]() {
-    XLOG(INFO) << "verifying solicitation";
+    XLOG(DBG2) << "verifying solicitation";
     this->sendPktAndVerifyNdpPacketsCpuQueue(
         utility::getCoppHighPriQueueId(this->getAsic()),
         folly::IPAddressV6("1::1"), // sender of solicitation
@@ -1121,7 +1192,7 @@ TYPED_TEST(HwCoppTest, NdpSolicitNeighbor) {
 TYPED_TEST(HwCoppTest, NdpAdvertisementToHighPriQ) {
   auto setup = [=]() { this->setup(); };
   auto verify = [=]() {
-    XLOG(INFO) << "verifying advertisement";
+    XLOG(DBG2) << "verifying advertisement";
     this->sendPktAndVerifyNdpPacketsCpuQueue(
         utility::getCoppHighPriQueueId(this->getAsic()),
         folly::IPAddressV6("1::2"), // sender of advertisement
@@ -1291,11 +1362,15 @@ TEST_F(HwCoppQosTest, HighVsLowerPriorityCpuQueueTrafficPrioritization) {
     // Create dataplane loop with lowerPriority traffic on port0
     createLineRateTrafficOnPort(
         masterLogicalPortIds()[0], baseVlan, ipForLowPriorityQueue);
+    std::optional<VlanID> nextVlan;
+    if (baseVlan) {
+      nextVlan = *baseVlan + 1;
+    }
 
     // Send a fixed number of high priority packets on port1
     sendPacketBursts(
         masterLogicalPortIds()[1],
-        VlanID(baseVlan + 1),
+        nextVlan,
         kHighPriorityPacketCount,
         packetsPerBurst,
         ipForHighPriorityQueue,
@@ -1427,6 +1502,32 @@ TYPED_TEST(HwCoppTest, DhcpPacketToMidPriQ) {
     }
   };
 
+  this->verifyAcrossWarmBoots(setup, verify);
+}
+
+TYPED_TEST(HwCoppTest, DHCPv6SolicitToMidPriQ) {
+  auto setup = [=]() { this->setup(); };
+  auto verify = [=]() {
+    XLOG(DBG2) << "verifying DHCPv6 solicitation with TTL 1";
+    this->sendPktAndVerifyDHCPv6PacketsCpuQueue(
+        utility::kCoppMidPriQueueId, DHCPv6Type::DHCPv6_SOLICIT);
+    XLOG(DBG2) << "verifying DHCPv6 solicitation with TTL 128";
+    this->sendPktAndVerifyDHCPv6PacketsCpuQueue(
+        utility::kCoppMidPriQueueId, DHCPv6Type::DHCPv6_SOLICIT, 128);
+  };
+  this->verifyAcrossWarmBoots(setup, verify);
+}
+
+TYPED_TEST(HwCoppTest, DHCPv6AdvertiseToMidPriQ) {
+  auto setup = [=]() { this->setup(); };
+  auto verify = [=]() {
+    XLOG(DBG2) << "verifying DHCPv6 Advertise with TTL 1";
+    this->sendPktAndVerifyDHCPv6PacketsCpuQueue(
+        utility::kCoppMidPriQueueId, DHCPv6Type::DHCPv6_ADVERTISE);
+    XLOG(DBG2) << "verifying DHCPv6 Advertise with TTL 128";
+    this->sendPktAndVerifyDHCPv6PacketsCpuQueue(
+        utility::kCoppMidPriQueueId, DHCPv6Type::DHCPv6_ADVERTISE, 128);
+  };
   this->verifyAcrossWarmBoots(setup, verify);
 }
 

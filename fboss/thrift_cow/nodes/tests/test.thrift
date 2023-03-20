@@ -53,4 +53,10 @@ struct TestStruct {
   21: TestUnion inlineVariant;
   22: optional string optionalString;
   23: i64 (cpp.type = "uint64_t") unsigned_int64;
+  24: map<string, TestStruct> mapA;
+  25: map<string, TestStruct> mapB;
+}
+
+struct ParentTestStruct {
+  1: TestStruct childStruct;
 }

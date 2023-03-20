@@ -126,10 +126,14 @@ void SaiPhyManager::updateAllXphyPortsStats() {
               try {
                 static SwitchStats unused;
                 platformInfo->getHwSwitch()->updateStats(&unused);
+                auto phyInfos = platformInfo->getHwSwitch()->updateAllPhyInfo();
+                for (auto& [portId, phyInfo] : phyInfos) {
+                  updateXphyInfo(portId, std::move(phyInfo));
+                }
               } catch (const std::exception& e) {
                 XLOG(INFO) << "Stats collection failed on : "
                            << "switch: "
-                           << platformInfo->getHwSwitch()->getSwitchId()
+                           << platformInfo->getHwSwitch()->getSaiSwitchId()
                            << " xphy: " << xphy << " error: " << e.what();
               }
             }
@@ -172,11 +176,11 @@ void SaiPhyManager::sakInstallRx(
   auto updateFn = [saiPlatform, portId, this, &sak, &sci](
                       std::shared_ptr<SwitchState> in) {
     return portUpdateHelper(in, portId, saiPlatform, [&sak, &sci](auto& port) {
-      auto rxSaks = port->getRxSaks();
+      auto rxSaks = port->getRxSaksMap();
       PortFields::MKASakKey key{sci, *sak.assocNum()};
       rxSaks.erase(key);
       rxSaks.emplace(std::make_pair(key, sak));
-      port->setRxSaks(rxSaks);
+      port->setRxSaksMap(rxSaks);
     });
   };
   getPlatformInfo(portId)->applyUpdate(
@@ -191,12 +195,12 @@ void SaiPhyManager::sakDeleteRx(
   auto updateFn = [saiPlatform, portId, this, &sak, &sci](
                       std::shared_ptr<SwitchState> in) {
     return portUpdateHelper(in, portId, saiPlatform, [&sak, &sci](auto& port) {
-      auto rxSaks = port->getRxSaks();
+      auto rxSaks = port->getRxSaksMap();
       PortFields::MKASakKey key{sci, *sak.assocNum()};
       auto it = rxSaks.find(key);
       if (it != rxSaks.end() && it->second == sak) {
         rxSaks.erase(key);
-        port->setRxSaks(rxSaks);
+        port->setRxSaksMap(rxSaks);
       }
     });
   };
@@ -229,7 +233,7 @@ mka::MKASakHealthResponse SaiPhyManager::sakHealthCheck(
   auto port = switchState->getPorts()->getPortIf(portId);
   if (port) {
     txActive = port->getTxSak() && *port->getTxSak() == sak;
-    for (const auto& keyAndSak : port->getRxSaks()) {
+    for (const auto& keyAndSak : port->getRxSaksMap()) {
       if (keyAndSak.second == sak) {
         rxActive = true;
         break;
@@ -353,69 +357,89 @@ std::shared_ptr<SwitchState> SaiPhyManager::portUpdateHelper(
 void SaiPhyManager::programOnePort(
     PortID portId,
     cfg::PortProfileID portProfileId,
-    std::optional<TransceiverInfo> transceiverInfo) {
-  const auto& wLockedCache = getWLockedCache(portId);
+    std::optional<TransceiverInfo> transceiverInfo,
+    bool needResetDataPath) {
+  bool isChanged{false};
+  {
+    const auto& wLockedCache = getWLockedCache(portId);
 
-  // Get phy platform
-  auto globalPhyID = getGlobalXphyIDbyPortIDLocked(wLockedCache);
-  auto saiPlatform = getSaiPlatform(globalPhyID);
-  auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
-  const auto& desiredPhyPortConfig =
-      getDesiredPhyPortConfig(portId, portProfileId, transceiverInfo);
+    // Get phy platform
+    auto globalPhyID = getGlobalXphyIDbyPortIDLocked(wLockedCache);
+    auto saiPlatform = getSaiPlatform(globalPhyID);
+    auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
+    const auto& desiredPhyPortConfig =
+        getDesiredPhyPortConfig(portId, portProfileId, transceiverInfo);
 
-  // Before actually calling sai sdk to program the port again, we should
-  // check whether the port has been programmed in HW with the same config.
-  if (!(wLockedCache->systemLanes.empty() || wLockedCache->lineLanes.empty())) {
-    const auto& actualPhyPortConfig =
-        getHwPhyPortConfigLocked(wLockedCache, portId);
-    if (actualPhyPortConfig == desiredPhyPortConfig) {
-      XLOG(DBG2) << "External phy config match. Skip reprogramming for port:"
-                 << portId << " with profile:"
-                 << apache::thrift::util::enumNameSafe(portProfileId);
+    // Is port create allowed
+    if (!isPortCreateAllowed(globalPhyID, desiredPhyPortConfig)) {
+      XLOG(INFO) << "PHY Port create not allowed for port " << portId;
       return;
-    } else {
-      XLOG(DBG2) << "External phy config mismatch. Port:" << portId
-                 << " with profile:"
-                 << apache::thrift::util::enumNameSafe(portProfileId)
-                 << " current config:" << actualPhyPortConfig.toDynamic()
-                 << ", desired config:" << desiredPhyPortConfig.toDynamic();
+    }
+
+    // Before actually calling sai sdk to program the port again, we should
+    // check whether the port has been programmed in HW with the same config.
+    // We avoid reprogramming the port if the config matches with what we have
+    // already programmed before, unless the needResetDataPath flag is set
+    if (!needResetDataPath &&
+        !(wLockedCache->systemLanes.empty() ||
+          wLockedCache->lineLanes.empty())) {
+      const auto& actualPhyPortConfig =
+          getHwPhyPortConfigLocked(wLockedCache, portId);
+      if (actualPhyPortConfig == desiredPhyPortConfig) {
+        XLOG(DBG2) << "External phy config match. Skip reprogramming for port:"
+                   << portId << " with profile:"
+                   << apache::thrift::util::enumNameSafe(portProfileId);
+        return;
+      } else {
+        XLOG(DBG2) << "External phy config mismatch. Port:" << portId
+                   << " with profile:"
+                   << apache::thrift::util::enumNameSafe(portProfileId)
+                   << " current config:" << actualPhyPortConfig.toDynamic()
+                   << ", desired config:" << desiredPhyPortConfig.toDynamic();
+      }
+    }
+
+    auto updateFn =
+        [this, &saiPlatform, portId, portProfileId, desiredPhyPortConfig](
+            std::shared_ptr<SwitchState> in) {
+          return portUpdateHelper(
+              in,
+              portId,
+              saiPlatform,
+              [portProfileId, desiredPhyPortConfig](auto& port) {
+                port->setSpeed(desiredPhyPortConfig.profile.speed);
+                port->setProfileId(portProfileId);
+                port->setAdminState(cfg::PortState::ENABLED);
+                // Prepare the side profileConfig and pinConfigs for both system
+                // and line sides by using desiredPhyPortConfig
+                port->setProfileConfig(desiredPhyPortConfig.profile.system);
+                port->resetPinConfigs(
+                    desiredPhyPortConfig.config.system.getPinConfigs());
+                port->setLineProfileConfig(desiredPhyPortConfig.profile.line);
+                port->resetLinePinConfigs(
+                    desiredPhyPortConfig.config.line.getPinConfigs());
+              });
+        };
+    getPlatformInfo(globalPhyID)
+        ->applyUpdate(
+            folly::sformat("Port {} program", static_cast<int>(portId)),
+            updateFn);
+
+    // Once the port is programmed successfully, update the portToCacheInfo_
+    isChanged = setPortToPortCacheInfoLocked(
+        wLockedCache, portId, portProfileId, desiredPhyPortConfig);
+    // Only reset phy port stats when there're changes on the xphy ports
+    if (isChanged &&
+        (getExternalPhyLocked(wLockedCache)
+             ->isSupported(phy::ExternalPhy::Feature::PORT_STATS) ||
+         (getExternalPhyLocked(wLockedCache)
+              ->isSupported(phy::ExternalPhy::Feature::PRBS_STATS)))) {
+      setPortToExternalPhyPortStats(portId, createExternalPhyPortStats(portId));
     }
   }
-
-  auto updateFn =
-      [this, &saiPlatform, portId, portProfileId, desiredPhyPortConfig](
-          std::shared_ptr<SwitchState> in) {
-        return portUpdateHelper(
-            in,
-            portId,
-            saiPlatform,
-            [portProfileId, desiredPhyPortConfig](auto& port) {
-              port->setSpeed(desiredPhyPortConfig.profile.speed);
-              port->setProfileId(portProfileId);
-              port->setAdminState(cfg::PortState::ENABLED);
-              // Prepare the side profileConfig and pinConfigs for both system
-              // and line sides by using desiredPhyPortConfig
-              port->setProfileConfig(desiredPhyPortConfig.profile.system);
-              port->resetPinConfigs(
-                  desiredPhyPortConfig.config.system.getPinConfigs());
-              port->setLineProfileConfig(desiredPhyPortConfig.profile.line);
-              port->resetLinePinConfigs(
-                  desiredPhyPortConfig.config.line.getPinConfigs());
-            });
-      };
-  getPlatformInfo(globalPhyID)
-      ->applyUpdate(
-          folly::sformat("Port {} program", static_cast<int>(portId)),
-          updateFn);
-
-  // Once the port is programmed successfully, update the portToCacheInfo_
-  bool isChanged = setPortToPortCacheInfoLocked(
-      wLockedCache, portId, portProfileId, desiredPhyPortConfig);
-  // Only reset phy port stats when there're changes on the xphy ports
-  if (isChanged &&
-      getExternalPhyLocked(wLockedCache)
-          ->isSupported(phy::ExternalPhy::Feature::PORT_STATS)) {
-    setPortToExternalPhyPortStats(portId, createExternalPhyPortStats(portId));
+  if (isChanged || needResetDataPath) {
+    // If needed, tune the XPHY-NPU link again
+    xphyPortStateToggle(portId, phy::Side::SYSTEM);
   }
 }
 
@@ -474,7 +498,7 @@ std::string SaiPhyManager::getSaiPortInfo(PortID swPort) {
   auto saiPlatform = getSaiPlatform(globalPhyID);
   auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
 
-  auto switchId = saiSwitch->getSwitchId();
+  auto switchId = saiSwitch->getSaiSwitchId();
 
   // Get port handle and then get port attributes
   auto portHandle =
@@ -494,47 +518,128 @@ std::string SaiPhyManager::getSaiPortInfo(PortID swPort) {
   auto sysPortAdapter = portHandle->sysPort->adapterKey();
   auto connectorAdapter = portHandle->connector->adapterKey();
 
-  output.append(folly::sformat("  Line Port Obj = {}\n", linePortAdapter.t));
+  auto portInfoGet = [this](
+                         bool lineSide,
+                         SaiPortTraits::AdapterKey& portAdapter,
+                         std::string& output) {
+    output.append(folly::sformat(
+        "  {:s} Port Obj = {}\n",
+        (lineSide ? "Line" : "System"),
+        portAdapter.t));
 
-  auto portOperStatus = SaiApiTable::getInstance()->portApi().getAttribute(
-      linePortAdapter, SaiPortTraits::Attributes::OperStatus{});
-  output.append(folly::sformat(
-      "    Link Status: {:d}\n", static_cast<int>(portOperStatus)));
-  auto portSpeed = SaiApiTable::getInstance()->portApi().getAttribute(
-      linePortAdapter, SaiPortTraits::Attributes::Speed{});
-  output.append(folly::sformat("    Speed: {:d}\n", portSpeed));
-  auto fecMode = SaiApiTable::getInstance()->portApi().getAttribute(
-      linePortAdapter, SaiPortTraits::Attributes::FecMode{});
-  output.append(folly::sformat("    Fec mode: {:d}\n", fecMode));
-  auto interfaceType = SaiApiTable::getInstance()->portApi().getAttribute(
-      linePortAdapter, SaiPortTraits::Attributes::InterfaceType{});
-  output.append(folly::sformat("    Interface Type: {:d}\n", interfaceType));
-  auto serdesId = SaiApiTable::getInstance()->portApi().getAttribute(
-      linePortAdapter, SaiPortTraits::Attributes::SerdesId{});
-  output.append(folly::sformat("    Serdes Id: {:d}\n", serdesId));
+    auto portOperStatus = SaiApiTable::getInstance()->portApi().getAttribute(
+        portAdapter, SaiPortTraits::Attributes::OperStatus{});
+    output.append(folly::sformat(
+        "    Link Status: {:d}\n", static_cast<int>(portOperStatus)));
+    auto portSpeed = SaiApiTable::getInstance()->portApi().getAttribute(
+        portAdapter, SaiPortTraits::Attributes::Speed{});
+    output.append(folly::sformat("    Speed: {:d}\n", portSpeed));
 
-  output.append(folly::sformat("  Syetem Port Obj = {}\n", sysPortAdapter.t));
+    bool extendedFec{false};
+    uint32_t fecMode, extFecMode;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+    extendedFec = SaiApiTable::getInstance()->portApi().getAttribute(
+        portAdapter, SaiPortTraits::Attributes::UseExtendedFec{});
+    if (extendedFec) {
+      extFecMode = SaiApiTable::getInstance()->portApi().getAttribute(
+          portAdapter, SaiPortTraits::Attributes::ExtendedFecMode{});
+    }
+#endif
+    if (!extendedFec) {
+      fecMode = SaiApiTable::getInstance()->portApi().getAttribute(
+          portAdapter, SaiPortTraits::Attributes::FecMode{});
+    }
+    output.append(folly::sformat(
+        "    Extended Fec : {:s}\n", (extendedFec ? "True" : "False")));
+    output.append(folly::sformat(
+        "    Fec mode: {:d}\n", (extendedFec ? extFecMode : fecMode)));
 
-  portOperStatus = SaiApiTable::getInstance()->portApi().getAttribute(
-      sysPortAdapter, SaiPortTraits::Attributes::OperStatus{});
-  output.append(folly::sformat(
-      "    Link Status: {:d}\n", static_cast<int>(portOperStatus)));
-  portSpeed = SaiApiTable::getInstance()->portApi().getAttribute(
-      sysPortAdapter, SaiPortTraits::Attributes::Speed{});
-  output.append(folly::sformat("    Speed: {:d}\n", portSpeed));
-  fecMode = SaiApiTable::getInstance()->portApi().getAttribute(
-      sysPortAdapter, SaiPortTraits::Attributes::FecMode{});
-  output.append(folly::sformat("    Fec mode: {:d}\n", fecMode));
-  interfaceType = SaiApiTable::getInstance()->portApi().getAttribute(
-      sysPortAdapter, SaiPortTraits::Attributes::InterfaceType{});
-  output.append(folly::sformat("    Interface Type: {:d}\n", interfaceType));
-  serdesId = SaiApiTable::getInstance()->portApi().getAttribute(
-      sysPortAdapter, SaiPortTraits::Attributes::SerdesId{});
-  output.append(folly::sformat("    Serdes Id: {:d}\n", serdesId));
+    auto interfaceType = SaiApiTable::getInstance()->portApi().getAttribute(
+        portAdapter, SaiPortTraits::Attributes::InterfaceType{});
+    output.append(folly::sformat("    Interface Type: {:d}\n", interfaceType));
+    auto serdesId = SaiApiTable::getInstance()->portApi().getAttribute(
+        portAdapter, SaiPortTraits::Attributes::SerdesId{});
+    output.append(folly::sformat("    Serdes Id: {:d}\n", serdesId));
+  };
+
+  portInfoGet(true, linePortAdapter, output);
+  portInfoGet(false, sysPortAdapter, output);
 
   output.append(
       folly::sformat("  Port Connector Obj = {}\n", connectorAdapter.t));
   return output;
+}
+
+void SaiPhyManager::setSaiPortLoopbackState(
+    PortID swPort,
+    phy::PortComponent component,
+    bool setLoopback) {
+  XLOG(INFO) << "SaiPhyManager::setSaiPortLoopbackState";
+  auto globalPhyID = getGlobalXphyIDbyPortID(swPort);
+  auto saiPlatform = getSaiPlatform(globalPhyID);
+  auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
+
+  auto switchId = saiSwitch->getSaiSwitchId();
+
+  // Get port handle and then get port attributes
+  auto portHandle =
+      saiSwitch->managerTable()->portManager().getPortHandle(swPort);
+
+  if (portHandle == nullptr) {
+    XLOG(INFO) << "Port Handle is null";
+    return;
+  }
+
+  auto portAdapterKey = (component == phy::PortComponent::GB_LINE)
+      ? portHandle->port->adapterKey()
+      : portHandle->sysPort->adapterKey();
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+  auto loopbackMode =
+      setLoopback ? SAI_PORT_LOOPBACK_MODE_PHY : SAI_PORT_LOOPBACK_MODE_NONE;
+
+  SaiApiTable::getInstance()->portApi().setAttribute(
+      portAdapterKey,
+      SaiPortTraits::Attributes::PortLoopbackMode{loopbackMode});
+  XLOG(INFO) << folly::sformat(
+      "Port {} Side {:s} Loopback state set to {:d}",
+      static_cast<int>(swPort),
+      ((component == phy::PortComponent::GB_LINE) ? "line" : "system"),
+      static_cast<int>(loopbackMode));
+#endif
+}
+
+void SaiPhyManager::setSaiPortAdminState(
+    PortID swPort,
+    phy::PortComponent component,
+    bool setAdminUp) {
+  XLOG(INFO) << "SaiPhyManager::setSaiPortAdminState";
+  auto globalPhyID = getGlobalXphyIDbyPortID(swPort);
+  auto saiPlatform = getSaiPlatform(globalPhyID);
+  auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
+
+  auto switchId = saiSwitch->getSaiSwitchId();
+
+  // Get port handle and then get port attributes
+  auto portHandle =
+      saiSwitch->managerTable()->portManager().getPortHandle(swPort);
+
+  if (portHandle == nullptr) {
+    XLOG(INFO) << "Port Handle is null";
+    return;
+  }
+
+  auto portAdapterKey = (component == phy::PortComponent::GB_LINE)
+      ? portHandle->port->adapterKey()
+      : portHandle->sysPort->adapterKey();
+
+  SaiApiTable::getInstance()->portApi().setAttribute(
+      portAdapterKey, SaiPortTraits::Attributes::AdminState{setAdminUp});
+  XLOG(INFO) << folly::sformat(
+      "Port {} Side {:s} Admin state set to {:s}",
+      static_cast<int>(swPort),
+      ((component == phy::PortComponent::GB_LINE) ? "line" : "system"),
+      (setAdminUp ? "Up" : "Down"));
 }
 
 std::unique_ptr<ExternalPhyPortStatsUtils>
@@ -726,6 +831,8 @@ mka::MacsecSaStats SaiPhyManager::getMacsecSecureAssocStats(
       returnSaStats.outProtectedPkts() =
           returnSaStats.outProtectedPkts().value() +
           singleSaStat.saStats()->outProtectedPkts().value();
+      returnSaStats.outCurrentXpn() =
+          singleSaStat.saStats()->outCurrentXpn().value();
       returnSaStats.inUncheckedPkts() =
           returnSaStats.inUncheckedPkts().value() +
           singleSaStat.saStats()->inUncheckedPkts().value();
@@ -741,6 +848,8 @@ mka::MacsecSaStats SaiPhyManager::getMacsecSecureAssocStats(
           singleSaStat.saStats()->inNoSaPkts().value();
       returnSaStats.inUnusedSaPkts() = returnSaStats.inUnusedSaPkts().value() +
           singleSaStat.saStats()->inUnusedSaPkts().value();
+      returnSaStats.inCurrentXpn() =
+          singleSaStat.saStats()->inCurrentXpn().value();
       returnSaStats.inOkPkts() = returnSaStats.inOkPkts().value() +
           singleSaStat.saStats()->inOkPkts().value();
     }
@@ -772,7 +881,7 @@ std::string SaiPhyManager::listHwObjects(
 
       resultStr += folly::to<std::string>("Xphy Id: ", xphyID, "\n");
       resultStr += folly::to<std::string>(
-          "Sai Switch Id: ", saiSwitch->getSwitchId(), "\n");
+          "Sai Switch Id: ", saiSwitch->getSaiSwitchId(), "\n");
       resultStr += saiSwitch->listObjects(hwObjects, cached);
     }
   }
@@ -802,6 +911,209 @@ bool SaiPhyManager::getSdkState(const std::string& fileName) {
   auto saiSwitch = getSaiSwitch(xphyID);
   saiSwitch->dumpDebugState(fileName);
   return true;
+}
+
+void SaiPhyManager::setPortPrbs(
+    PortID portID,
+    phy::Side side,
+    const phy::PortPrbsState& prbs) {
+  const auto& wLockedCache = getWLockedCache(portID);
+
+  auto* xphy = getExternalPhyLocked(wLockedCache);
+  if (!xphy->isSupported(phy::ExternalPhy::Feature::PRBS)) {
+    throw FbossError("Port:", portID, " xphy can't support PRBS");
+  }
+  if (wLockedCache->systemLanes.empty() || wLockedCache->lineLanes.empty()) {
+    throw FbossError(
+        "Port:", portID, " is not programmed and can't find cached lanes");
+  }
+
+  // Configure PRBS using SAI
+  auto* saiSwitch = getSaiSwitch(portID);
+  auto portHandle =
+      saiSwitch->managerTable()->portManager().getPortHandle(portID);
+  const auto& sideLanes = side == phy::Side::SYSTEM ? wLockedCache->systemLanes
+                                                    : wLockedCache->lineLanes;
+  auto portAdapterKey = side == phy::Side::SYSTEM
+      ? portHandle->sysPort->adapterKey()
+      : portHandle->port->adapterKey();
+  XLOG(INFO) << "Setting the PRBS on port " << portAdapterKey.t;
+
+  if (prbs.enabled().value()) {
+    SaiApiTable::getInstance()->portApi().setAttribute(
+        portAdapterKey,
+        SaiPortTraits::Attributes::PrbsPolynomial{prbs.polynominal().value()});
+  }
+  SaiApiTable::getInstance()->portApi().setAttribute(
+      portAdapterKey,
+      SaiPortTraits::Attributes::PrbsConfig{prbs.enabled().value() ? 1 : 0});
+
+  // Enable stats collection
+  const auto& wLockedStats = getWLockedStats(portID);
+  if (*prbs.enabled()) {
+    const auto& phyPortConfig = getHwPhyPortConfigLocked(wLockedCache, portID);
+    wLockedStats->stats->setupPrbsCollection(
+        side, sideLanes, phyPortConfig.getLaneSpeedInMb(side));
+  } else {
+    wLockedStats->stats->disablePrbsCollection(side);
+  }
+}
+
+phy::PortPrbsState SaiPhyManager::getPortPrbs(PortID portID, phy::Side side) {
+  const auto& rLockedCache = getRLockedCache(portID);
+
+  auto* xphy = getExternalPhyLocked(rLockedCache);
+  if (!xphy->isSupported(phy::ExternalPhy::Feature::PRBS)) {
+    throw FbossError("Port:", portID, " xphy can't support PRBS");
+  }
+  if (rLockedCache->systemLanes.empty() || rLockedCache->lineLanes.empty()) {
+    throw FbossError(
+        "Port:", portID, " is not programmed and can't find cached lanes");
+  }
+
+  // Get Port PRBS state from SAI
+  phy::PortPrbsState prbsState;
+  auto* saiSwitch = getSaiSwitch(portID);
+  auto portHandle =
+      saiSwitch->managerTable()->portManager().getPortHandle(portID);
+  auto portAdapterKey = side == phy::Side::LINE
+      ? portHandle->port->adapterKey()
+      : portHandle->sysPort->adapterKey();
+  XLOG(INFO) << "Getting the PRBS state from port " << portAdapterKey.t;
+
+  prbsState.polynominal() = SaiApiTable::getInstance()->portApi().getAttribute(
+      portAdapterKey, SaiPortTraits::Attributes::PrbsPolynomial{});
+  prbsState.enabled() =
+      SaiApiTable::getInstance()->portApi().getAttribute(
+          portAdapterKey, SaiPortTraits::Attributes::PrbsConfig{}) != 0;
+  return prbsState;
+}
+
+std::vector<phy::PrbsLaneStats> SaiPhyManager::getPortPrbsStats(
+    PortID portID,
+    phy::Side side) {
+  const auto& rLockedCache = getRLockedCache(portID);
+  auto* xphy = getExternalPhyLocked(rLockedCache);
+  if (!xphy->isSupported(phy::ExternalPhy::Feature::PRBS_STATS)) {
+    throw FbossError("Port:", portID, " xphy can't support PRBS_STATS");
+  }
+  if (rLockedCache->lineLanes.empty() || rLockedCache->systemLanes.empty()) {
+    throw FbossError(
+        "Port:", portID, " xphy syslem and line lanes not configured yet");
+  }
+
+  // Get PRBS info from SAI
+  auto* saiSwitch = getSaiSwitch(portID);
+  auto portHandle =
+      saiSwitch->managerTable()->portManager().getPortHandle(portID);
+  auto portAdapterKey = side == phy::Side::SYSTEM
+      ? portHandle->sysPort->adapterKey()
+      : portHandle->port->adapterKey();
+  XLOG(INFO) << "Getting the PRBS state from port " << portAdapterKey.t;
+
+  std::vector<phy::PrbsLaneStats> lanePrbs;
+  phy::PrbsLaneStats oneLanePrbs;
+  oneLanePrbs.laneId() = 0;
+
+  bool prbsEnabled =
+      SaiApiTable::getInstance()->portApi().getAttribute(
+          portAdapterKey, SaiPortTraits::Attributes::PrbsConfig{}) != 0;
+
+  if (prbsEnabled) {
+#if SAI_API_VERSION >= SAI_VERSION(1, 8, 1)
+    auto prbsState = SaiApiTable::getInstance()->portApi().getAttribute(
+        portAdapterKey, SaiPortTraits::Attributes::PrbsRxState{});
+    oneLanePrbs.locked() = prbsState.rx_status > 0;
+    oneLanePrbs.ber() = prbsState.error_count;
+#endif
+  }
+
+  lanePrbs.push_back(oneLanePrbs);
+  return lanePrbs;
+}
+
+/*
+ * xphyPortStateToggle
+ *
+ * This function toggles the XPHY given side port. This is helpful to make the
+ * NPU Rx to tune with XPHY host side Tx. The NPU IPHY port gets programmed
+ * first so after the XPHY port gets created then we need to turn off and on the
+ * XPHY host Tx to let the NPU IPHY Rx lock to the correct signal
+ */
+void SaiPhyManager::xphyPortStateToggle(PortID swPort, phy::Side side) {
+  XLOG(INFO) << "SaiPhyManager::xphyPortStateToggle";
+  auto globalPhyID = getGlobalXphyIDbyPortID(swPort);
+  auto saiPlatform = getSaiPlatform(globalPhyID);
+  if (!saiPlatform->getAsic()->isSupported(
+          HwAsic::Feature::XPHY_PORT_STATE_TOGGLE)) {
+    XLOG(ERR) << "xphyPortStateToggle: Feature not supported";
+    return;
+  }
+
+  auto saiSwitch = static_cast<SaiSwitch*>(saiPlatform->getHwSwitch());
+  auto switchId = saiSwitch->getSaiSwitchId();
+
+  // Get port handle and then get port adapter key (SAI object id)
+  auto portHandle =
+      saiSwitch->managerTable()->portManager().getPortHandle(swPort);
+
+  if (portHandle == nullptr) {
+    XLOG(INFO) << "Port Handle is null";
+    return;
+  }
+
+  auto portAdapterKey = (side == phy::Side::SYSTEM)
+      ? portHandle->sysPort->adapterKey()
+      : portHandle->port->adapterKey();
+
+  // Flap XPHY side port to let the peer (NPU IPHY Rx or other end) lock to
+  // the correct signal again
+  SaiApiTable::getInstance()->portApi().setAttribute(
+      portAdapterKey, SaiPortTraits::Attributes::AdminState{false});
+  /* sleep override */
+  usleep(100000);
+  SaiApiTable::getInstance()->portApi().setAttribute(
+      portAdapterKey, SaiPortTraits::Attributes::AdminState{true});
+  /* sleep override */
+  usleep(100000);
+  XLOG(INFO) << "Sai port " << swPort
+             << (side == phy::Side::SYSTEM ? " Host" : " Line")
+             << " Xphy port toggle done";
+}
+
+/*
+ * gracefulExit
+ *
+ * This function calls SaiSwitch::gracefulExit() which will set the Sai Graceful
+ * Restart attribute. That function will store the SaiSwitch state in a file and
+ * also let the SAI SDK store its state in a file
+ */
+void SaiPhyManager::gracefulExit() {
+  // Loop through all pim platforms
+  for (auto& pimPlatformItr : saiPlatforms_) {
+    auto& pimPlatform = pimPlatformItr.second;
+
+    // Loop through all xphy in the pim
+    for (auto& platformItr : pimPlatform) {
+      GlobalXphyID xphyID = platformItr.first;
+      if (!getSaiPlatform(xphyID)->getAsic()->isSupported(
+              HwAsic::Feature::WARMBOOT)) {
+        XLOG(DBG3) << "gracefulExit: Warmboot not supported for this platform";
+        return;
+      }
+
+      // Get SaiSwitch and SwitchState using global xphy id
+      auto saiSwitch = getSaiSwitch(xphyID);
+      auto switchState = getPlatformInfo(xphyID)->getState();
+
+      // Get the current SwitchState and ThriftState which will be used to call
+      //  SaiSwitch::gracefulExit function
+      folly::dynamic follySwitchState = folly::dynamic::object;
+      state::WarmbootState thriftSwitchState;
+      *thriftSwitchState.swSwitchState() = switchState->toThrift();
+      saiSwitch->gracefulExit(follySwitchState, thriftSwitchState);
+    }
+  }
 }
 
 } // namespace facebook::fboss

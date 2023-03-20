@@ -24,11 +24,11 @@ TEST(TransceiverSpec, SerializeTransceiver) {
   tcvr->setMediaInterface(MediaInterfaceCode::FR1_100G);
   tcvr->setManagementInterface(TransceiverManagementInterface::SFF);
 
-  auto serialized = tcvr->toFollyDynamic();
-  auto tcvrBack = TransceiverSpec::fromFollyDynamic(serialized);
+  auto serialized = tcvr->toThrift();
+  auto tcvrBack = std::make_shared<TransceiverSpec>(serialized);
 
   EXPECT_TRUE(*tcvr == *tcvrBack);
-  validateThriftyMigration(*tcvr);
+  validateNodeSerialization(*tcvr);
 }
 
 TEST(TransceiverSpec, SerializeSwitchState) {
@@ -48,8 +48,8 @@ TEST(TransceiverSpec, SerializeSwitchState) {
   state->addTransceiver(tcvr1);
   state->addTransceiver(tcvr2);
 
-  auto serialized = state->toFollyDynamic();
-  auto stateBack = SwitchState::fromFollyDynamic(serialized);
+  auto serialized = state->toThrift();
+  auto stateBack = SwitchState::fromThrift(serialized);
 
   // Check all transceivers should be there
   for (auto tcvrID : {TransceiverID(1), TransceiverID(2)}) {
@@ -58,8 +58,8 @@ TEST(TransceiverSpec, SerializeSwitchState) {
         *stateBack->getTransceivers()->getTransceiver(tcvrID));
   }
 
-  validateThriftyMigration(*tcvr1);
-  validateThriftyMigration(*tcvr2);
+  validateNodeSerialization(*tcvr1);
+  validateNodeSerialization(*tcvr2);
 }
 
 TEST(TransceiverMap, addTransceiver) {
@@ -101,6 +101,4 @@ TEST(TransceiverMap, addTransceiver) {
   EXPECT_TRUE(transceiver1->isPublished());
   EXPECT_TRUE(transceiver2->isPublished());
   EXPECT_TRUE(transceiver10->isPublished());
-
-  validateThriftyMigration(*transceiverMap);
 }

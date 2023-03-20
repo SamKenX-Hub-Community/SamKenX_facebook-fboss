@@ -36,10 +36,12 @@ struct SaiQueueTraits {
     using Type = SaiAttribute<EnumType, SAI_QUEUE_ATTR_TYPE, sai_int32_t>;
     using Port = SaiAttribute<EnumType, SAI_QUEUE_ATTR_PORT, SaiObjectIdT>;
     using Index = SaiAttribute<EnumType, SAI_QUEUE_ATTR_INDEX, sai_uint8_t>;
+
     using ParentSchedulerNode = SaiAttribute<
         EnumType,
         SAI_QUEUE_ATTR_PARENT_SCHEDULER_NODE,
-        SaiObjectIdT>;
+        SaiObjectIdT,
+        SaiObjectIdDefault>;
     using WredProfileId = SaiAttribute<
         EnumType,
         SAI_QUEUE_ATTR_WRED_PROFILE_ID,
@@ -53,7 +55,8 @@ struct SaiQueueTraits {
     using SchedulerProfileId = SaiAttribute<
         EnumType,
         SAI_QUEUE_ATTR_SCHEDULER_PROFILE_ID,
-        SaiObjectIdT>;
+        SaiObjectIdT,
+        SaiObjectIdDefault>;
   };
   using AdapterKey = QueueSaiId;
   using AdapterHostKey =
@@ -62,7 +65,7 @@ struct SaiQueueTraits {
       Attributes::Type,
       Attributes::Port,
       Attributes::Index,
-      Attributes::ParentSchedulerNode,
+      std::optional<Attributes::ParentSchedulerNode>,
       std::optional<Attributes::SchedulerProfileId>,
       std::optional<Attributes::WredProfileId>,
       std::optional<Attributes::BufferProfileId>>;
@@ -72,22 +75,41 @@ struct SaiQueueTraits {
       SAI_QUEUE_STAT_DROPPED_PACKETS,
       SAI_QUEUE_STAT_DROPPED_BYTES,
   };
+  static constexpr std::array<sai_stat_id_t, 2> VoqCounterIdsToRead = {
+      SAI_QUEUE_STAT_BYTES,
+      SAI_QUEUE_STAT_DROPPED_BYTES,
+  };
 
   static constexpr std::array<sai_stat_id_t, 1> WredCounterIdsToRead = {
       SAI_QUEUE_STAT_WRED_DROPPED_PACKETS,
   };
 
-  static constexpr std::array<sai_stat_id_t, 1> CounterIdsToReadAndClear = {
+  static constexpr std::array<sai_stat_id_t, 1> EcnCounterIdsToRead = {
+      SAI_QUEUE_STAT_WRED_ECN_MARKED_PACKETS,
+  };
+
+  static constexpr std::array<sai_stat_id_t, 2> CounterIdsToReadAndClear = {
       SAI_QUEUE_STAT_WATERMARK_BYTES,
+      SAI_QUEUE_STAT_WATERMARK_LEVEL,
   };
   // Non watermark stats
   static constexpr auto NonWatermarkCounterIdsToRead = CounterIdsToRead;
   static constexpr std::array<sai_stat_id_t, 0>
       NonWatermarkCounterIdsToReadAndClear = {};
+  static constexpr auto VoqNonWatermarkCounterIdsToRead = VoqCounterIdsToRead;
+  static constexpr std::array<sai_stat_id_t, 0>
+      VoqNonWatermarkCounterIdsToReadAndClear = {};
   static constexpr auto NonWatermarkWredCounterIdsToRead = WredCounterIdsToRead;
+  static constexpr auto NonWatermarkEcnCounterIdsToRead = EcnCounterIdsToRead;
   // Watermark stats
-  static constexpr auto WatermarkCounterIdsToReadAndClear =
-      CounterIdsToReadAndClear;
+  static constexpr std::array<sai_stat_id_t, 1>
+      WatermarkByteCounterIdsToReadAndClear = {
+          SAI_QUEUE_STAT_WATERMARK_BYTES,
+  };
+  static constexpr std::array<sai_stat_id_t, 1>
+      WatermarkLevelCounterIdsToReadAndClear = {
+          SAI_QUEUE_STAT_WATERMARK_LEVEL,
+  };
 };
 
 SAI_ATTRIBUTE_NAME(Queue, Type)

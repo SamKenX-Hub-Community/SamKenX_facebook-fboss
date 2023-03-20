@@ -21,12 +21,15 @@
 
 namespace facebook::fboss {
 
-class PortDescriptor : public PortDescriptorTemplate<PortID, AggregatePortID> {
+class PortDescriptor
+    : public PortDescriptorTemplate<PortID, AggregatePortID, SystemPortID> {
  public:
-  using BaseT = PortDescriptorTemplate<PortID, AggregatePortID>;
+  using BaseT = PortDescriptorTemplate<PortID, AggregatePortID, SystemPortID>;
   using BaseT::PortType;
   explicit PortDescriptor(PortID p) : BaseT(p) {}
   explicit PortDescriptor(AggregatePortID p) : BaseT(p) {}
+  explicit PortDescriptor(SystemPortID p) : BaseT(p) {}
+  explicit PortDescriptor(const BaseT& b) : BaseT(b) {}
 
   static PortDescriptor fromRxPacket(const RxPacket& pkt) {
     if (pkt.isFromAggregatePort()) {
@@ -43,9 +46,12 @@ class PortDescriptor : public PortDescriptorTemplate<PortID, AggregatePortID> {
   static PortDescriptor fromFollyDynamic(const folly::dynamic& descJSON) {
     return PortDescriptor(BaseT::fromFollyDynamic(descJSON));
   }
+  cfg::PortDescriptor toCfgPortDescriptor() const {
+    cfg::PortDescriptor cfgPort{};
 
- private:
-  explicit PortDescriptor(const BaseT& b) : BaseT(b) {}
+    return cfgPort;
+  }
+  static PortDescriptor fromCfgCfgPortDescriptor(cfg::PortDescriptor cfg);
 };
 
 // helper so port descriptors work directly in folly::to<string> expressions.

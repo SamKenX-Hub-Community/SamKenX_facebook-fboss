@@ -38,6 +38,8 @@ class MockSffModule : public SffModule {
       : SffModule(transceiverManager, std::move(qsfpImpl)) {
     ON_CALL(*this, updateQsfpData(testing::_))
         .WillByDefault(testing::Assign(&dirty_, false));
+    ON_CALL(*this, ensureTransceiverReadyLocked())
+        .WillByDefault(testing::Return(true));
   }
   MOCK_METHOD1(setPowerOverrideIfSupportedLocked, void(PowerControlState));
   MOCK_METHOD1(updateQsfpData, void(bool));
@@ -55,6 +57,8 @@ class MockSffModule : public SffModule {
 
   MOCK_METHOD0(ensureTxEnabled, void());
   MOCK_METHOD0(resetLowPowerMode, void());
+  MOCK_METHOD0(ensureTransceiverReadyLocked, bool());
+  MOCK_CONST_METHOD0(customizationSupported, bool());
 
   // Provide way to call parent
   void actualSetCdrIfSupported(
@@ -73,6 +77,12 @@ class MockSffModule : public SffModule {
     present_ = true;
     SffModule::updateQsfpData(full);
   }
+
+  void useActualGetTransceiverInfo() {
+    ON_CALL(*this, getTransceiverInfo())
+        .WillByDefault(testing::Return(SffModule::getTransceiverInfo()));
+  }
+
   void setFlatMem() {
     flatMem_ = false;
   }

@@ -27,10 +27,15 @@ class HwOlympicQosSchedulerTest : public HwLinkStateDependentTest {
  private:
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::oneL3IntfConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], cfg::PortLoopbackMode::MAC);
+        getHwSwitch(),
+        masterLogicalPortIds()[0],
+        getAsic()->desiredLoopbackMode());
     if (isSupported(HwAsic::Feature::L3_QOS)) {
       auto streamType =
-          *(getPlatform()->getAsic()->getQueueStreamTypes(false).begin());
+          *(getPlatform()
+                ->getAsic()
+                ->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT)
+                .begin());
       utility::addOlympicQueueConfig(
           &cfg, streamType, getPlatform()->getAsic());
       utility::addOlympicQosMaps(cfg);
@@ -38,8 +43,7 @@ class HwOlympicQosSchedulerTest : public HwLinkStateDependentTest {
     return cfg;
   }
   MacAddress dstMac() const {
-    auto vlanId = utility::firstVlanID(initialConfig());
-    return utility::getInterfaceMac(getProgrammedState(), vlanId);
+    return utility::getFirstInterfaceMac(getProgrammedState());
   }
 
   std::unique_ptr<facebook::fboss::TxPacket> createUdpPkt(
@@ -250,7 +254,7 @@ bool HwOlympicQosSchedulerTest::verifyWRRHelper(
     if (distributionOk) {
       return true;
     }
-    XLOG(INFO) << " Retrying ...";
+    XLOG(DBG2) << " Retrying ...";
   }
   return false;
 }
@@ -279,7 +283,7 @@ bool HwOlympicQosSchedulerTest::verifySPHelper(int trafficQueueId) {
     if (distributionOk) {
       return true;
     }
-    XLOG(INFO) << " Retrying ...";
+    XLOG(DBG2) << " Retrying ...";
   }
   return false;
 }
@@ -357,8 +361,10 @@ void HwOlympicQosSchedulerTest::verifyWRRToAllSPDscpToQueue() {
 
   auto setupPostWarmboot = [=]() {
     auto newCfg{initialConfig()};
-    auto streamType =
-        *(getPlatform()->getAsic()->getQueueStreamTypes(false).begin());
+    auto streamType = *(getPlatform()
+                            ->getAsic()
+                            ->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT)
+                            .begin());
     utility::addOlympicAllSPQueueConfig(&newCfg, streamType);
     utility::addOlympicAllSPQosMaps(newCfg);
     applyNewConfig(newCfg);
@@ -384,8 +390,10 @@ void HwOlympicQosSchedulerTest::verifyWRRToAllSPTraffic() {
 
   auto setupPostWarmboot = [=]() {
     auto newCfg{initialConfig()};
-    auto streamType =
-        *(getPlatform()->getAsic()->getQueueStreamTypes(false).begin());
+    auto streamType = *(getPlatform()
+                            ->getAsic()
+                            ->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT)
+                            .begin());
     utility::addOlympicAllSPQueueConfig(&newCfg, streamType);
     utility::addOlympicAllSPQosMaps(newCfg);
     applyNewConfig(newCfg);

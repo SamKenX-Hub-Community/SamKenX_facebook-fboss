@@ -113,7 +113,8 @@ TEST(BufferPoolConfigTest, applyConfig) {
   const int kSharedBytes = 1500;
 
   cfg::SwitchConfig config;
-  EXPECT_EQ(nullptr, stateV0->getBufferPoolCfgs());
+  EXPECT_NE(nullptr, stateV0->getBufferPoolCfgs());
+  EXPECT_EQ(0, stateV0->getBufferPoolCfgs()->size());
   std::map<std::string, cfg::BufferPoolConfig> bufferPoolCfgMap;
 
   auto updateBufferPoolCfg = [&](const std::string& key,
@@ -134,13 +135,13 @@ TEST(BufferPoolConfigTest, applyConfig) {
   EXPECT_NE(nullptr, stateV1);
 
   auto bufferPools = stateV1->getBufferPoolCfgs();
-  validateThriftyMigration(*bufferPools);
 
   EXPECT_NE(nullptr, bufferPools);
   EXPECT_EQ(2, (*bufferPools).size());
 
   int index = 0;
-  for (const auto& bufferPool : *bufferPools) {
+  for (auto iter : std::as_const(*bufferPools)) {
+    auto bufferPool = iter.second;
     std::string bufferPoolName = folly::to<std::string>("bufferPool_", index);
     EXPECT_EQ(bufferPool->getID(), bufferPoolName);
     EXPECT_EQ(bufferPool->getSharedBytes(), kSharedBytes);

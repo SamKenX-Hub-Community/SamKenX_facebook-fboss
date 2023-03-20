@@ -235,8 +235,14 @@ class ICMPHdr {
    * compute the total packet length for ICMPv4 and ICMPv6 given
    * the payload length
    */
-  static uint32_t computeTotalLengthV4(uint32_t payloadLength);
-  static uint32_t computeTotalLengthV6(uint32_t payloadLength);
+  // TODO(skhare) Remove default argument value for "taggedPkt" once all
+  // callsites are aware of whether nor not the pkt is vlan tagged.
+  static uint32_t computeTotalLengthV4(
+      uint32_t payloadLength,
+      bool taggedPkt = true);
+  static uint32_t computeTotalLengthV6(
+      uint32_t payloadLength,
+      bool taggedPkt = true);
 
   /*
    * Return true if and only if the header checksum is valid.
@@ -255,7 +261,7 @@ class ICMPHdr {
       folly::io::RWPrivateCursor* cursor,
       folly::MacAddress dstMac,
       folly::MacAddress srcMac,
-      VlanID vlan,
+      std::optional<VlanID> vlan,
       const IPv6Hdr& ipv6,
       uint32_t payloadLength,
       BodyFn bodyFn) {
@@ -283,7 +289,7 @@ class ICMPHdr {
       folly::io::RWPrivateCursor* cursor,
       folly::MacAddress dstMac,
       folly::MacAddress srcMac,
-      VlanID vlan,
+      std::optional<VlanID> vlan,
       const IPv4Hdr& ipv4,
       uint32_t payloadLength,
       BodyFn bodyFn) {
@@ -315,7 +321,7 @@ class ICMPHdr {
       folly::io::RWPrivateCursor* cursor,
       folly::MacAddress dstMac,
       folly::MacAddress srcMac,
-      VlanID vlan,
+      std::optional<VlanID> vlan,
       const IPv6Hdr& ipv6,
       uint32_t payloadLength);
   // IPv4 header
@@ -323,7 +329,7 @@ class ICMPHdr {
       folly::io::RWPrivateCursor* cursor,
       folly::MacAddress dstMac,
       folly::MacAddress srcMac,
-      VlanID vlan,
+      std::optional<VlanID> vlan,
       const IPv4Hdr& ipv4);
 
  public:

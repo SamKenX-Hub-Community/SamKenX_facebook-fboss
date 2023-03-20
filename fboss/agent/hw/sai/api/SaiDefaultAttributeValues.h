@@ -40,6 +40,12 @@ struct SaiInt1Default {
   }
 };
 
+struct SaiInt96Default {
+  sai_uint32_t operator()() const {
+    return 96;
+  }
+};
+
 template <typename SaiIntT>
 struct SaiInt100Default {
   SaiIntT operator()() const {
@@ -114,6 +120,28 @@ struct SaiPortErrStatusDefault {
     return sai_port_err_status_t();
   }
 };
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+struct SaiPortLaneLatchStatusDefault {
+  sai_port_lane_latch_status_t operator()() const {
+    return sai_port_lane_latch_status_t{0, {false, false}};
+  }
+};
+
+struct SaiLatchStatusDefault {
+  sai_latch_status_t operator()() const {
+    return sai_latch_status_t();
+  }
+};
+#endif
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 8, 1)
+struct SaiPrbsRxStateDefault {
+  sai_prbs_rx_state_t operator()() const {
+    return sai_prbs_rx_state_t();
+  }
+};
+#endif
 
 using SaiObjectIdListDefault = SaiListDefault<sai_object_list_t>;
 using SaiU32ListDefault = SaiListDefault<sai_u32_list_t>;

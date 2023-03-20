@@ -7,17 +7,8 @@
 
 namespace facebook::fboss {
 
-MirrorMap::MirrorMap() {}
-
-MirrorMap::~MirrorMap() {}
-
 std::shared_ptr<Mirror> MirrorMap::getMirrorIf(const std::string& name) const {
-  for (const auto& mirror : *this) {
-    if (mirror->getID() == name) {
-      return mirror;
-    }
-  }
-  return nullptr;
+  return getNodeIf(name);
 }
 
 void MirrorMap::addMirror(const std::shared_ptr<Mirror>& mirror) {
@@ -37,6 +28,6 @@ MirrorMap* MirrorMap::modify(std::shared_ptr<SwitchState>* state) {
   return ptr;
 }
 
-FBOSS_INSTANTIATE_NODE_MAP(MirrorMap, MirrorMapTraits);
+template class ThriftMapNode<MirrorMap, MirrorMapTraits>;
 
 } // namespace facebook::fboss

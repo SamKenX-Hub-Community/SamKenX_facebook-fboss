@@ -18,6 +18,8 @@
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiRouterInterfaceManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
+#include "fboss/agent/platforms/sai/SaiPlatform.h"
 #include "fboss/agent/state/ArpEntry.h"
 #include "fboss/agent/state/DeltaFunctions.h"
 #include "fboss/agent/state/NdpEntry.h"
@@ -46,9 +48,12 @@ SaiNeighborTraits::NeighborEntry SaiNeighborManager::saiEntryFromSwEntry(
         "No SaiRouterInterface for InterfaceID: ",
         swEntry->getIntfID());
   }
-  auto switchId = managerTable_->switchManager().getSwitchSaiId();
   return SaiNeighborTraits::NeighborEntry(
-      switchId, routerInterfaceHandle->routerInterface->adapterKey(), ip);
+      getSwitchSaiId(), routerInterfaceHandle->adapterKey(), ip);
+}
+
+SwitchSaiId SaiNeighborManager::getSwitchSaiId() const {
+  return managerTable_->switchManager().getSwitchSaiId();
 }
 
 template <typename NeighborEntryT>
@@ -71,8 +76,8 @@ void SaiNeighborManager::changeNeighbor(
     } else {
       /* attempt to resolve next hops if not already resolved, if already
        * resolved, it would be no-op */
-      auto iter = managedNeighbors_.find(saiEntryFromSwEntry(newSwEntry));
-      CHECK(iter != managedNeighbors_.end());
+      auto iter = neighbors_.find(saiEntryFromSwEntry(newSwEntry));
+      CHECK(iter != neighbors_.end());
       iter->second->notifySubscribers();
     }
   }
@@ -85,19 +90,28 @@ template <typename NeighborEntryT>
 void SaiNeighborManager::addNeighbor(
     const std::shared_ptr<NeighborEntryT>& swEntry) {
   if (swEntry->isPending()) {
-    XLOG(INFO) << "skip adding unresolved neighbor " << swEntry->getIP();
+    XLOG(DBG2) << "skip adding unresolved neighbor " << swEntry->getIP();
     return;
   }
-  XLOG(INFO) << "addNeighbor " << swEntry->getIP();
+  XLOG(DBG2) << "addNeighbor " << swEntry->getIP();
   auto subscriberKey = saiEntryFromSwEntry(swEntry);
-  if (managedNeighbors_.find(subscriberKey) != managedNeighbors_.end()) {
+  if (neighbors_.find(subscriberKey) != neighbors_.end()) {
     throw FbossError(
         "Attempted to add duplicate neighbor: ", swEntry->getIP().str());
   }
 
-  SaiPortDescriptor saiPortDesc = swEntry->getPort().isPhysicalPort()
-      ? SaiPortDescriptor(swEntry->getPort().phyPortID())
-      : SaiPortDescriptor(swEntry->getPort().aggPortID());
+  SaiPortDescriptor saiPortDesc;
+  switch (swEntry->getPort().type()) {
+    case PortDescriptor::PortType::PHYSICAL:
+      saiPortDesc = SaiPortDescriptor(swEntry->getPort().phyPortID());
+      break;
+    case PortDescriptor::PortType::AGGREGATE:
+      saiPortDesc = SaiPortDescriptor(swEntry->getPort().aggPortID());
+      break;
+    case PortDescriptor::PortType::SYSTEM_PORT:
+      saiPortDesc = SaiPortDescriptor(swEntry->getPort().sysPortID());
+      break;
+  }
 
   std::optional<sai_uint32_t> metadata;
   if (swEntry->getClassID()) {
@@ -112,41 +126,44 @@ void SaiNeighborManager::addNeighbor(
       managerTable_->routerInterfaceManager().getRouterInterfaceHandle(
           swEntry->getIntfID());
 
-  auto subscriber = std::make_shared<ManagedNeighbor>(
+  if (saiRouterIntf->type() == cfg::InterfaceType::SYSTEM_PORT &&
+      platform_->getAsic()->isSupported(
+          HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE)) {
+    CHECK(encapIndex) << " Encap index must be set for neighbors";
+  }
+  auto neighbor = std::make_unique<SaiNeighborEntry>(
       this,
-      std::make_tuple(
-          saiPortDesc, saiRouterIntf->routerInterface->adapterKey()),
+      std::make_tuple(saiPortDesc, saiRouterIntf->adapterKey()),
       std::make_tuple(
           swEntry->getIntfID(), swEntry->getIP(), swEntry->getMac()),
       metadata,
       encapIndex,
-      swEntry->getIsLocal());
+      swEntry->getIsLocal(),
+      saiRouterIntf->type());
 
-  SaiObjectEventPublisher::getInstance()->get<SaiFdbTraits>().subscribe(
-      subscriber);
-  managedNeighbors_.emplace(subscriberKey, std::move(subscriber));
-  XLOG(DBG2) << "Add Neighbor: create ManagedNeighbor" << swEntry->str();
+  neighbors_.emplace(subscriberKey, std::move(neighbor));
+  XLOG(DBG2) << "Add Neighbor: create neighbor" << swEntry->str();
 }
 
 template <typename NeighborEntryT>
 void SaiNeighborManager::removeNeighbor(
     const std::shared_ptr<NeighborEntryT>& swEntry) {
   if (swEntry->isPending()) {
-    XLOG(INFO) << "skip removing unresolved neighbor " << swEntry->getIP();
+    XLOG(DBG2) << "skip removing unresolved neighbor " << swEntry->getIP();
     return;
   }
-  XLOG(INFO) << "removeNeighbor " << swEntry->getIP();
+  XLOG(DBG2) << "removeNeighbor " << swEntry->getIP();
   auto subscriberKey = saiEntryFromSwEntry(swEntry);
-  if (managedNeighbors_.find(subscriberKey) == managedNeighbors_.end()) {
+  if (neighbors_.find(subscriberKey) == neighbors_.end()) {
     throw FbossError(
         "Attempted to remove non-existent neighbor: ", swEntry->getIP());
   }
-  managedNeighbors_.erase(subscriberKey);
+  neighbors_.erase(subscriberKey);
   XLOG(DBG2) << "Remove Neighbor: " << swEntry->str();
 }
 
 void SaiNeighborManager::clear() {
-  managedNeighbors_.clear();
+  neighbors_.clear();
 }
 
 std::shared_ptr<SaiNeighbor> SaiNeighborManager::createSaiObject(
@@ -166,8 +183,8 @@ SaiNeighborHandle* SaiNeighborManager::getNeighborHandle(
 }
 SaiNeighborHandle* SaiNeighborManager::getNeighborHandleImpl(
     const SaiNeighborTraits::NeighborEntry& saiEntry) const {
-  auto itr = managedNeighbors_.find(saiEntry);
-  if (itr == managedNeighbors_.end()) {
+  auto itr = neighbors_.find(saiEntry);
+  if (itr == neighbors_.end()) {
     return nullptr;
   }
   auto subscriber = itr->second.get();
@@ -177,44 +194,125 @@ SaiNeighborHandle* SaiNeighborManager::getNeighborHandleImpl(
   return subscriber->getHandle();
 }
 
-bool SaiNeighborManager::isLinkUp(SaiPortDescriptor port) {
-  if (port.isPhysicalPort()) {
-    auto portHandle =
-        managerTable_->portManager().getPortHandle(port.phyPortID());
-    auto portOperStatus = SaiApiTable::getInstance()->portApi().getAttribute(
-        portHandle->port->adapterKey(),
-        SaiPortTraits::Attributes::OperStatus{});
-    return (portOperStatus == SAI_PORT_OPER_STATUS_UP);
+cfg::InterfaceType SaiNeighborManager::getNeighborRifType(
+    const SaiNeighborTraits::NeighborEntry& saiEntry) const {
+  auto itr = neighbors_.find(saiEntry);
+  if (itr != neighbors_.end()) {
+    return itr->second->getRifType();
   }
-  return managerTable_->lagManager().isMinimumLinkMet(port.aggPortID());
+  throw FbossError("Could not find neighbor: ", saiEntry.ip().str());
 }
 
 std::string SaiNeighborManager::listManagedObjects() const {
   std::string output{};
-  for (auto entry : managedNeighbors_) {
+  for (const auto& entry : neighbors_) {
     output += entry.second->toString();
     output += "\n";
   }
   return output;
 }
 
-void ManagedNeighbor::createObject(PublisherObjects objects) {
+SaiNeighborEntry::SaiNeighborEntry(
+    SaiNeighborManager* manager,
+    std::tuple<SaiPortDescriptor, RouterInterfaceSaiId> saiPortAndIntf,
+    std::tuple<InterfaceID, folly::IPAddress, folly::MacAddress>
+        intfIDAndIpAndMac,
+    std::optional<sai_uint32_t> metadata,
+    std::optional<sai_uint32_t> encapIndex,
+    bool isLocal,
+    cfg::InterfaceType intfType) {
+  switch (intfType) {
+    case cfg::InterfaceType::VLAN: {
+      auto subscriber = std::make_shared<ManagedVlanRifNeighbor>(
+          manager,
+          saiPortAndIntf,
+          intfIDAndIpAndMac,
+          metadata,
+          encapIndex,
+          isLocal);
+      SaiObjectEventPublisher::getInstance()->get<SaiFdbTraits>().subscribe(
+          subscriber);
+      neighbor_ = subscriber;
+    } break;
+    case cfg::InterfaceType::SYSTEM_PORT:
+      neighbor_ = std::make_shared<PortRifNeighbor>(
+          manager,
+          saiPortAndIntf,
+          intfIDAndIpAndMac,
+          metadata,
+          encapIndex,
+          isLocal);
+      break;
+  }
+}
+
+cfg::InterfaceType SaiNeighborEntry::getRifType() const {
+  return std::visit(
+      folly::overload(
+          [](const std::shared_ptr<ManagedVlanRifNeighbor>& /*handle*/) {
+            return cfg::InterfaceType::VLAN;
+          },
+          [](const std::shared_ptr<PortRifNeighbor>& /*handle*/) {
+            return cfg::InterfaceType::SYSTEM_PORT;
+          }),
+      neighbor_);
+  CHECK(false) << " Unknown neighbor rif type: ";
+}
+
+PortRifNeighbor::PortRifNeighbor(
+    SaiNeighborManager* manager,
+    std::tuple<SaiPortDescriptor, RouterInterfaceSaiId> saiPortAndIntf,
+    std::tuple<InterfaceID, folly::IPAddress, folly::MacAddress>
+        intfIDAndIpAndMac,
+    std::optional<sai_uint32_t> metadata,
+    std::optional<sai_uint32_t> encapIndex,
+    bool isLocal)
+    : manager_(manager),
+      saiPortAndIntf_(saiPortAndIntf),
+      handle_(std::make_unique<SaiNeighborHandle>()) {
+  const auto& ip = std::get<folly::IPAddress>(intfIDAndIpAndMac);
+  auto rifSaiId = std::get<RouterInterfaceSaiId>(saiPortAndIntf);
+  auto adapterHostKey = SaiNeighborTraits::NeighborEntry(
+      manager_->getSwitchSaiId(), rifSaiId, ip);
+  auto createAttributes = SaiNeighborTraits::CreateAttributes{
+      std::get<folly::MacAddress>(intfIDAndIpAndMac),
+      metadata,
+      encapIndex,
+      isLocal};
+  neighbor_ = manager_->createSaiObject(adapterHostKey, createAttributes);
+  handle_->neighbor = neighbor_.get();
+}
+
+ManagedVlanRifNeighbor::ManagedVlanRifNeighbor(
+    SaiNeighborManager* manager,
+    std::tuple<SaiPortDescriptor, RouterInterfaceSaiId> saiPortAndIntf,
+    std::tuple<InterfaceID, folly::IPAddress, folly::MacAddress>
+        intfIDAndIpAndMac,
+    std::optional<sai_uint32_t> metadata,
+    std::optional<sai_uint32_t> encapIndex,
+    bool isLocal)
+    : Base(std::make_tuple(
+          std::get<InterfaceID>(intfIDAndIpAndMac),
+          std::get<folly::MacAddress>(intfIDAndIpAndMac))),
+      manager_(manager),
+      saiPortAndIntf_(saiPortAndIntf),
+      intfIDAndIpAndMac_(intfIDAndIpAndMac),
+      handle_(std::make_unique<SaiNeighborHandle>()),
+      metadata_(metadata) {
+  if (encapIndex || !isLocal) {
+    throw FbossError(
+        "Remote nbrs or nbrs with encap index not supported with VLAN RIFs");
+  }
+}
+
+void ManagedVlanRifNeighbor::createObject(PublisherObjects objects) {
   auto fdbEntry = std::get<FdbWeakptr>(objects).lock();
   const auto& ip = std::get<folly::IPAddress>(intfIDAndIpAndMac_);
   auto adapterHostKey = SaiNeighborTraits::NeighborEntry(
-      fdbEntry->adapterHostKey().switchId(), getRouterInterfaceSaiId(), ip);
+      manager_->getSwitchSaiId(), getRouterInterfaceSaiId(), ip);
 
-  std::optional<bool> isLocal;
-  if (encapIndex_) {
-    // Encap index programmed via the sw layer corresponds to a non
-    // local neighbor entry. That's when we want to set isLocal attribute.
-    // Ideally we would like to set isLocal to true (default sai spec value)
-    // always. But some sai adaptors are not happy with that on non VOQ
-    // systems
-    isLocal = isLocal_;
-  }
   auto createAttributes = SaiNeighborTraits::CreateAttributes{
-      fdbEntry->adapterHostKey().mac(), metadata_, encapIndex_, isLocal};
+      fdbEntry->adapterHostKey().mac(), metadata_, std::nullopt, std::nullopt};
   auto object = manager_->createSaiObject(adapterHostKey, createAttributes);
   this->setObject(object);
   handle_->neighbor = getSaiObject();
@@ -223,7 +321,7 @@ void ManagedNeighbor::createObject(PublisherObjects objects) {
   XLOG(DBG2) << "ManagedNeigbhor::createObject: " << toString();
 }
 
-void ManagedNeighbor::removeObject(size_t, PublisherObjects) {
+void ManagedVlanRifNeighbor::removeObject(size_t, PublisherObjects) {
   XLOG(DBG2) << "ManagedNeigbhor::removeObject: " << toString();
 
   this->resetObject();
@@ -231,7 +329,7 @@ void ManagedNeighbor::removeObject(size_t, PublisherObjects) {
   handle_->fdbEntry = nullptr;
 }
 
-void ManagedNeighbor::notifySubscribers() const {
+void ManagedVlanRifNeighbor::notifySubscribers() const {
   auto neighbor = this->getObject();
   if (!neighbor) {
     return;
@@ -239,11 +337,9 @@ void ManagedNeighbor::notifySubscribers() const {
   neighbor->notifyAfterCreate(neighbor);
 }
 
-std::string ManagedNeighbor::toString() const {
+std::string ManagedVlanRifNeighbor::toString() const {
   auto metadataStr =
       metadata_.has_value() ? std::to_string(metadata_.value()) : "none";
-  auto encapStr =
-      encapIndex_.has_value() ? std::to_string(encapIndex_.value()) : "none";
   auto neighborStr = handle_->neighbor
       ? handle_->neighbor->adapterKey().toString()
       : "NeighborEntry: none";
@@ -261,17 +357,13 @@ std::string ManagedNeighbor::toString() const {
       saiPortDesc.str(),
       " metadata: ",
       metadataStr,
-      " encapIndex: ",
-      encapStr,
-      " isLocal: ",
-      (isLocal_ ? "Y" : "N"),
       " ",
       neighborStr,
       " ",
       fdbEntryStr);
 }
 
-void ManagedNeighbor::handleLinkDown() {
+void ManagedVlanRifNeighbor::handleLinkDown() {
   auto* object = getSaiObject();
   if (!object) {
     XLOG(DBG2)
@@ -285,6 +377,28 @@ void ManagedNeighbor::handleLinkDown() {
   SaiObjectEventPublisher::getInstance()
       ->get<SaiNeighborTraits>()
       .notifyLinkDown(object->adapterHostKey());
+}
+
+void PortRifNeighbor::handleLinkDown() {
+  XLOGF(
+      DBG2,
+      "neighbor {} notifying link down to subscribed next hops",
+      neighbor_->adapterHostKey());
+  SaiObjectEventPublisher::getInstance()
+      ->get<SaiNeighborTraits>()
+      .notifyLinkDown(neighbor_->adapterHostKey());
+}
+
+void SaiNeighborManager::handleLinkDown(const SaiPortDescriptor& port) {
+  CHECK(platform_->getAsic()->getSwitchType() == cfg::SwitchType::VOQ);
+  for (auto& [nbrEntry, neighbor] : neighbors_) {
+    if (neighbor->getRifType() != cfg::InterfaceType::SYSTEM_PORT) {
+      continue;
+    }
+    if (neighbor->getSaiPortDesc() == port) {
+      neighbor->handleLinkDown();
+    }
+  }
 }
 
 template SaiNeighborTraits::NeighborEntry

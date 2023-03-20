@@ -39,8 +39,10 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
     return {HwSwitchEnsemble::LINKSCAN, HwSwitchEnsemble::PACKET_RX};
   }
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::onePortPerVlanConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC);
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode());
     return cfg;
   }
   void packetReceived(RxPacket* pkt) noexcept override {
@@ -48,14 +50,16 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
     pktsReceived_.wlock()->emplace_back(utility::EthFrame{cursor});
   }
   std::vector<PortID> getEcmpPorts() const {
-    auto masterLogicalPorts = masterLogicalPortIds();
+    auto masterLogicalInterfacePorts = masterLogicalInterfacePortIds();
     return {
-        masterLogicalPorts.begin(), masterLogicalPorts.begin() + kEcmpWidth};
+        masterLogicalInterfacePorts.begin(),
+        masterLogicalInterfacePorts.begin() + kEcmpWidth};
   }
   std::vector<PortDescriptor> getEcmpPortDesc() const {
-    auto masterLogicalPorts = masterLogicalPortIds();
+    auto masterLogicalInterfacePorts = masterLogicalInterfacePortIds();
     return {
-        masterLogicalPorts.begin(), masterLogicalPorts.begin() + kEcmpWidth};
+        masterLogicalInterfacePorts.begin(),
+        masterLogicalInterfacePorts.begin() + kEcmpWidth};
   }
 
  protected:
@@ -110,7 +114,7 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
   void runFirstHash(const std::vector<cfg::LoadBalancer>& firstHashes) {
     auto ecmpPorts = getEcmpPorts();
     auto firstVlan = utility::firstVlanID(getProgrammedState());
-    auto mac = utility::getInterfaceMac(getProgrammedState(), firstVlan);
+    auto mac = utility::getFirstInterfaceMac(getProgrammedState());
     auto preTestStats = getHwSwitchEnsemble()->getLatestPortStats(ecmpPorts);
     {
       HwTestPacketTrapEntry trapPkts(
@@ -127,7 +131,7 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
             getHwSwitch(),
             mac,
             firstVlan,
-            masterLogicalPortIds()[kEcmpWidth]);
+            masterLogicalInterfacePortIds()[kEcmpWidth]);
       }
     } // stop capture
 
@@ -141,10 +145,10 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
       const std::vector<utility::EthFrame>& rxPackets,
       const std::vector<cfg::LoadBalancer>& secondHashes,
       bool expectPolarization) {
-    XLOG(INFO) << " Num captured packets: " << rxPackets.size();
+    XLOG(DBG2) << " Num captured packets: " << rxPackets.size();
     auto ecmpPorts = getEcmpPorts();
     auto firstVlan = utility::firstVlanID(getProgrammedState());
-    auto mac = utility::getInterfaceMac(getProgrammedState(), firstVlan);
+    auto mac = utility::getFirstInterfaceMac(getProgrammedState());
     auto preTestStats = getHwSwitchEnsemble()->getLatestPortStats(ecmpPorts);
 
     // Set second hash
@@ -176,7 +180,7 @@ class HwHashPolarizationTests : public HwLinkStateDependentTest {
                     << static_cast<int>(ethFrame.header().etherType);
       }
       getHwSwitch()->sendPacketOutOfPortSync(
-          std::move(pkt), masterLogicalPortIds()[kEcmpWidth]);
+          std::move(pkt), masterLogicalInterfacePortIds()[kEcmpWidth]);
     }
     auto secondHashPortStats =
         getHwSwitchEnsemble()->getLatestPortStats(getEcmpPorts());
@@ -225,7 +229,7 @@ TEST_F(HwHashPolarizationTests, fullXfullHashWithDifferentSeeds) {
   runTest(firstHashes, secondHashes, false /*expect polarization*/);
 }
 
-template <HwAsic::AsicType kAsic, bool kSai>
+template <cfg::AsicType kAsic, bool kSai>
 struct HwHashPolarizationTestForAsic : public HwHashPolarizationTests {
   bool isAsic() {
     return getHwSwitchEnsemble()->getPlatform()->getAsic()->getAsicType() ==
@@ -235,7 +239,7 @@ struct HwHashPolarizationTestForAsic : public HwHashPolarizationTests {
     // run test only if underlying ASIC and SAI mode matches
     return isAsic() && getHwSwitchEnsemble()->isSai() == kSai;
   }
-  void runTest(HwAsic::AsicType type, bool sai) {
+  void runTest(cfg::AsicType type, bool sai) {
     if (!shouldRunTest()) {
       GTEST_SKIP();
       return;
@@ -258,239 +262,236 @@ struct HwHashPolarizationTestForAsic : public HwHashPolarizationTests {
   }
 };
 
-struct HwHashPolarizationTestForTD2 : HwHashPolarizationTestForAsic<
-                                          HwAsic::AsicType::ASIC_TYPE_TRIDENT2,
-                                          false> {};
+struct HwHashPolarizationTestForTD2
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TRIDENT2, false> {
+};
 
 TEST_F(HwHashPolarizationTestForTD2, With_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForTD2, With_SAI_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
 }
 
 TEST_F(HwHashPolarizationTestForTD2, With_SAI_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
 TEST_F(HwHashPolarizationTestForTD2, With_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
 }
 
 TEST_F(HwHashPolarizationTestForTD2, With_TH3) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestForTD2, With_TH4) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
 }
 
 struct HwHashPolarizationTestForSAITD2
-    : HwHashPolarizationTestForAsic<
-          HwAsic::AsicType::ASIC_TYPE_TRIDENT2,
-          true> {};
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TRIDENT2, true> {};
 
 TEST_F(HwHashPolarizationTestForSAITD2, With_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITD2, With_SAI_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
 }
 
 TEST_F(HwHashPolarizationTestForSAITD2, With_SAI_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
 TEST_F(HwHashPolarizationTestForSAITD2, With_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITD2, With_TH3) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITD2, With_TH4) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
 }
 
-struct HwHashPolarizationTestForTH : HwHashPolarizationTestForAsic<
-                                         HwAsic::AsicType::ASIC_TYPE_TOMAHAWK,
-                                         false> {};
+struct HwHashPolarizationTestForTH
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TOMAHAWK, false> {
+};
 
 TEST_F(HwHashPolarizationTestForTH, With_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH, With_SAI_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
 TEST_F(HwHashPolarizationTestForTH, With_SAI_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
 }
 
 TEST_F(HwHashPolarizationTestForTH, With_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH, With_TH3) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH, With_TH4) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
 }
 
 struct HwHashPolarizationTestForSAITH
-    : HwHashPolarizationTestForAsic<
-          HwAsic::AsicType::ASIC_TYPE_TOMAHAWK,
-          true> {};
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TOMAHAWK, true> {};
 
 TEST_F(HwHashPolarizationTestForSAITH, With_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH, With_SAI_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH, With_SAI_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH, With_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH, With_TH3) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH, With_TH4) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
-struct HwHashPolarizationTestForTH3 : HwHashPolarizationTestForAsic<
-                                          HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3,
-                                          false> {};
+struct HwHashPolarizationTestForTH3
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false> {
+};
 
 TEST_F(HwHashPolarizationTestForTH3, With_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH3, With_SAI_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
 TEST_F(HwHashPolarizationTestForTH3, With_SAI_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
 }
 
 TEST_F(HwHashPolarizationTestForTH3, With_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH3, With_TH3) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH3, With_TH4) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
 }
 
 struct HwHashPolarizationTestForSAITH3
-    : HwHashPolarizationTestForAsic<
-          HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3,
-          true> {};
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TOMAHAWK3, true> {
+};
 
 TEST_F(HwHashPolarizationTestForSAITH3, With_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH3, With_SAI_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH3, With_SAI_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH3, With_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH3, With_TH3) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestForSAITH3, With_TH4) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
 }
 
-struct HwHashPolarizationTestForTH4 : HwHashPolarizationTestForAsic<
-                                          HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4,
-                                          false> {};
+struct HwHashPolarizationTestForTH4
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false> {
+};
 
 TEST_F(HwHashPolarizationTestForTH4, With_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH4, With_SAI_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
 TEST_F(HwHashPolarizationTestForTH4, With_SAI_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
 }
 
 TEST_F(HwHashPolarizationTestForTH4, With_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH4, With_TH3) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestForTH4, With_TH4) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
 }
 
-struct HwHashPolarizationTestSAITH4 : HwHashPolarizationTestForAsic<
-                                          HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4,
-                                          true> {};
+struct HwHashPolarizationTestSAITH4
+    : HwHashPolarizationTestForAsic<cfg::AsicType::ASIC_TYPE_TOMAHAWK4, true> {
+};
 
 TEST_F(HwHashPolarizationTestSAITH4, With_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, false);
 }
 
 TEST_F(HwHashPolarizationTestSAITH4, With_SAI_TH) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK, true);
 }
 
 TEST_F(HwHashPolarizationTestSAITH4, With_SAI_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, true);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, true);
 }
 
 TEST_F(HwHashPolarizationTestSAITH4, With_TD2) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TRIDENT2, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TRIDENT2, false);
 }
 
 TEST_F(HwHashPolarizationTestSAITH4, With_TH3) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK3, false);
 }
 
 TEST_F(HwHashPolarizationTestSAITH4, With_TH4) {
-  runTest(HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4, false);
+  runTest(cfg::AsicType::ASIC_TYPE_TOMAHAWK4, false);
 }
 
 template <int kNumAggregatePorts, int kAggregatePortWidth>
 class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
  private:
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::onePortPerVlanConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC);
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode());
     return cfg;
   }
 
@@ -562,7 +563,7 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
   void runFirstHashTrunkTest(const std::vector<cfg::LoadBalancer>& hashes) {
     auto ports = getEgressPorts(kNumAggregatePorts / 2);
     auto firstVlan = utility::firstVlanID(getProgrammedState());
-    auto mac = utility::getInterfaceMac(getProgrammedState(), firstVlan);
+    auto mac = utility::getFirstInterfaceMac(getProgrammedState());
     auto preTestStats =
         getHwSwitchEnsemble()->getLatestPortStats(getEgressPorts());
     {
@@ -590,10 +591,10 @@ class HwHashTrunkPolarizationTests : public HwHashPolarizationTests {
       const std::vector<utility::EthFrame>& rxPackets,
       const std::vector<cfg::LoadBalancer>& secondHashes,
       bool expectPolarization) {
-    XLOG(INFO) << " Num captured packets: " << rxPackets.size();
+    XLOG(DBG2) << " Num captured packets: " << rxPackets.size();
     auto ports = getEgressPorts();
     auto firstVlan = utility::firstVlanID(getProgrammedState());
-    auto mac = utility::getInterfaceMac(getProgrammedState(), firstVlan);
+    auto mac = utility::getFirstInterfaceMac(getProgrammedState());
     auto preTestStats = getHwSwitchEnsemble()->getLatestPortStats(ports);
 
     // Set second hash

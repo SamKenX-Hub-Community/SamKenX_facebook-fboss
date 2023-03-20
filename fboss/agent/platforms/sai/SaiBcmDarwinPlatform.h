@@ -19,7 +19,8 @@ class SaiBcmDarwinPlatform : public SaiBcmPlatform {
  public:
   explicit SaiBcmDarwinPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
-      folly::MacAddress localMac);
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
   ~SaiBcmDarwinPlatform() override;
   HwAsic* getAsic() const override;
   uint32_t numLanesPerCore() const override {
@@ -37,6 +38,10 @@ class SaiBcmDarwinPlatform : public SaiBcmPlatform {
   void initLEDs() override;
 
  private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
   std::unique_ptr<Tomahawk3Asic> asic_;
 };
 

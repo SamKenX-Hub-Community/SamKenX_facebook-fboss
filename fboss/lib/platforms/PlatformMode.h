@@ -9,8 +9,11 @@
  */
 #pragma once
 
+#include <gflags/gflags.h>
 #include <stdexcept>
 #include <string>
+
+DECLARE_bool(use_bsp_helpers);
 
 namespace facebook::fboss {
 
@@ -32,8 +35,14 @@ enum class PlatformMode : char {
   DARWIN,
   LASSEN,
   SANDIA,
-  MAKALU,
-  KAMET,
+  MERU400BIU,
+  MERU400BIA,
+  MERU400BFU,
+  WEDGE400C_VOQ,
+  WEDGE400C_FABRIC,
+  CLOUDRIPPER_VOQ,
+  CLOUDRIPPER_FABRIC,
+  MONTBLANC,
 };
 
 inline std::string toString(PlatformMode mode) {
@@ -72,10 +81,22 @@ inline std::string toString(PlatformMode mode) {
       return "LASSEN";
     case PlatformMode::SANDIA:
       return "SANDIA";
-    case PlatformMode::MAKALU:
-      return "MAKALU";
-    case PlatformMode::KAMET:
-      return "KAMET";
+    case PlatformMode::MERU400BIU:
+      return "MERU400BIU";
+    case PlatformMode::MERU400BIA:
+      return "MERU400BIA";
+    case PlatformMode::MERU400BFU:
+      return "MERU400BFU";
+    case PlatformMode::WEDGE400C_VOQ:
+      return "WEDGE400C_VOQ";
+    case PlatformMode::WEDGE400C_FABRIC:
+      return "WEDGE400C_FABRIC";
+    case PlatformMode::CLOUDRIPPER_VOQ:
+      return "CLOUDRIPPER_VOQ";
+    case PlatformMode::CLOUDRIPPER_FABRIC:
+      return "CLOUDRIPPER_FABRIC";
+    case PlatformMode::MONTBLANC:
+      return "MONTBLANC";
   }
   throw std::runtime_error("Unknown mode");
   return "Unknown";

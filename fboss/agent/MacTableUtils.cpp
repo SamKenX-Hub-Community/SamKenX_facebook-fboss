@@ -31,7 +31,7 @@ std::shared_ptr<SwitchState> modifyClassIDForEntry(
   auto vlan = state->getVlans()->getVlanIf(vlanID).get();
   std::shared_ptr<SwitchState> newState{state};
   auto* macTable = vlan->getMacTable().get();
-  auto node = macTable->getNodeIf(mac);
+  auto node = macTable->getMacIf(mac);
 
   if (node) {
     // Mac Entry is present, associate/disassociate classID
@@ -60,7 +60,7 @@ std::shared_ptr<MacEntry> getMacEntry(
     VlanID vlanId,
     folly::MacAddress mac) {
   auto macTable = getMacTable(state, vlanId);
-  return macTable->getNodeIf(mac);
+  return macTable->getMacIf(mac);
 }
 } // namespace
 
@@ -76,7 +76,7 @@ std::shared_ptr<SwitchState> MacTableUtils::updateMacTable(
   auto vlan = state->getVlans()->getVlanIf(vlanID).get();
   std::shared_ptr<SwitchState> newState{state};
   auto* macTable = vlan->getMacTable().get();
-  auto node = macTable->getNodeIf(mac);
+  auto node = macTable->getMacIf(mac);
 
   // Delete if the entry to delete exists, otherwise do nothing.
   // The 'exists' check needs to verify that both MAC address and classID are
@@ -151,7 +151,10 @@ std::shared_ptr<SwitchState> MacTableUtils::updateOrAddStaticEntry(
         mac, port, existingMacEntry->getClassID(), MacEntryType::STATIC_ENTRY);
   } else {
     auto newEntry = std::make_shared<MacEntry>(
-        mac, port, std::nullopt, MacEntryType::STATIC_ENTRY);
+        mac,
+        port,
+        std::optional<cfg::AclLookupClass>(std::nullopt),
+        MacEntryType::STATIC_ENTRY);
     macTable->addEntry(newEntry);
   }
 
@@ -170,7 +173,7 @@ std::shared_ptr<SwitchState> MacTableUtils::removeEntry(
   auto macTable = getMacTable(state, vlanId).get();
   auto vlan = state->getVlans()->getVlan(vlanId).get();
   macTable = macTable->modify(&vlan, &newState);
-  macTable->removeNode(mac);
+  macTable->removeEntry(mac);
   return newState;
 }
 
@@ -180,7 +183,8 @@ std::shared_ptr<SwitchState> MacTableUtils::updateOrAddStaticEntryIfNbrExists(
     folly::MacAddress mac) {
   auto findNeighbor = [mac](const auto& nbrTable) {
     return std::find_if(
-        nbrTable.begin(), nbrTable.end(), [mac](const auto& nbrEntry) {
+        nbrTable.begin(), nbrTable.end(), [mac](const auto& iter) {
+          auto nbrEntry = iter.second;
           return nbrEntry->isReachable() && nbrEntry->getMac() == mac;
         });
   };
@@ -191,10 +195,10 @@ std::shared_ptr<SwitchState> MacTableUtils::updateOrAddStaticEntryIfNbrExists(
   auto ndpItr = findNeighbor(ndpTable);
   if (arpItr != arpTable.end() || ndpItr != ndpTable.end()) {
     // For Static MAC entry, we miror the port neighbor was resolved on
-    auto port =
-        arpItr != arpTable.end() ? (*arpItr)->getPort() : (*ndpItr)->getPort();
+    auto port = arpItr != arpTable.end() ? (arpItr->second)->getPort()
+                                         : (ndpItr->second)->getPort();
     auto macTable = getMacTable(state, vlanId).get();
-    auto existingMacEntry = macTable->getNodeIf(mac);
+    auto existingMacEntry = macTable->getMacIf(mac);
     if (existingMacEntry) {
       if (existingMacEntry->getType() == MacEntryType::STATIC_ENTRY &&
           existingMacEntry->getPort() == port) {
@@ -213,7 +217,10 @@ std::shared_ptr<SwitchState> MacTableUtils::updateOrAddStaticEntryIfNbrExists(
       auto newState = state->clone();
       macTable = macTable->modify(&vlan, &newState);
       auto newEntry = std::make_shared<MacEntry>(
-          mac, port, std::nullopt, MacEntryType::STATIC_ENTRY);
+          mac,
+          port,
+          std::optional<cfg::AclLookupClass>(std::nullopt),
+          MacEntryType::STATIC_ENTRY);
       macTable->addEntry(newEntry);
       return newState;
     }

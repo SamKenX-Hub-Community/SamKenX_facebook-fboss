@@ -11,9 +11,12 @@
 
 #include "fboss/agent/Platform.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
+#include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 #include "fboss/agent/if/gen-cpp2/FbossCtrl.h"
+#include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/rib/RoutingInformationBase.h"
+#include "fboss/agent/state/DeltaFunctions.h"
 #include "fboss/agent/types.h"
 
 #include <folly/IPAddress.h>
@@ -46,6 +49,17 @@ struct HwInitResult {
   float initializedTime{0.0};
   float bootTime{0.0};
 };
+
+template <typename Delta, typename Mgr>
+void checkUnsupportedDelta(const Delta& delta, Mgr& mgr) {
+  DeltaFunctions::forEachChanged(
+      delta,
+      [&](const auto& oldNode, const auto& newNode) {
+        mgr.processChanged(oldNode, newNode);
+      },
+      [&](const auto& newNode) { mgr.processAdded(newNode); },
+      [&](const auto& oldNode) { mgr.processRemoved(oldNode); });
+}
 
 /*
  * HwSwitch contains the hardware-specific switching logic.
@@ -147,9 +161,17 @@ class HwSwitch {
       bool failHwCallsOnWarmboot,
       cfg::SwitchType switchType = cfg::SwitchType::NPU,
       std::optional<int64_t> switchId = std::nullopt) {
+    switchType_ = switchType;
+    switchId_ = switchId;
     return initImpl(callback, failHwCallsOnWarmboot, switchType, switchId);
   }
 
+  cfg::SwitchType getSwitchType() const {
+    return switchType_;
+  }
+  std::optional<int64_t> getSwitchId() const {
+    return switchId_;
+  }
   /*
    * Tells the hw switch to unregister the callback and to stop calling
    * packetReceived and linkStateChanged. This is mainly used during exit
@@ -240,6 +262,8 @@ class HwSwitch {
   virtual void fetchL2Table(std::vector<L2EntryThrift>* l2Table) const = 0;
 
   virtual std::map<PortID, phy::PhyInfo> updateAllPhyInfo() = 0;
+  virtual std::map<PortID, FabricEndpoint> getFabricReachability() const = 0;
+  virtual std::map<std::string, HwSysPortStats> getSysPortStats() const = 0;
 
   /*
    * Get latest device watermark bytes
@@ -249,9 +273,9 @@ class HwSwitch {
    * Allow hardware to perform any warm boot related cleanup
    * before we exit the application.
    */
-  void gracefulExit(folly::dynamic& switchState) {
-    gracefulExitImpl(switchState);
-  }
+  void gracefulExit(
+      folly::dynamic& follySwitchState,
+      state::WarmbootState& thriftSwitchState);
 
   /*
    * Get Hw Switch state in a folly::dynamic
@@ -293,6 +317,13 @@ class HwSwitch {
    * Get port operational state
    */
   virtual bool isPortUp(PortID port) const = 0;
+
+  /*
+   * currently used only for BCM
+   */
+  virtual bool portExists(PortID /*port*/) const {
+    return true;
+  }
 
   virtual phy::FecMode getPortFECMode(PortID /* unused */) const {
     return phy::FecMode::NONE;
@@ -367,7 +398,9 @@ class HwSwitch {
 
   virtual void updateStatsImpl(SwitchStats* switchStats) = 0;
 
-  virtual void gracefulExitImpl(folly::dynamic& switchState) = 0;
+  virtual void gracefulExitImpl(
+      folly::dynamic& follySwitchState,
+      state::WarmbootState& thriftSwitchState) = 0;
 
   uint32_t featuresDesired_;
   SwitchRunState runState_{SwitchRunState::UNINITIALIZED};
@@ -379,6 +412,8 @@ class HwSwitch {
   // create the var in the thread local storage (TLS) of the calling
   // thread and cannot be created up front.
   mutable folly::ThreadLocalPtr<HwSwitchStats> hwSwitchStats_;
+  cfg::SwitchType switchType_{cfg::SwitchType::NPU};
+  std::optional<int64_t> switchId_;
 };
 
 } // namespace facebook::fboss

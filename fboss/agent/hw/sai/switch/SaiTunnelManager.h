@@ -22,11 +22,27 @@ class SaiPlatform;
 class SaiStore;
 
 using SaiTunnel = SaiObject<SaiTunnelTraits>;
-using SaiTunnelTerm = SaiObject<SaiTunnelTermTraits>;
+using SaiP2MPTunnelTerm = SaiObject<SaiP2MPTunnelTermTraits>;
+using SaiP2PTunnelTerm = SaiObject<SaiP2PTunnelTermTraits>;
 
 struct SaiTunnelHandle {
   std::shared_ptr<SaiTunnel> tunnel;
-  std::shared_ptr<SaiTunnelTerm> tunnelTerm;
+  using SaiTunnelTerm = std::variant<
+      std::shared_ptr<SaiP2MPTunnelTerm>,
+      std::shared_ptr<SaiP2PTunnelTerm>>;
+  SaiTunnelTerm tunnelTerm;
+  TunnelTermSaiId adapterKey() {
+    return std::visit(
+        [](auto& handle) { return handle->adapterKey(); }, tunnelTerm);
+  }
+  std::shared_ptr<SaiP2MPTunnelTerm> getP2MPTunnelTermHandle() const {
+    auto* tunnelTermHandle =
+        std::get_if<std::shared_ptr<SaiP2MPTunnelTerm>>(&tunnelTerm);
+    if (!tunnelTermHandle) {
+      return nullptr;
+    }
+    return *tunnelTermHandle;
+  }
 };
 
 class SaiTunnelManager {
@@ -54,14 +70,15 @@ class SaiTunnelManager {
 
  private:
   SaiTunnelHandle* getTunnelHandleImpl(std::string swId) const;
+  std::shared_ptr<SaiP2MPTunnelTerm> addP2MPTunnelTerm(
+      const std::shared_ptr<IpTunnel>& swTunnel,
+      TunnelSaiId tunnelSaiId);
+  std::shared_ptr<SaiP2PTunnelTerm> addP2PTunnelTerm(
+      const std::shared_ptr<IpTunnel>& swTunnel,
+      TunnelSaiId tunnelSaiId);
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;
   Handles handles_;
-  sai_tunnel_type_t getSaiTunnelType(TunnelType type);
-  sai_tunnel_term_table_entry_type_t getSaiTunnelTermType(TunnelTermType type);
-  sai_tunnel_ttl_mode_t getSaiTtlMode(cfg::IpTunnelMode m);
-  sai_tunnel_dscp_mode_t getSaiDscpMode(cfg::IpTunnelMode m);
-  sai_tunnel_decap_ecn_mode_t getSaiDecapEcnMode(cfg::IpTunnelMode m);
 };
 
 } // namespace facebook::fboss

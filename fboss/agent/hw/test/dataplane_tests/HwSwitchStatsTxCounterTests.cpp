@@ -24,7 +24,9 @@ class HwSwitchStatsTxCounterTest : public HwTest {
  protected:
   cfg::SwitchConfig initialConfig() const {
     return utility::oneL3IntfConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], cfg::PortLoopbackMode::MAC);
+        getHwSwitch(),
+        masterLogicalPortIds()[0],
+        getAsic()->desiredLoopbackMode());
   }
   void checkTxCounters();
 };
@@ -36,7 +38,7 @@ void HwSwitchStatsTxCounterTest::checkTxCounters() {
     bool isOutOfPort = true;
     auto hwSwitch = getHwSwitch();
     auto vlanId = utility::firstVlanID(initialConfig());
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto intfMac = utility::getFirstInterfaceMac(getProgrammedState());
     for (int i = 0; i < 2; i++) {
       isOutOfPort = !isOutOfPort;
       uint32_t txAllocCountBefore =

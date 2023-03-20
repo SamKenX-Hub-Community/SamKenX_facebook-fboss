@@ -56,6 +56,9 @@ class SimSwitch : public HwSwitch {
   folly::F14FastMap<std::string, HwPortStats> getPortStats() const override {
     return {};
   }
+  std::map<std::string, HwSysPortStats> getSysPortStats() const override {
+    return {};
+  }
 
   void fetchL2Table(std::vector<L2EntryThrift>* /*l2Table*/) const override {
     return;
@@ -117,8 +120,11 @@ class SimSwitch : public HwSwitch {
     return "";
   }
 
-  virtual std::map<PortID, phy::PhyInfo> updateAllPhyInfo() override {
-    return std::map<PortID, phy::PhyInfo>();
+  std::map<PortID, phy::PhyInfo> updateAllPhyInfo() override {
+    return {};
+  }
+  std::map<PortID, FabricEndpoint> getFabricReachability() const override {
+    return {};
   }
 
   uint32_t generateDeterministicSeed(
@@ -132,7 +138,9 @@ class SimSwitch : public HwSwitch {
   // TODO
   void updateStatsImpl(SwitchStats* /*switchStats*/) override {}
 
-  void gracefulExitImpl(folly::dynamic& /*switchState*/) override {}
+  void gracefulExitImpl(
+      folly::dynamic& /*switchState*/,
+      state::WarmbootState& /*thriftSwitchState*/) override {}
 
   // Forbidden copy constructor and assignment operator
   SimSwitch(SimSwitch const&) = delete;

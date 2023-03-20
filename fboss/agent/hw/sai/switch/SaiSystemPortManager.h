@@ -12,6 +12,8 @@
 
 #include "fboss/agent/hw/sai/api/SystemPortApi.h"
 #include "fboss/agent/hw/sai/store/SaiObject.h"
+#include "fboss/agent/hw/sai/switch/SaiQosMapManager.h"
+#include "fboss/agent/hw/sai/switch/SaiQueueManager.h"
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/state/SystemPort.h"
 #include "fboss/agent/types.h"
@@ -24,31 +26,47 @@ namespace facebook::fboss {
 class SaiManagerTable;
 class SaiPlatform;
 class SaiStore;
+struct ConcurrentIndices;
+class HwSysPortFb303Stats;
 
 using SaiSystemPort = SaiObject<SaiSystemPortTraits>;
 
 struct SaiSystemPortHandle {
   std::shared_ptr<SaiSystemPort> systemPort;
+  SaiQueueHandles queues;
+
+  void resetQueues();
 };
 
 class SaiSystemPortManager {
   using Handles =
       folly::F14FastMap<SystemPortID, std::unique_ptr<SaiSystemPortHandle>>;
+  using Stats =
+      folly::F14FastMap<SystemPortID, std::unique_ptr<HwSysPortFb303Stats>>;
 
  public:
   SaiSystemPortManager(
       SaiStore* saiStore,
       SaiManagerTable* managerTable,
-      SaiPlatform* platform);
+      SaiPlatform* platform,
+      ConcurrentIndices* concurrentIndices);
+  ~SaiSystemPortManager();
+  void resetQueues();
   SystemPortSaiId addSystemPort(
       const std::shared_ptr<SystemPort>& swSystemPort);
   void removeSystemPort(const std::shared_ptr<SystemPort>& swSystemPort);
   void changeSystemPort(
       const std::shared_ptr<SystemPort>& oldSystemPort,
-      const std::shared_ptr<SystemPort>& newSystemPort) {
-    removeSystemPort(oldSystemPort);
-    addSystemPort(newSystemPort);
+      const std::shared_ptr<SystemPort>& newSystemPort);
+  std::shared_ptr<SystemPortMap> constructSystemPorts(
+      const std::shared_ptr<PortMap>& ports,
+      int64_t switchId,
+      std::optional<cfg::Range64> systemPortRange);
+
+  const Stats& getLastPortStats() const {
+    return portStats_;
   }
+  const HwSysPortFb303Stats* getLastPortStats(SystemPortID port) const;
 
   const SaiSystemPortHandle* getSystemPortHandle(SystemPortID swId) const {
     return getSystemPortHandleImpl(swId);
@@ -62,16 +80,41 @@ class SaiSystemPortManager {
   Handles::const_iterator end() const {
     return handles_.end();
   }
+  void updateStats(SystemPortID portId, bool updateWatermarks);
+
+  void setQosPolicy();
+
+  void clearQosPolicy();
+
+  void resetQosMaps();
 
  private:
+  void loadQueues(
+      SaiSystemPortHandle& sysPortHandle,
+      const std::shared_ptr<SystemPort>& swSystemPort);
+  void setupVoqStats(const std::shared_ptr<SystemPort>& swSystemPort);
   SaiSystemPortTraits::CreateAttributes attributesFromSwSystemPort(
       const std::shared_ptr<SystemPort>& swSystemPort) const;
+  SaiQueueHandle* FOLLY_NULLABLE
+  getQueueHandle(SystemPortID swId, const SaiQueueConfig& saiQueueConfig) const;
+  void changeQueue(
+      const std::shared_ptr<SystemPort>& systemPort,
+      const QueueConfig& oldQueueConfig,
+      const QueueConfig& newQueueConfig);
+  void configureQueues(
+      const std::shared_ptr<SystemPort>& systemPort,
+      const QueueConfig& newQueueConfig);
 
   SaiSystemPortHandle* getSystemPortHandleImpl(SystemPortID swId) const;
+  void setQosMapOnAllSystemPorts(QosMapSaiId qosMapId);
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;
   SaiPlatform* platform_;
   Handles handles_;
+  ConcurrentIndices* concurrentIndices_;
+  Stats portStats_;
+  std::shared_ptr<SaiQosMap> globalTcToQueueQosMap_;
+  bool tcToQueueMapAllowedOnSystemPort_;
 };
 
 } // namespace facebook::fboss

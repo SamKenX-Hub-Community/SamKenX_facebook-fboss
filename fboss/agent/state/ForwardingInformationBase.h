@@ -21,43 +21,40 @@
 namespace facebook::fboss {
 
 template <typename AddressT>
-using ForwardingInformationBaseTraits = NodeMapTraits<
+using LegacyForwardingInformationBaseTraits = NodeMapTraits<
     RoutePrefix<AddressT>,
     Route<AddressT>,
     NodeMapNoExtraFields,
     std::map<RoutePrefix<AddressT>, std::shared_ptr<Route<AddressT>>>>;
 
+using ForwardingInformationBaseClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::string,
+    apache::thrift::type_class::structure>;
+using ForwardingInformationBaseType = std::map<std::string, state::RouteFields>;
+
 template <typename AddrT>
-struct ForwardingInformationBaseThriftTraits
-    : public ThriftyNodeMapTraits<std::string, state::RouteFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "prefix";
-    return _key;
-  }
+class ForwardingInformationBase;
 
-  static const std::string parseKey(const folly::dynamic& key) {
-    return key.asString();
-  }
-
-  static std::string convertKey(const RoutePrefix<AddrT>& prefix) {
-    return prefix.str();
-  }
-};
+template <typename AddrT>
+using ForwardingInformationBaseTraits = ThriftMapNodeTraits<
+    ForwardingInformationBase<AddrT>,
+    ForwardingInformationBaseClass,
+    ForwardingInformationBaseType,
+    Route<AddrT>>;
 
 template <typename AddressT>
 class ForwardingInformationBase
-    : public ThriftyNodeMapT<
+    : public ThriftMapNode<
           ForwardingInformationBase<AddressT>,
-          ForwardingInformationBaseTraits<AddressT>,
-          ForwardingInformationBaseThriftTraits<AddressT>> {
+          ForwardingInformationBaseTraits<AddressT>> {
  public:
-  ForwardingInformationBase();
-  ~ForwardingInformationBase() override;
+  ForwardingInformationBase() {}
+  virtual ~ForwardingInformationBase() override {}
 
-  using Base = ThriftyNodeMapT<
+  using Base = ThriftMapNode<
       ForwardingInformationBase<AddressT>,
-      ForwardingInformationBaseTraits<AddressT>,
-      ForwardingInformationBaseThriftTraits<AddressT>>;
+      ForwardingInformationBaseTraits<AddressT>>;
+  using Base::modify;
 
   std::shared_ptr<Route<AddressT>> exactMatch(
       const RoutePrefix<AddressT>& prefix) const;

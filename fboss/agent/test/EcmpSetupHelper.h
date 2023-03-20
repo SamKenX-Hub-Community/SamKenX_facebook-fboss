@@ -25,6 +25,7 @@
 #include "fboss/agent/types.h"
 
 namespace facebook::fboss {
+class Interface;
 class SwitchState;
 class RouteUpdateWrapper;
 } // namespace facebook::fboss
@@ -114,7 +115,9 @@ class BaseEcmpSetupHelper {
   std::shared_ptr<SwitchState> resolveNextHops(
       const std::shared_ptr<SwitchState>& inputState,
       const boost::container::flat_set<PortDescriptor>& portDescs,
-      bool useLinkLocal = false) const;
+      bool useLinkLocal = false,
+      std::optional<int64_t> encapIdx = std::nullopt) const;
+
   std::shared_ptr<SwitchState> unresolveNextHops(
       const std::shared_ptr<SwitchState>& inputState,
       const boost::container::flat_set<PortDescriptor>& portDescs,
@@ -123,7 +126,8 @@ class BaseEcmpSetupHelper {
   std::shared_ptr<SwitchState> resolveNextHop(
       const std::shared_ptr<SwitchState>& inputState,
       const NextHopT& nhop,
-      bool useLinkLocal = false) const;
+      bool useLinkLocal = false,
+      std::optional<int64_t> encapIdx = std::nullopt) const;
 
   std::shared_ptr<SwitchState> unresolveNextHop(
       const std::shared_ptr<SwitchState>& inputState,
@@ -134,18 +138,52 @@ class BaseEcmpSetupHelper {
       const std::shared_ptr<SwitchState>& inputState,
       std::optional<folly::MacAddress> mac) = 0;
 
-  std::optional<VlanID> getVlan(const PortDescriptor& port) const;
+  std::optional<VlanID> getVlan(
+      const PortDescriptor& port,
+      const std::shared_ptr<SwitchState>& state) const;
 
  private:
   std::shared_ptr<SwitchState> resolveNextHopsImpl(
       const std::shared_ptr<SwitchState>& inputState,
       const boost::container::flat_set<PortDescriptor>& portDescs,
       bool resolve,
+      bool useLinkLocal,
+      std::optional<int64_t> encapIdx) const;
+
+  std::shared_ptr<SwitchState> resolveVlanRifNextHop(
+      const std::shared_ptr<SwitchState>& inputState,
+      const NextHopT& nhop,
+      const std::shared_ptr<Interface>& intf,
       bool useLinkLocal) const;
 
+  std::shared_ptr<SwitchState> unresolveVlanRifNextHop(
+      const std::shared_ptr<SwitchState>& inputState,
+      const NextHopT& nhop,
+      const std::shared_ptr<Interface>& intf,
+      bool useLinkLocal) const;
+  std::shared_ptr<SwitchState> resolvePortRifNextHop(
+      const std::shared_ptr<SwitchState>& inputState,
+      const NextHopT& nhop,
+      const std::shared_ptr<Interface>& intf,
+      bool useLinkLocal,
+      std::optional<int64_t> encapIdx) const;
+
+  std::shared_ptr<SwitchState> unresolvePortRifNextHop(
+      const std::shared_ptr<SwitchState>& inputState,
+      const NextHopT& nhop,
+      const std::shared_ptr<Interface>& intf,
+      bool useLinkLocal) const;
+  std::optional<InterfaceID> getInterface(
+      const PortDescriptor& port,
+      const std::shared_ptr<SwitchState>& state) const;
+
  protected:
+  boost::container::flat_map<PortDescriptor, InterfaceID>
+  computePortDesc2Interface(
+      const std::shared_ptr<SwitchState>& inputState) const;
+
   std::vector<NextHopT> nhops_;
-  boost::container::flat_map<PortDescriptor, VlanID> portDesc2Vlan_;
+  boost::container::flat_map<PortDescriptor, InterfaceID> portDesc2Interface_;
 };
 
 template <typename IPAddrT>
@@ -282,6 +320,9 @@ class EcmpSetupAnyNPorts {
   IPAddrT ip(size_t id) const {
     return nhop(id).ip;
   }
+  IPAddrT ip(PortDescriptor port) const {
+    return ecmpSetupTargetedPorts_.ip(port);
+  }
 
   RouterID getRouterId() const {
     return ecmpSetupTargetedPorts_.getRouterId();
@@ -298,7 +339,8 @@ class EcmpSetupAnyNPorts {
   std::shared_ptr<SwitchState> resolveNextHops(
       const std::shared_ptr<SwitchState>& inputState,
       size_t numNextHops,
-      bool useLinkLocal = false) const;
+      bool useLinkLocal = false,
+      std::optional<int64_t> encapIdx = std::nullopt) const;
   std::shared_ptr<SwitchState> unresolveNextHops(
       const std::shared_ptr<SwitchState>& inputState,
       size_t numNextHops,
@@ -314,7 +356,8 @@ class EcmpSetupAnyNPorts {
   std::shared_ptr<SwitchState> resolveNextHops(
       const std::shared_ptr<SwitchState>& inputState,
       const boost::container::flat_set<PortDescriptor>& portDescs,
-      bool useLinkLocal = false) const;
+      bool useLinkLocal = false,
+      std::optional<int64_t> encapIdx = std::nullopt) const;
 
   // targeted unresolve
   std::shared_ptr<SwitchState> unresolveNextHops(
@@ -348,8 +391,10 @@ class EcmpSetupAnyNPorts {
       std::unique_ptr<RouteUpdateWrapper> wrapper,
       const std::vector<RouteT>& prefixes = {RouteT{IPAddrT(), 0}}) const;
 
-  std::optional<VlanID> getVlan(const PortDescriptor& port) const {
-    return ecmpSetupTargetedPorts_.getVlan(port);
+  std::optional<VlanID> getVlan(
+      const PortDescriptor& port,
+      const std::shared_ptr<SwitchState>& state) const {
+    return ecmpSetupTargetedPorts_.getVlan(port, state);
   }
 
   boost::container::flat_set<PortDescriptor> getPortDescs(int width) const;

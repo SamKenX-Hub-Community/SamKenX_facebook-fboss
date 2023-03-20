@@ -1,5 +1,6 @@
 // (c) Facebook, Inc. and its affiliates. Confidential and proprietary.
 
+#include "fboss/agent/LldpManager.h"
 #include "fboss/agent/Main.h"
 #include "fboss/agent/state/PortDescriptor.h"
 #include "fboss/agent/test/AgentTest.h"
@@ -14,6 +15,9 @@ DECLARE_string(oob_flash_device_name);
 DECLARE_string(openbmc_password);
 DECLARE_bool(enable_lldp);
 DECLARE_bool(tun_intf);
+DECLARE_string(volatile_state_dir);
+DECLARE_bool(setup_for_warmboot);
+DECLARE_string(config);
 
 namespace facebook::fboss {
 
@@ -44,7 +48,7 @@ class LinkTest : public AgentTest {
       std::chrono::duration<uint32_t, std::milli> msBetweenRetry =
           std::chrono::duration_cast<std::chrono::milliseconds>(
               std::chrono::seconds(10))) const;
-  bool lldpNeighborsOnAllCabledPorts() const;
+  bool checkReachabilityOnAllCabledPorts() const;
   /*
    * Get pairs of ports connected to each other
    */
@@ -53,8 +57,8 @@ class LinkTest : public AgentTest {
   /*
    * Return plugged in optical transceivers and their names.
    */
-  std::tuple<std::vector<PortID>, std::string> getOpticalCabledPortsAndNames()
-      const;
+  std::tuple<std::vector<PortID>, std::string> getOpticalCabledPortsAndNames(
+      bool pluggableOnly = false) const;
 
   /*
    * Ports where we expect optics to be plugged in.
@@ -106,11 +110,18 @@ class LinkTest : public AgentTest {
 
   void TearDown() override;
 
+ public:
+  bool sendAndCheckReachabilityOnAllCabledPorts() {
+    sw()->getLldpMgr()->sendLldpOnAllPorts();
+    return checkReachabilityOnAllCabledPorts();
+  }
+
  private:
   void programDefaultRoute(
       const boost::container::flat_set<PortDescriptor>& ecmpPorts,
       utility::EcmpSetupTargetedPorts6& ecmp6);
   void initializeCabledPorts();
+  void logLinkDbgMessage(std::vector<PortID>& portIDs) const override;
 
   std::vector<PortID> cabledPorts_;
   std::set<TransceiverID> cabledTransceivers_;

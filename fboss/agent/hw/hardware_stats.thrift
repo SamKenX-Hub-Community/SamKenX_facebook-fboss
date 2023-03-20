@@ -3,6 +3,7 @@ namespace py neteng.fboss.hardware_stats
 namespace go neteng.fboss.hardware_stats
 namespace py3 neteng.fboss
 namespace py.asyncio neteng.fboss.asyncio.hardware_stats
+namespace php fboss_hw
 
 include "fboss/mka_service/if/mka_structs.thrift"
 
@@ -70,12 +71,26 @@ struct HwPortStats {
   32: map<i16, i64> inPfcXon_ = {};
   33: map<i16, i64> outPfc_ = {};
   34: map<i16, i64> queueWredDroppedPackets_ = {};
+  35: map<i16, i64> queueEcnMarkedPackets_ = {};
 
   // seconds from epoch
   50: i64 timestamp_ = STAT_UNINITIALIZED;
   51: string portName_ = "";
   52: optional MacsecStats macsecStats;
   53: i64 inLabelMissDiscards_ = STAT_UNINITIALIZED;
+  54: map<i16, i64> queueWatermarkLevel_ = {};
+}
+
+struct HwSysPortStats {
+  1: map<i16, i64> queueOutDiscardBytes_ = {};
+  2: map<i16, i64> queueOutBytes_ = {};
+  3: map<i16, i64> queueWatermarkBytes_ = {};
+  4: map<i16, i64> queueWredDroppedPackets_ = {};
+
+  // seconds from epoch
+  // Field index at a distance to allow for other stat additions
+  100: i64 timestamp_ = STAT_UNINITIALIZED;
+  101: string portName_ = "";
 }
 
 struct HwTrunkStats {
@@ -170,6 +185,14 @@ struct HwResourceStats {
   43: i32 mirrors_span = STAT_UNINITIALIZED;
   44: i32 mirrors_erspan = STAT_UNINITIALIZED;
   45: i32 mirrors_sflow = STAT_UNINITIALIZED;
+
+  // EM
+  46: i32 em_entries_used = STAT_UNINITIALIZED;
+  47: i32 em_entries_free = STAT_UNINITIALIZED;
+  48: i32 em_entries_max = STAT_UNINITIALIZED;
+  49: i32 em_counters_used = STAT_UNINITIALIZED;
+  50: i32 em_counters_free = STAT_UNINITIALIZED;
+  51: i32 em_counters_max = STAT_UNINITIALIZED;
 }
 
 struct HwAsicErrors {
@@ -177,4 +200,21 @@ struct HwAsicErrors {
   2: i64 correctedParityErrors;
   3: i64 uncorrectedParityErrors;
   4: i64 asicErrors;
+}
+
+struct HwTeFlowStats {
+  1: i64 bytes = STAT_UNINITIALIZED;
+}
+
+struct TeFlowStats {
+  1: map<string, HwTeFlowStats> hwTeFlowStats;
+  2: i64 timestamp;
+}
+
+struct HwRxReasonStats {
+  1: map<i64, i64> rxReasonStats;
+}
+
+struct HwBufferPoolStats {
+  1: i64 deviceWatermarkBytes;
 }

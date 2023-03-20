@@ -15,6 +15,7 @@
 #include "fboss/agent/hw/sai/api/NextHopApi.h"
 #include "fboss/agent/hw/sai/api/PortApi.h"
 #include "fboss/agent/hw/sai/api/SaiApiTable.h"
+#include "fboss/agent/hw/sai/switch/SaiHostifManager.h"
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
 #include "fboss/agent/hw/sai/switch/SaiNextHopManager.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
@@ -31,8 +32,7 @@ void disableTTLDecrements(
   auto managerTable = static_cast<SaiSwitch*>(hw)->managerTable();
   auto rintfHandle =
       managerTable->routerInterfaceManager().getRouterInterfaceHandle(intf);
-  SaiIpNextHopTraits::AdapterHostKey key(
-      rintfHandle->routerInterface->adapterKey(), nhopIp);
+  SaiIpNextHopTraits::AdapterHostKey key(rintfHandle->adapterKey(), nhopIp);
   auto nhop = managerTable->nextHopManager().getManagedNextHop(key);
   SaiIpNextHopTraits::Attributes::DisableTtlDecrement disableTtl{true};
   SaiApiTable::getInstance()->nextHopApi().setAttribute(
@@ -48,6 +48,15 @@ void disableTTLDecrements(HwSwitch* hw, const PortDescriptor& port) {
   SaiPortTraits::Attributes::DisableTtlDecrement disableTtl{true};
   SaiApiTable::getInstance()->portApi().setAttribute(
       portHandle->port->adapterKey(), disableTtl);
+}
+
+void enableTtlZeroPacketForwarding(HwSwitch* hw) {
+  static HostifTrapSaiId hostIfTrap;
+  if (!hostIfTrap) {
+    auto managerTable = static_cast<SaiSwitch*>(hw)->managerTable();
+    hostIfTrap = managerTable->hostifManager().addHostifTrap(
+        cfg::PacketRxReason::TTL_0, 0 /*queueId*/, 1 /*priority*/);
+  }
 }
 
 } // namespace facebook::fboss::utility

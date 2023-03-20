@@ -38,6 +38,15 @@ struct SaiPortTraits {
         EnumType,
         SAI_PORT_ATTR_HW_LANE_LIST,
         std::vector<uint32_t>>;
+    struct AttributeSerdesLaneList {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using SerdesLaneList =
+        SaiExtensionAttribute<std::vector<uint32_t>, AttributeSerdesLaneList>;
+    struct AttributeDiagModeEnable {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using DiagModeEnable = SaiExtensionAttribute<bool, AttributeDiagModeEnable>;
     using Speed = SaiAttribute<EnumType, SAI_PORT_ATTR_SPEED, sai_uint32_t>;
     using Type = SaiAttribute<EnumType, SAI_PORT_ATTR_TYPE, sai_int32_t>;
     using QosNumberOfQueues = SaiAttribute<
@@ -58,6 +67,30 @@ struct SaiPortTraits {
         SAI_PORT_ATTR_INTERNAL_LOOPBACK_MODE,
         sai_int32_t,
         SaiIntDefault<sai_int32_t>>;
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+    using FabricIsolate = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_FABRIC_ISOLATE,
+        bool,
+        SaiBoolDefaultFalse>;
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+    using PortLoopbackMode = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_LOOPBACK_MODE,
+        sai_int32_t,
+        SaiIntDefault<sai_int32_t>>;
+    using UseExtendedFec = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_USE_EXTENDED_FEC,
+        bool,
+        SaiBoolDefaultFalse>;
+    using ExtendedFecMode = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_FEC_MODE_EXTENDED,
+        sai_int32_t,
+        SaiIntDefault<sai_int32_t>>;
+#endif
     using MediaType = SaiAttribute<
         EnumType,
         SAI_PORT_ATTR_MEDIA_TYPE,
@@ -90,11 +123,7 @@ struct SaiPortTraits {
         SaiObjectIdDefault>;
     using DisableTtlDecrement = SaiAttribute<
         EnumType,
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
         SAI_PORT_ATTR_DISABLE_DECREMENT_TTL,
-#else
-        SAI_PORT_ATTR_DECREMENT_TTL,
-#endif
         bool,
         SaiBoolDefaultFalse>;
     using InterfaceType = SaiAttribute<
@@ -132,7 +161,6 @@ struct SaiPortTraits {
         SAI_PORT_ATTR_EGRESS_SAMPLEPACKET_ENABLE,
         SaiObjectIdT,
         SaiObjectIdDefault>;
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
     using IngressSampleMirrorSession = SaiAttribute<
         EnumType,
         SAI_PORT_ATTR_INGRESS_SAMPLE_MIRROR_SESSION,
@@ -143,7 +171,6 @@ struct SaiPortTraits {
         SAI_PORT_ATTR_EGRESS_SAMPLE_MIRROR_SESSION,
         std::vector<sai_object_id_t>,
         SaiObjectIdListDefault>;
-#endif
     using PrbsPolynomial =
         SaiAttribute<EnumType, SAI_PORT_ATTR_PRBS_POLYNOMIAL, sai_uint32_t>;
     using PrbsConfig =
@@ -152,7 +179,8 @@ struct SaiPortTraits {
     using PrbsRxState = SaiAttribute<
         EnumType,
         SAI_PORT_ATTR_PRBS_RX_STATE,
-        sai_prbs_rx_state_t>;
+        sai_prbs_rx_state_t,
+        SaiPrbsRxStateDefault>;
 #endif
     using IngressMacSecAcl = SaiAttribute<
         EnumType,
@@ -189,11 +217,87 @@ struct SaiPortTraits {
         SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL,
         sai_uint8_t,
         SaiIntDefault<sai_uint8_t>>;
+#if !defined(TAJO_SDK)
+    using PriorityFlowControlRx = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_RX,
+        sai_uint8_t,
+        SaiIntDefault<sai_uint8_t>>;
+    using PriorityFlowControlTx = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_TX,
+        sai_uint8_t,
+        SaiIntDefault<sai_uint8_t>>;
+#endif
     using PortErrStatus = SaiAttribute<
         EnumType,
         SAI_PORT_ATTR_ERR_STATUS_LIST,
         std::vector<sai_port_err_status_t>,
         SaiPortErrStatusDefault>;
+    using IngressPriorityGroupList = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_INGRESS_PRIORITY_GROUP_LIST,
+        std::vector<sai_object_id_t>,
+        SaiObjectIdListDefault>;
+    using NumberOfIngressPriorityGroups = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_NUMBER_OF_INGRESS_PRIORITY_GROUPS,
+        sai_uint32_t,
+        SaiIntDefault<sai_uint32_t>>;
+    using QosTcToPriorityGroupMap = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_QOS_TC_TO_PRIORITY_GROUP_MAP,
+        SaiObjectIdT,
+        SaiObjectIdDefault>;
+    using QosPfcPriorityToQueueMap = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_QOS_PFC_PRIORITY_TO_QUEUE_MAP,
+        SaiObjectIdT,
+        SaiObjectIdDefault>;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+    using RxSignalDetect = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_RX_SIGNAL_DETECT,
+        std::vector<sai_port_lane_latch_status_t>>;
+    using RxLockStatus = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_RX_LOCK_STATUS,
+        std::vector<sai_port_lane_latch_status_t>>;
+    using FecAlignmentLock = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_FEC_ALIGNMENT_LOCK,
+        std::vector<sai_port_lane_latch_status_t>>;
+    using PcsRxLinkStatus = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_PCS_RX_LINK_STATUS,
+        sai_latch_status_t>;
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+    using InterFrameGap = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_IPG,
+        sai_uint32_t,
+        SaiInt96Default>;
+#endif
+    using LinkTrainingEnable = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_LINK_TRAINING_ENABLE,
+        bool,
+        SaiBoolDefaultTrue>;
+    using FabricAttached =
+        SaiAttribute<EnumType, SAI_PORT_ATTR_FABRIC_ATTACHED, bool>;
+    using FabricAttachedPortIndex = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_FABRIC_ATTACHED_PORT_INDEX,
+        sai_uint32_t>;
+    using FabricAttachedSwitchId = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_FABRIC_ATTACHED_SWITCH_ID,
+        sai_uint32_t>;
+    using FabricAttachedSwitchType = SaiAttribute<
+        EnumType,
+        SAI_PORT_ATTR_FABRIC_ATTACHED_SWITCH_TYPE,
+        sai_uint32_t>;
   };
   using AdapterKey = PortSaiId;
   using AdapterHostKey = Attributes::HwLaneList;
@@ -203,6 +307,13 @@ struct SaiPortTraits {
       Attributes::Speed,
       std::optional<Attributes::AdminState>,
       std::optional<Attributes::FecMode>,
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+      std::optional<Attributes::UseExtendedFec>,
+      std::optional<Attributes::ExtendedFecMode>,
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+      std::optional<Attributes::FabricIsolate>,
+#endif
       std::optional<Attributes::InternalLoopbackMode>,
       std::optional<Attributes::MediaType>,
       std::optional<Attributes::GlobalFlowControlMode>,
@@ -217,34 +328,55 @@ struct SaiPortTraits {
       std::optional<Attributes::EgressMirrorSession>,
       std::optional<Attributes::IngressSamplePacketEnable>,
       std::optional<Attributes::EgressSamplePacketEnable>,
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
       std::optional<Attributes::IngressSampleMirrorSession>,
       std::optional<Attributes::EgressSampleMirrorSession>,
-#endif
       std::optional<Attributes::IngressMacSecAcl>,
       std::optional<Attributes::EgressMacSecAcl>,
       std::optional<Attributes::SystemPortId>,
       std::optional<Attributes::PtpMode>,
       std::optional<Attributes::PriorityFlowControlMode>,
-      std::optional<Attributes::PriorityFlowControl>>;
-
-  static constexpr std::array<sai_stat_id_t, 32> CounterIdsToRead = {
-      SAI_PORT_STAT_IF_IN_OCTETS,          SAI_PORT_STAT_IF_IN_UCAST_PKTS,
-      SAI_PORT_STAT_IF_IN_MULTICAST_PKTS,  SAI_PORT_STAT_IF_IN_BROADCAST_PKTS,
-      SAI_PORT_STAT_IF_IN_DISCARDS,        SAI_PORT_STAT_IF_IN_ERRORS,
-      SAI_PORT_STAT_PAUSE_RX_PKTS,         SAI_PORT_STAT_IF_OUT_OCTETS,
-      SAI_PORT_STAT_IF_OUT_UCAST_PKTS,     SAI_PORT_STAT_IF_OUT_MULTICAST_PKTS,
-      SAI_PORT_STAT_IF_OUT_BROADCAST_PKTS, SAI_PORT_STAT_IF_OUT_DISCARDS,
-      SAI_PORT_STAT_IF_OUT_ERRORS,         SAI_PORT_STAT_PAUSE_TX_PKTS,
-      SAI_PORT_STAT_WRED_DROPPED_PACKETS,  SAI_PORT_STAT_ECN_MARKED_PACKETS,
-      SAI_PORT_STAT_PFC_0_RX_PKTS,         SAI_PORT_STAT_PFC_1_RX_PKTS,
-      SAI_PORT_STAT_PFC_2_RX_PKTS,         SAI_PORT_STAT_PFC_3_RX_PKTS,
-      SAI_PORT_STAT_PFC_4_RX_PKTS,         SAI_PORT_STAT_PFC_5_RX_PKTS,
-      SAI_PORT_STAT_PFC_6_RX_PKTS,         SAI_PORT_STAT_PFC_7_RX_PKTS,
-      SAI_PORT_STAT_PFC_0_TX_PKTS,         SAI_PORT_STAT_PFC_1_TX_PKTS,
-      SAI_PORT_STAT_PFC_2_TX_PKTS,         SAI_PORT_STAT_PFC_3_TX_PKTS,
-      SAI_PORT_STAT_PFC_4_TX_PKTS,         SAI_PORT_STAT_PFC_5_TX_PKTS,
-      SAI_PORT_STAT_PFC_6_TX_PKTS,         SAI_PORT_STAT_PFC_7_TX_PKTS,
+      std::optional<Attributes::PriorityFlowControl>,
+#if !defined(TAJO_SDK)
+      std::optional<Attributes::PriorityFlowControlRx>,
+      std::optional<Attributes::PriorityFlowControlTx>,
+#endif
+      std::optional<Attributes::QosTcToPriorityGroupMap>,
+      std::optional<Attributes::QosPfcPriorityToQueueMap>,
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+      std::optional<Attributes::InterFrameGap>,
+#endif
+      std::optional<Attributes::LinkTrainingEnable>>;
+  static constexpr std::array<sai_stat_id_t, 16> CounterIdsToRead = {
+      SAI_PORT_STAT_IF_IN_OCTETS,
+      SAI_PORT_STAT_IF_IN_UCAST_PKTS,
+      SAI_PORT_STAT_IF_IN_MULTICAST_PKTS,
+      SAI_PORT_STAT_IF_IN_BROADCAST_PKTS,
+      SAI_PORT_STAT_IF_IN_DISCARDS,
+      SAI_PORT_STAT_IF_IN_ERRORS,
+      SAI_PORT_STAT_PAUSE_RX_PKTS,
+      SAI_PORT_STAT_IF_OUT_OCTETS,
+      SAI_PORT_STAT_IF_OUT_UCAST_PKTS,
+      SAI_PORT_STAT_IF_OUT_MULTICAST_PKTS,
+      SAI_PORT_STAT_IF_OUT_BROADCAST_PKTS,
+      SAI_PORT_STAT_IF_OUT_DISCARDS,
+      SAI_PORT_STAT_IF_OUT_ERRORS,
+      SAI_PORT_STAT_PAUSE_TX_PKTS,
+      SAI_PORT_STAT_WRED_DROPPED_PACKETS,
+      SAI_PORT_STAT_ECN_MARKED_PACKETS,
+  };
+  static constexpr std::array<sai_stat_id_t, 24> PfcCounterIdsToRead = {
+      SAI_PORT_STAT_PFC_0_RX_PKTS,        SAI_PORT_STAT_PFC_1_RX_PKTS,
+      SAI_PORT_STAT_PFC_2_RX_PKTS,        SAI_PORT_STAT_PFC_3_RX_PKTS,
+      SAI_PORT_STAT_PFC_4_RX_PKTS,        SAI_PORT_STAT_PFC_5_RX_PKTS,
+      SAI_PORT_STAT_PFC_6_RX_PKTS,        SAI_PORT_STAT_PFC_7_RX_PKTS,
+      SAI_PORT_STAT_PFC_0_TX_PKTS,        SAI_PORT_STAT_PFC_1_TX_PKTS,
+      SAI_PORT_STAT_PFC_2_TX_PKTS,        SAI_PORT_STAT_PFC_3_TX_PKTS,
+      SAI_PORT_STAT_PFC_4_TX_PKTS,        SAI_PORT_STAT_PFC_5_TX_PKTS,
+      SAI_PORT_STAT_PFC_6_TX_PKTS,        SAI_PORT_STAT_PFC_7_TX_PKTS,
+      SAI_PORT_STAT_PFC_0_ON2OFF_RX_PKTS, SAI_PORT_STAT_PFC_1_ON2OFF_RX_PKTS,
+      SAI_PORT_STAT_PFC_2_ON2OFF_RX_PKTS, SAI_PORT_STAT_PFC_3_ON2OFF_RX_PKTS,
+      SAI_PORT_STAT_PFC_4_ON2OFF_RX_PKTS, SAI_PORT_STAT_PFC_5_ON2OFF_RX_PKTS,
+      SAI_PORT_STAT_PFC_6_ON2OFF_RX_PKTS, SAI_PORT_STAT_PFC_7_ON2OFF_RX_PKTS,
   };
   static constexpr std::array<sai_stat_id_t, 0> CounterIdsToReadAndClear = {};
 };
@@ -255,6 +387,14 @@ SAI_ATTRIBUTE_NAME(Port, AdminState)
 SAI_ATTRIBUTE_NAME(Port, FecMode)
 SAI_ATTRIBUTE_NAME(Port, OperStatus)
 SAI_ATTRIBUTE_NAME(Port, InternalLoopbackMode)
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+SAI_ATTRIBUTE_NAME(Port, PortLoopbackMode)
+SAI_ATTRIBUTE_NAME(Port, UseExtendedFec)
+SAI_ATTRIBUTE_NAME(Port, ExtendedFecMode)
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+SAI_ATTRIBUTE_NAME(Port, FabricIsolate)
+#endif
 SAI_ATTRIBUTE_NAME(Port, MediaType)
 SAI_ATTRIBUTE_NAME(Port, GlobalFlowControlMode)
 SAI_ATTRIBUTE_NAME(Port, PortVlanId)
@@ -273,10 +413,8 @@ SAI_ATTRIBUTE_NAME(Port, IngressMirrorSession)
 SAI_ATTRIBUTE_NAME(Port, EgressMirrorSession)
 SAI_ATTRIBUTE_NAME(Port, IngressSamplePacketEnable)
 SAI_ATTRIBUTE_NAME(Port, EgressSamplePacketEnable)
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
 SAI_ATTRIBUTE_NAME(Port, IngressSampleMirrorSession)
 SAI_ATTRIBUTE_NAME(Port, EgressSampleMirrorSession)
-#endif
 
 SAI_ATTRIBUTE_NAME(Port, PrbsPolynomial)
 SAI_ATTRIBUTE_NAME(Port, PrbsConfig)
@@ -290,7 +428,31 @@ SAI_ATTRIBUTE_NAME(Port, PtpMode)
 SAI_ATTRIBUTE_NAME(Port, PortEyeValues)
 SAI_ATTRIBUTE_NAME(Port, PriorityFlowControlMode)
 SAI_ATTRIBUTE_NAME(Port, PriorityFlowControl)
+#if !defined(TAJO_SDK)
+SAI_ATTRIBUTE_NAME(Port, PriorityFlowControlRx)
+SAI_ATTRIBUTE_NAME(Port, PriorityFlowControlTx)
+#endif
 SAI_ATTRIBUTE_NAME(Port, PortErrStatus)
+SAI_ATTRIBUTE_NAME(Port, IngressPriorityGroupList)
+SAI_ATTRIBUTE_NAME(Port, NumberOfIngressPriorityGroups)
+SAI_ATTRIBUTE_NAME(Port, QosTcToPriorityGroupMap)
+SAI_ATTRIBUTE_NAME(Port, QosPfcPriorityToQueueMap)
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+SAI_ATTRIBUTE_NAME(Port, RxSignalDetect)
+SAI_ATTRIBUTE_NAME(Port, RxLockStatus)
+SAI_ATTRIBUTE_NAME(Port, FecAlignmentLock)
+SAI_ATTRIBUTE_NAME(Port, PcsRxLinkStatus)
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+SAI_ATTRIBUTE_NAME(Port, InterFrameGap)
+#endif
+SAI_ATTRIBUTE_NAME(Port, LinkTrainingEnable)
+SAI_ATTRIBUTE_NAME(Port, SerdesLaneList)
+SAI_ATTRIBUTE_NAME(Port, DiagModeEnable)
+SAI_ATTRIBUTE_NAME(Port, FabricAttached);
+SAI_ATTRIBUTE_NAME(Port, FabricAttachedPortIndex);
+SAI_ATTRIBUTE_NAME(Port, FabricAttachedSwitchId);
+SAI_ATTRIBUTE_NAME(Port, FabricAttachedSwitchType);
 
 template <>
 struct SaiObjectHasStats<SaiPortTraits> : public std::true_type {};
@@ -386,8 +548,15 @@ struct SaiPortSerdesTraits {
       std::optional<Attributes::Preemphasis>,
       std::optional<Attributes::IDriver>,
       std::optional<Attributes::TxFirPre1>,
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+      std::optional<Attributes::TxFirPre2>,
+#endif
       std::optional<Attributes::TxFirMain>,
       std::optional<Attributes::TxFirPost1>,
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+      std::optional<Attributes::TxFirPost2>,
+      std::optional<Attributes::TxFirPost3>,
+#endif
       std::optional<Attributes::RxCtleCode>,
       std::optional<Attributes::RxDspMode>,
       std::optional<Attributes::RxAfeTrim>,

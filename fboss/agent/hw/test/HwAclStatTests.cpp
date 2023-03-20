@@ -27,7 +27,8 @@ namespace facebook::fboss {
 class HwAclStatTest : public HwTest {
  protected:
   cfg::SwitchConfig initialConfig() const {
-    return utility::oneL3IntfConfig(getHwSwitch(), masterLogicalPortIds()[0]);
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
   }
 
   cfg::AclEntry* addDscpAcl(
@@ -246,6 +247,89 @@ TEST_F(HwAclStatTest, AclStatDelete) {
     utility::checkAclEntryAndStatCount(
         getHwSwitch(), /*ACLs*/ 0, /*stats*/ 0, /*counters*/ 0);
     utility::checkAclStatDeleted(getHwSwitch(), "stat0");
+  };
+
+  verifyAcrossWarmBoots(setup, verify, setupPostWB, verifyPostWB);
+}
+
+TEST_F(HwAclStatTest, AclStatCreatePostWarmBoot) {
+  auto setup = [=]() {
+    auto newCfg = initialConfig();
+    applyNewConfig(newCfg);
+  };
+
+  auto verify = [=]() {};
+
+  auto setupPostWB = [&]() {
+    auto newCfg = initialConfig();
+    addDscpAcl(&newCfg, "acl0");
+    utility::addAclStat(&newCfg, "acl0", "stat0");
+    applyNewConfig(newCfg);
+  };
+
+  auto verifyPostWB = [=]() {
+    utility::checkAclEntryAndStatCount(
+        getHwSwitch(), /*ACLs*/ 1, /*stats*/ 1, /*counters*/ 1);
+    utility::checkAclStat(
+        getHwSwitch(), getProgrammedState(), {"acl0"}, "stat0");
+  };
+
+  verifyAcrossWarmBoots(setup, verify, setupPostWB, verifyPostWB);
+}
+
+TEST_F(HwAclStatTest, AclStatDeleteSharedPostWarmBoot) {
+  auto setup = [=]() {
+    auto newCfg = initialConfig();
+    addDscpAcl(&newCfg, "acl0");
+    addDscpAcl(&newCfg, "acl1");
+    utility::addAclStat(&newCfg, "acl0", "stat");
+    utility::addAclStat(&newCfg, "acl1", "stat");
+    applyNewConfig(newCfg);
+  };
+
+  auto verify = [=]() {
+    utility::checkAclEntryAndStatCount(
+        getHwSwitch(), /* ACLs */ 2, /* Stats */ 1, /*counters*/ 1);
+    utility::checkAclStat(
+        getHwSwitch(), getProgrammedState(), {"acl0", "acl1"}, "stat");
+  };
+
+  auto setupPostWB = [&]() {
+    auto newCfg = initialConfig();
+    applyNewConfig(newCfg);
+  };
+
+  auto verifyPostWB = [=]() {
+    utility::checkAclEntryAndStatCount(
+        getHwSwitch(), /*ACLs*/ 0, /*stats*/ 0, /*counters*/ 0);
+    utility::checkAclStatDeleted(getHwSwitch(), "stat0");
+  };
+
+  verifyAcrossWarmBoots(setup, verify, setupPostWB, verifyPostWB);
+}
+
+TEST_F(HwAclStatTest, AclStatCreateSharedPostWarmBoot) {
+  auto setup = [=]() {
+    auto newCfg = initialConfig();
+    applyNewConfig(newCfg);
+  };
+
+  auto verify = [=]() {};
+
+  auto setupPostWB = [=]() {
+    auto newCfg = initialConfig();
+    addDscpAcl(&newCfg, "acl0");
+    addDscpAcl(&newCfg, "acl1");
+    utility::addAclStat(&newCfg, "acl0", "stat");
+    utility::addAclStat(&newCfg, "acl1", "stat");
+    applyNewConfig(newCfg);
+  };
+
+  auto verifyPostWB = [=]() {
+    utility::checkAclEntryAndStatCount(
+        getHwSwitch(), /*ACLs*/ 2, /*stats*/ 1, /*counters*/ 1);
+    utility::checkAclStat(
+        getHwSwitch(), getProgrammedState(), {"acl0", "acl1"}, "stat");
   };
 
   verifyAcrossWarmBoots(setup, verify, setupPostWB, verifyPostWB);

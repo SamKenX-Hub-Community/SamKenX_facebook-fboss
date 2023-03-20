@@ -10,12 +10,14 @@
 #include "fboss/agent/state/PortQueue.h"
 #include <folly/Conv.h>
 #include <thrift/lib/cpp/util/EnumUtils.h>
+#include <algorithm>
 #include <sstream>
 #include "fboss/agent/state/NodeBase-defs.h"
 
 using apache::thrift::TEnumTraits;
 
 namespace {
+
 template <typename Param>
 bool isPortQueueOptionalAttributeSame(
     const std::optional<Param>& swValue,
@@ -30,167 +32,53 @@ bool isPortQueueOptionalAttributeSame(
   return false;
 }
 
-bool comparePortQueueAQMs(
-    const facebook::fboss::PortQueue::AQMMap& aqmMap,
-    const std::vector<facebook::fboss::cfg::ActiveQueueManagement>& aqms) {
-  auto sortedAqms = aqms;
-  std::sort(
-      sortedAqms.begin(),
-      sortedAqms.end(),
-      [](const auto& lhs, const auto& rhs) {
-        return *lhs.behavior() < *rhs.behavior();
-      });
+bool isEqual(
+    std::vector<facebook::fboss::cfg::ActiveQueueManagement>&& lhs,
+    std::vector<facebook::fboss::cfg::ActiveQueueManagement>&& rhs) {
+  auto compare = [](const auto& left, const auto& right) {
+    return std::tie(*left.behavior(), *left.detection()) <
+        std::tie(*right.behavior(), *right.detection());
+  };
+
+  std::sort(std::begin(lhs), std::end(lhs), compare);
+  std::sort(std::begin(rhs), std::end(rhs), compare);
+
   return std::equal(
-      aqmMap.begin(),
-      aqmMap.end(),
-      sortedAqms.begin(),
-      sortedAqms.end(),
-      [](const auto& behaviorAndAqm, const auto& aqm) {
-        return behaviorAndAqm.second == aqm;
-      });
+      std::begin(lhs), std::end(lhs), std::begin(rhs), std::end(rhs));
+}
+
+bool comparePortQueueAQMs(
+    const facebook::fboss::PortQueue::AqmsType& stateAqms,
+    std::vector<facebook::fboss::cfg::ActiveQueueManagement>&& aqms) {
+  if (!stateAqms) {
+    return aqms.empty();
+  }
+  if (aqms.empty()) {
+    return !stateAqms || stateAqms->empty();
+  }
+
+  // THRIFT_COPY: maintain set instead of list in both state and config thrift
+  auto stateAqmsThrift = stateAqms->toThrift();
+  return isEqual(stateAqms->toThrift(), std::move(aqms));
+}
+
+bool comparePortQueueRate(
+    const facebook::fboss::PortQueue::PortQueueRateType& statePortQueueRate,
+    bool isConfSet,
+    const facebook::fboss::cfg::PortQueueRate& rate) {
+  if (!statePortQueueRate && !isConfSet) {
+    return true;
+  }
+  // THRIFT_COPY
+  if (statePortQueueRate && isConfSet &&
+      statePortQueueRate->toThrift() == rate) {
+    return true;
+  }
+  return false;
 }
 } // unnamed namespace
 
 namespace facebook::fboss {
-
-state::PortQueueFields PortQueueFields::toThrift() const {
-  state::PortQueueFields queue;
-  *queue.id() = id;
-  *queue.weight() = weight;
-  if (reservedBytes) {
-    queue.reserved() = reservedBytes.value();
-  }
-  if (scalingFactor) {
-    auto scalingFactorName = apache::thrift::util::enumName(*scalingFactor);
-    if (scalingFactorName == nullptr) {
-      CHECK(false) << "Unexpected MMU scaling factor: "
-                   << static_cast<int>(*scalingFactor);
-    }
-    queue.scalingFactor() = scalingFactorName;
-  }
-  auto schedulingName = apache::thrift::util::enumName(scheduling);
-  if (schedulingName == nullptr) {
-    CHECK(false) << "Unexpected scheduling: " << static_cast<int>(scheduling);
-  }
-  *queue.scheduling() = schedulingName;
-  auto streamTypeName = apache::thrift::util::enumName(streamType);
-  if (streamTypeName == nullptr) {
-    CHECK(false) << "Unexpected streamType: " << static_cast<int>(streamType);
-  }
-  *queue.streamType() = streamTypeName;
-  if (name) {
-    queue.name() = name.value();
-  }
-  if (sharedBytes) {
-    queue.sharedBytes() = sharedBytes.value();
-  }
-  if (!aqms.empty()) {
-    std::vector<cfg::ActiveQueueManagement> aqmList;
-    for (const auto& aqm : aqms) {
-      aqmList.push_back(aqm.second);
-    }
-    queue.aqms() = aqmList;
-  }
-
-  if (portQueueRate) {
-    queue.portQueueRate() = portQueueRate.value();
-  }
-
-  if (bandwidthBurstMinKbits) {
-    queue.bandwidthBurstMinKbits() = bandwidthBurstMinKbits.value();
-  }
-
-  if (bandwidthBurstMaxKbits) {
-    queue.bandwidthBurstMaxKbits() = bandwidthBurstMaxKbits.value();
-  }
-
-  if (trafficClass) {
-    queue.trafficClass() = static_cast<int16_t>(trafficClass.value());
-  }
-
-  if (pfcPriorities) {
-    std::vector<int16_t> pfcPris;
-    for (const auto& pfcPriority : pfcPriorities.value()) {
-      pfcPris.push_back(static_cast<int16_t>(pfcPriority));
-    }
-    queue.pfcPriorities() = pfcPris;
-  }
-
-  return queue;
-}
-
-// static, public
-PortQueueFields PortQueueFields::fromThrift(
-    state::PortQueueFields const& queueThrift) {
-  PortQueueFields queue;
-  queue.id = static_cast<uint8_t>(*queueThrift.id());
-
-  cfg::StreamType streamType;
-  if (!TEnumTraits<cfg::StreamType>::findValue(
-          queueThrift.streamType()->c_str(), &streamType)) {
-    CHECK(false) << "Invalid stream type: " << *queueThrift.streamType();
-  }
-  queue.streamType = streamType;
-
-  cfg::QueueScheduling scheduling;
-  if (!TEnumTraits<cfg::QueueScheduling>::findValue(
-          queueThrift.scheduling()->c_str(), &scheduling)) {
-    CHECK(false) << "Invalid scheduling: " << *queueThrift.scheduling();
-  }
-  queue.scheduling = scheduling;
-
-  queue.weight = *queueThrift.weight();
-  if (queueThrift.reserved()) {
-    queue.reservedBytes = queueThrift.reserved().value();
-  }
-  if (queueThrift.scalingFactor()) {
-    cfg::MMUScalingFactor scalingFactor;
-    if (!TEnumTraits<cfg::MMUScalingFactor>::findValue(
-            queueThrift.scalingFactor()->c_str(), &scalingFactor)) {
-      CHECK(false) << "Invalid MMU scaling factor: "
-                   << queueThrift.scalingFactor()->c_str();
-    }
-    queue.scalingFactor = scalingFactor;
-  }
-  if (queueThrift.name()) {
-    queue.name = queueThrift.name().value();
-  }
-  if (queueThrift.sharedBytes()) {
-    queue.sharedBytes = queueThrift.sharedBytes().value();
-  }
-  if (queueThrift.aqms()) {
-    for (const auto& aqm : queueThrift.aqms().value()) {
-      queue.aqms.emplace(*aqm.behavior(), aqm);
-    }
-  }
-
-  if (queueThrift.portQueueRate()) {
-    queue.portQueueRate = queueThrift.portQueueRate().value();
-  }
-
-  if (queueThrift.bandwidthBurstMinKbits()) {
-    queue.bandwidthBurstMinKbits = queueThrift.bandwidthBurstMinKbits().value();
-  }
-
-  if (queueThrift.bandwidthBurstMaxKbits()) {
-    queue.bandwidthBurstMaxKbits = queueThrift.bandwidthBurstMaxKbits().value();
-  }
-
-  if (queueThrift.trafficClass()) {
-    queue.trafficClass.emplace(
-        static_cast<TrafficClass>(queueThrift.trafficClass().value()));
-  }
-
-  if (queueThrift.pfcPriorities()) {
-    std::set<PfcPriority> pfcPris;
-    for (const auto& pri : queueThrift.pfcPriorities().value()) {
-      pfcPris.insert(static_cast<PfcPriority>(pri));
-    }
-    queue.pfcPriorities = pfcPris;
-  }
-
-  return queue;
-}
 
 std::string PortQueue::toString() const {
   std::stringstream ss;
@@ -208,17 +96,26 @@ std::string PortQueue::toString() const {
     ss << ", scalingFactor="
        << apache::thrift::util::enumName(getScalingFactor().value());
   }
-  if (!getAqms().empty()) {
+  const auto& aqms = getAqms();
+  if (aqms && !aqms->empty()) {
     ss << ", aqms=[";
-    for (const auto& aqm : getAqms()) {
-      ss << "(behavior=" << apache::thrift::util::enumName(aqm.first)
+    for (const auto& aqm : std::as_const(*aqms)) {
+      const auto& behavior = aqm->cref<switch_config_tags::behavior>();
+      const auto& detection = aqm->cref<switch_config_tags::detection>();
+
+      ss << "(behavior=" << apache::thrift::util::enumName(behavior->toThrift())
          << ", detection=[min="
-         << aqm.second.get_detection().get_linear().get_minimumLength()
+         << detection->cref<switch_config_tags::linear>()
+                ->cref<switch_config_tags::minimumLength>()
+                ->cref()
          << ", max="
-         << aqm.second.get_detection().get_linear().get_maximumLength();
-      if (aqm.second.get_detection().get_linear().get_probability()) {
-        ss << ", probability="
-           << aqm.second.get_detection().get_linear().get_probability();
+         << detection->cref<switch_config_tags::linear>()
+                ->cref<switch_config_tags::maximumLength>()
+                ->cref();
+      const auto& probability = detection->cref<switch_config_tags::linear>()
+                                    ->cref<switch_config_tags::probability>();
+      if (probability) {
+        ss << ", probability=" << probability->cref();
       }
       ss << "]), ";
     }
@@ -228,21 +125,29 @@ std::string PortQueue::toString() const {
     ss << ", name=" << getName().value();
   }
 
-  if (getPortQueueRate()) {
+  const auto& portQueueRate = getPortQueueRate();
+  if (portQueueRate) {
     uint32_t rateMin, rateMax;
     std::string type;
-    auto portQueueRate = getPortQueueRate().value();
 
-    switch (portQueueRate.getType()) {
+    switch (portQueueRate->type()) {
       case cfg::PortQueueRate::Type::pktsPerSec:
         type = "pps";
-        rateMin = *portQueueRate.get_pktsPerSec().minimum();
-        rateMax = *portQueueRate.get_pktsPerSec().maximum();
+        rateMin = portQueueRate->cref<switch_config_tags::pktsPerSec>()
+                      ->get<switch_config_tags::minimum>()
+                      ->cref();
+        rateMax = portQueueRate->cref<switch_config_tags::pktsPerSec>()
+                      ->get<switch_config_tags::maximum>()
+                      ->cref();
         break;
       case cfg::PortQueueRate::Type::kbitsPerSec:
         type = "pps";
-        rateMin = *portQueueRate.get_kbitsPerSec().minimum();
-        rateMax = *portQueueRate.get_kbitsPerSec().maximum();
+        rateMin = portQueueRate->cref<switch_config_tags::kbitsPerSec>()
+                      ->get<switch_config_tags::minimum>()
+                      ->cref();
+        rateMax = portQueueRate->cref<switch_config_tags::kbitsPerSec>()
+                      ->get<switch_config_tags::maximum>()
+                      ->cref();
         break;
       case cfg::PortQueueRate::Type::__EMPTY__:
         // needed to handle error from -Werror=switch, fall through
@@ -290,7 +195,7 @@ bool checkSwConfPortQueueMatch(
              cfgQueue->sharedBytes().value_or({})) &&
       comparePortQueueAQMs(swQueue->getAqms(), cfgQueue->aqms().value_or({})) &&
       swQueue->getName() == cfgQueue->name().value_or({}) &&
-      isPortQueueOptionalAttributeSame(
+      comparePortQueueRate(
              swQueue->getPortQueueRate(),
              (bool)cfgQueue->portQueueRate(),
              cfgQueue->portQueueRate().value_or({})) &&
@@ -304,19 +209,38 @@ bool checkSwConfPortQueueMatch(
              cfgQueue->bandwidthBurstMaxKbits().value_or({}));
 }
 
-bool PortQueueFields::operator==(const PortQueueFields& queue) const {
-  // TODO(joseph5wu) Add sharedBytes
-  return id == queue.id && streamType == queue.streamType &&
-      weight == queue.weight && reservedBytes == queue.reservedBytes &&
-      scalingFactor == queue.scalingFactor && scheduling == queue.scheduling &&
-      aqms == queue.aqms && name == queue.name &&
-      portQueueRate == queue.portQueueRate &&
-      bandwidthBurstMinKbits == queue.bandwidthBurstMinKbits &&
-      bandwidthBurstMaxKbits == queue.bandwidthBurstMaxKbits &&
-      trafficClass == queue.trafficClass &&
-      pfcPriorities == queue.pfcPriorities;
+std::optional<cfg::QueueCongestionDetection> PortQueue::findDetectionInAqms(
+    cfg::QueueCongestionBehavior behavior) const {
+  const auto& aqms = getAqms();
+  if (!aqms) {
+    return std::nullopt;
+  }
+  for (const auto& aqm : std::as_const(*aqms)) {
+    if (aqm->get<switch_config_tags::behavior>()->toThrift() == behavior) {
+      // THRIFT_COPY
+      return aqm->get<switch_config_tags::detection>()->toThrift();
+    }
+  }
+  return std::nullopt;
 }
 
-template class NodeBaseT<PortQueue, PortQueueFields>;
+bool PortQueue::isAqmsSame(const PortQueue* other) const {
+  if (!other) {
+    return false;
+  }
+  const auto& thisAqms = getAqms();
+  const auto& thatAqms = other->getAqms();
+  if (thisAqms == nullptr && thatAqms == nullptr) {
+    return true;
+  } else if (thisAqms == nullptr) {
+    return false;
+  } else if (thatAqms == nullptr) {
+    return false;
+  }
+  // THRIFT_COPY
+  return isEqual(thisAqms->toThrift(), thatAqms->toThrift());
+}
+
+template class thrift_cow::ThriftStructNode<PortQueueFields>;
 
 } // namespace facebook::fboss

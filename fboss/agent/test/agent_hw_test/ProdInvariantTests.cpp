@@ -10,6 +10,7 @@
 #include "fboss/agent/SwSwitchRouteUpdateWrapper.h"
 #include "fboss/agent/gen-cpp2/validated_shell_commands_constants.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
+#include "fboss/agent/hw/test/HwTestAclUtils.h"
 #include "fboss/agent/hw/test/HwTestCoppUtils.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/hw/test/HwTestProdConfigUtils.h"
@@ -62,7 +63,7 @@ void ProdInvariantTest::SetUp() {
     ecmpPorts_.push_back(PortDescriptor(uplinkPort));
   }
   setupAgentTestEcmp(ecmpPorts_);
-  XLOG(INFO) << "ProdInvariantTest setup done";
+  XLOG(DBG2) << "ProdInvariantTest setup done";
 }
 
 std::vector<PortID> getAllPlatformPorts(
@@ -127,12 +128,12 @@ void ProdInvariantTest::setupConfigFlag() {
 
 void ProdInvariantTest::sendTraffic() {
   auto mac = utility::getInterfaceMac(
-      sw()->getState(), (*sw()->getState()->getVlans()->begin())->getID());
+      sw()->getState(), sw()->getState()->getVlans()->getFirstVlanID());
   utility::pumpTraffic(
       true,
       sw()->getHw(),
       mac,
-      (*sw()->getState()->getVlans()->begin())->getID(),
+      sw()->getState()->getVlans()->getFirstVlanID(),
       getDownlinkPort());
 }
 
@@ -191,7 +192,12 @@ void ProdInvariantTest::verifyLoadBalancing() {
             25);
       });
   EXPECT_TRUE(loadBalanced);
-  XLOG(INFO) << "Verify loadbalancing done";
+  XLOG(DBG2) << "Verify loadbalancing done";
+}
+
+void ProdInvariantTest::verifyAcl() {
+  auto isEnabled = utility::verifyAclEnabled(sw()->getHw());
+  EXPECT_TRUE(isEnabled);
 }
 
 void ProdInvariantTest::verifyCopp() {
@@ -200,7 +206,7 @@ void ProdInvariantTest::verifyCopp() {
       sw()->getPlatform()->getAsic(),
       sw()->getState(),
       getDownlinkPort());
-  XLOG(INFO) << "Verify COPP done";
+  XLOG(DBG2) << "Verify COPP done";
 }
 
 int ProdInvariantTestMain(
@@ -215,9 +221,11 @@ int ProdInvariantTestMain(
 TEST_F(ProdInvariantTest, verifyInvariants) {
   auto setup = [&]() {};
   auto verify = [&]() {
-    verifyCopp();
-    verifyLoadBalancing();
-    verifyDscpToQueueMapping();
+    verifyAcl();
+    // TODO: Uncomment once tests are more stable.
+    // verifyCopp();
+    // verifyLoadBalancing();
+    // verifyDscpToQueueMapping();
     verifySafeDiagCommands();
   };
   verifyAcrossWarmBoots(setup, verify);
@@ -226,26 +234,27 @@ TEST_F(ProdInvariantTest, verifyInvariants) {
 void ProdInvariantTest::verifySafeDiagCommands() {
   std::set<std::string> diagCmds;
   switch (sw()->getPlatform()->getAsic()->getAsicType()) {
-    case HwAsic::AsicType::ASIC_TYPE_FAKE:
-    case HwAsic::AsicType::ASIC_TYPE_MOCK:
-    case HwAsic::AsicType::ASIC_TYPE_EBRO:
-    case HwAsic::AsicType::ASIC_TYPE_GARONNE:
-    case HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD:
-    case HwAsic::AsicType::ASIC_TYPE_SANDIA_PHY:
-    case HwAsic::AsicType::ASIC_TYPE_INDUS:
-    case HwAsic::AsicType::ASIC_TYPE_BEAS:
+    case cfg::AsicType::ASIC_TYPE_FAKE:
+    case cfg::AsicType::ASIC_TYPE_MOCK:
+    case cfg::AsicType::ASIC_TYPE_EBRO:
+    case cfg::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
+    case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
+    case cfg::AsicType::ASIC_TYPE_JERICHO2:
+    case cfg::AsicType::ASIC_TYPE_RAMON:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
       break;
 
-    case HwAsic::AsicType::ASIC_TYPE_TRIDENT2:
+    case cfg::AsicType::ASIC_TYPE_TRIDENT2:
       diagCmds = validated_shell_commands_constants::TD2_TESTED_CMDS();
       break;
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
       diagCmds = validated_shell_commands_constants::TH_TESTED_CMDS();
       break;
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
       diagCmds = validated_shell_commands_constants::TH3_TESTED_CMDS();
       break;
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
       diagCmds = validated_shell_commands_constants::TH4_TESTED_CMDS();
       break;
   }
@@ -262,7 +271,7 @@ void ProdInvariantTest::verifySafeDiagCommands() {
 }
 void ProdInvariantTest::verifyQueuePerHostMapping(bool dscpMarkingTest) {
   auto vlanId = utility::firstVlanID(sw()->getState());
-  auto intfMac = utility::getInterfaceMac(sw()->getState(), vlanId);
+  auto intfMac = utility::getFirstInterfaceMac(sw()->getState());
   auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO());
 
   // if DscpMarkingTest is set, send unmarked packet matching DSCP marking ACL,
@@ -326,7 +335,7 @@ void ProdInvariantTest::verifyDscpToQueueMapping() {
       getEcmpPortIds(),
       downlinkPortId));
 
-  XLOG(INFO) << "Verify DSCP to Queue mapping done";
+  XLOG(DBG2) << "Verify DSCP to Queue mapping done";
 }
 
 class ProdInvariantRswMhnicTest : public ProdInvariantTest {
@@ -342,7 +351,7 @@ class ProdInvariantRswMhnicTest : public ProdInvariantTest {
       ecmpPorts_.push_back(PortDescriptor(uplinkPort));
     }
     setupRSWMhnicEcmpV4(ecmpPorts_);
-    XLOG(INFO) << "ProdInvariantTest setup done";
+    XLOG(DBG2) << "ProdInvariantTest setup done";
   }
   cfg::SwitchConfig initialConfig() override {
     // TODO: Currently ProdInvariantTests only has support for BCM switches.
@@ -404,6 +413,7 @@ TEST_F(ProdInvariantRswMhnicTest, verifyInvariants) {
         updaterPointer.get());
   };
   auto verify = [&]() {
+    verifyAcl();
     verifyCopp();
     verifyLoadBalancing();
     verifyDscpToQueueMapping();

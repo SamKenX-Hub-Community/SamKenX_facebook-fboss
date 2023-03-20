@@ -46,20 +46,21 @@ cfg::Range getRange(uint32_t minimum, uint32_t maximum) {
 
 uint16_t getCoppHighPriQueueId(const HwAsic* hwAsic) {
   switch (hwAsic->getAsicType()) {
-    case HwAsic::AsicType::ASIC_TYPE_FAKE:
-    case HwAsic::AsicType::ASIC_TYPE_MOCK:
-    case HwAsic::AsicType::ASIC_TYPE_TRIDENT2:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4:
-    case HwAsic::AsicType::ASIC_TYPE_INDUS:
+    case cfg::AsicType::ASIC_TYPE_FAKE:
+    case cfg::AsicType::ASIC_TYPE_MOCK:
+    case cfg::AsicType::ASIC_TYPE_TRIDENT2:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
       return 9;
-    case HwAsic::AsicType::ASIC_TYPE_EBRO:
-    case HwAsic::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_EBRO:
+    case cfg::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_JERICHO2:
       return 7;
-    case HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD:
-    case HwAsic::AsicType::ASIC_TYPE_SANDIA_PHY:
-    case HwAsic::AsicType::ASIC_TYPE_BEAS:
+    case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
+    case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
+    case cfg::AsicType::ASIC_TYPE_RAMON:
       throw FbossError(
           "AsicType ", hwAsic->getAsicType(), " doesn't support queue feature");
   }
@@ -68,19 +69,20 @@ uint16_t getCoppHighPriQueueId(const HwAsic* hwAsic) {
 
 cfg::ToCpuAction getCpuActionType(const HwAsic* hwAsic) {
   switch (hwAsic->getAsicType()) {
-    case HwAsic::AsicType::ASIC_TYPE_FAKE:
-    case HwAsic::AsicType::ASIC_TYPE_MOCK:
-    case HwAsic::AsicType::ASIC_TYPE_TRIDENT2:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3:
-    case HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4:
-    case HwAsic::AsicType::ASIC_TYPE_EBRO:
-    case HwAsic::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_FAKE:
+    case cfg::AsicType::ASIC_TYPE_MOCK:
+    case cfg::AsicType::ASIC_TYPE_TRIDENT2:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK5:
+    case cfg::AsicType::ASIC_TYPE_EBRO:
+    case cfg::AsicType::ASIC_TYPE_GARONNE:
+    case cfg::AsicType::ASIC_TYPE_JERICHO2:
       return cfg::ToCpuAction::COPY;
-    case HwAsic::AsicType::ASIC_TYPE_ELBERT_8DD:
-    case HwAsic::AsicType::ASIC_TYPE_SANDIA_PHY:
-    case HwAsic::AsicType::ASIC_TYPE_INDUS:
-    case HwAsic::AsicType::ASIC_TYPE_BEAS:
+    case cfg::AsicType::ASIC_TYPE_ELBERT_8DD:
+    case cfg::AsicType::ASIC_TYPE_SANDIA_PHY:
+    case cfg::AsicType::ASIC_TYPE_RAMON:
       throw FbossError(
           "AsicType ", hwAsic->getAsicType(), " doesn't support cpu action");
   }
@@ -89,7 +91,7 @@ cfg::ToCpuAction getCpuActionType(const HwAsic* hwAsic) {
 
 cfg::StreamType getCpuDefaultStreamType(const HwAsic* hwAsic) {
   cfg::StreamType defaultStreamType = cfg::StreamType::MULTICAST;
-  auto streamTypes = hwAsic->getQueueStreamTypes(true);
+  auto streamTypes = hwAsic->getQueueStreamTypes(cfg::PortType::CPU_PORT);
   if (streamTypes.begin() != streamTypes.end()) {
     defaultStreamType = *streamTypes.begin();
   }
@@ -98,7 +100,7 @@ cfg::StreamType getCpuDefaultStreamType(const HwAsic* hwAsic) {
 
 uint32_t getCoppQueuePps(const HwAsic* hwAsic, uint16_t queueId) {
   uint32_t pps;
-  if (hwAsic->getAsicType() == HwAsic::AsicType::ASIC_TYPE_EBRO) {
+  if (hwAsic->getAsicVendor() == HwAsic::AsicVendor::ASIC_VENDOR_TAJO) {
     if (queueId == kCoppLowPriQueueId) {
       pps = kCoppTajoLowPriPktsPerSec;
     } else if (queueId == kCoppDefaultPriQueueId) {
@@ -120,7 +122,7 @@ uint32_t getCoppQueuePps(const HwAsic* hwAsic, uint16_t queueId) {
 
 uint32_t getCoppQueueKbpsFromPps(const HwAsic* hwAsic, uint32_t pps) {
   uint32_t kbps;
-  if (hwAsic->getAsicType() == HwAsic::AsicType::ASIC_TYPE_EBRO) {
+  if (hwAsic->getAsicVendor() == HwAsic::AsicVendor::ASIC_VENDOR_TAJO) {
     kbps = (round(pps / 60) * 60) *
         (kAveragePacketSize + kCpuPacketOverheadBytes) * 8 / 1000;
   } else {
@@ -297,7 +299,7 @@ void addMidPriAclForNw(
 
 std::unique_ptr<facebook::fboss::TxPacket> createUdpPkt(
     const HwSwitch* hwSwitch,
-    VlanID vlanId,
+    std::optional<VlanID> vlanId,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddress& srcIpAddress,
@@ -407,8 +409,7 @@ void sendAndVerifyPkts(
     PortID srcPort) {
   auto sendPkts = [&] {
     auto vlanId = utility::firstVlanID(swState);
-    auto intf = swState->getInterfaces()->getInterfaceInVlan(vlanId);
-    auto intfMac = intf->getMac();
+    auto intfMac = utility::getFirstInterfaceMac(swState);
     utility::sendTcpPkts(
         hwSwitch,
         1 /*numPktsToSend*/,
@@ -428,10 +429,10 @@ void verifyCoppInvariantHelper(
     const HwAsic* hwAsic,
     std::shared_ptr<SwitchState> swState,
     PortID srcPort) {
-  auto vlanId = utility::firstVlanID(swState);
-  auto intf = swState->getInterfaces()->getInterfaceInVlan(vlanId);
-  for (auto& destIp : intf->getAddresses()) {
-    if (destIp.first.isLinkLocal()) {
+  auto intf = std::as_const(*swState->getInterfaces()->cbegin()).second;
+  for (auto iter : std::as_const(*intf->getAddresses())) {
+    auto destIp = folly::IPAddress(iter.first);
+    if (destIp.isLinkLocal()) {
       // three elements in the address vector: ipv4, ipv6 and a link local one
       // if the address qualifies as link local, it will loop back to the queue
       // again, adding an extra packet to the queue and failing the verification
@@ -441,15 +442,16 @@ void verifyCoppInvariantHelper(
     sendAndVerifyPkts(
         hwSwitch,
         swState,
-        destIp.first,
+        destIp,
         utility::kBgpPort,
         utility::getCoppHighPriQueueId(hwAsic),
         srcPort);
   }
+  auto addrs = intf->getAddressesCopy();
   sendAndVerifyPkts(
       hwSwitch,
       swState,
-      intf->getAddresses().begin()->first,
+      addrs.begin()->first,
       utility::kNonSpecialPort2,
       utility::kCoppMidPriQueueId,
       srcPort);

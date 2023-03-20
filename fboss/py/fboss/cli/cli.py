@@ -30,10 +30,15 @@ from fboss.cli.commands import (
 )
 from fboss.cli.commands.commands import FlushType
 from fboss.cli.utils.click_utils import AliasedGroup
-from fboss.cli.utils.utils import KEYWORD_CONFIG_RELOAD, KEYWORD_CONFIG_SHOW
+from fboss.cli.utils.utils import (
+    DeprecationLevel,
+    fboss2_deprecate,
+    KEYWORD_CONFIG_RELOAD,
+    KEYWORD_CONFIG_SHOW,
+)
 from fboss.fb_thrift_clients import FbossAgentClient
 from neteng.fboss.ctrl.ttypes import HwObjectType, PortLedExternalState
-from neteng.fboss.phy.ttypes import PrbsComponent
+from neteng.fboss.phy.ttypes import PortComponent
 from neteng.fboss.ttypes import FbossBaseError
 from thrift.Thrift import TApplicationException
 from thrift.transport.TTransport import TTransportException
@@ -52,11 +57,10 @@ DEFAULT_CLIENTID = 1
 class CliOptions(object):
     """Object for holding CLI state information"""
 
-    def __init__(self, hostname, file, port, timeout):
+    def __init__(self, hostname, port, timeout):
         self.hostname = hostname
         self.port = port
         self.timeout = timeout
-        self.snapshot_file = file
 
 
 class ArpCli(object):
@@ -73,6 +77,7 @@ class ArpCli(object):
 
     @click.command()
     @click.pass_obj
+    @fboss2_deprecate("show arp", level=DeprecationLevel.DELAY)
     def _table(cli_opts):
         """Show the ARP table"""
         arp.ArpTableCmd(cli_opts).run()
@@ -87,6 +92,7 @@ class ArpCli(object):
     )
     @click.argument("ip")
     @click.pass_obj
+    @fboss2_deprecate("clear arp", level=DeprecationLevel.DELAY)
     def _flush(cli_opts, ip, vlan):
         """Flush an ARP entry by [IP] or [subnet] or flush [all]"""
         if ip == "all":
@@ -209,6 +215,7 @@ class LldpCli(object):
         help="Level of verbosity indicated by count, i.e -vvv",
     )
     @click.pass_obj
+    @fboss2_deprecate("show lldp", level=DeprecationLevel.WARN)
     def lldp(cli_opts, port, verbose):
         """Show LLDP neighbors"""
         lldp.LldpCmd(cli_opts).run(port, verbose)
@@ -228,6 +235,7 @@ class NdpCli(object):
 
     @click.command()
     @click.pass_obj
+    @fboss2_deprecate("show ndp", level=DeprecationLevel.DELAY)
     def _table(cli_opts):
         """Show the NDP table"""
         ndp.NdpTableCmd(cli_opts).run()
@@ -242,6 +250,7 @@ class NdpCli(object):
     )
     @click.argument("ip")
     @click.pass_obj
+    @fboss2_deprecate("clear ndp", level=DeprecationLevel.DELAY)
     def _flush(cli_opts, ip, vlan):
         """Flush an NDP entry by [IP] or [subnet] or flush [all]"""
         if ip == "all":
@@ -369,7 +378,7 @@ class PrbsContext(CliOptions):  # noqa: B903
     def __init__(self, cli_opts, component):
         self.component = component
         super(PrbsContext, self).__init__(
-            cli_opts.hostname, cli_opts.snapshot_file, cli_opts.port, cli_opts.timeout
+            cli_opts.hostname, cli_opts.port, cli_opts.timeout
         )
 
 
@@ -412,21 +421,21 @@ class PortPrbsCli(object):
     @click.pass_context
     def system(ctx):  # noqa: B902
         """Port prbs gearbox system commands"""
-        ctx.obj = PrbsContext(ctx.obj, PrbsComponent.GB_SYSTEM)
+        ctx.obj = PrbsContext(ctx.obj, PortComponent.GB_SYSTEM)
         pass
 
     @click.group(cls=AliasedGroup)  # noqa: B902
     @click.pass_context
     def line(ctx):  # noqa: B902
         """Port prbs gearbox system commands"""
-        ctx.obj = PrbsContext(ctx.obj, PrbsComponent.GB_LINE)
+        ctx.obj = PrbsContext(ctx.obj, PortComponent.GB_LINE)
         pass
 
     @click.group(cls=AliasedGroup)  # noqa: B902
     @click.pass_context
     def asic(ctx):  # noqa: B902
         """Port prbs asic commands"""
-        ctx.obj = PrbsContext(ctx.obj, PrbsComponent.ASIC)
+        ctx.obj = PrbsContext(ctx.obj, PortComponent.ASIC)
         pass
 
     @click.command()
@@ -785,16 +794,15 @@ class ListHwObjectsCli(object):
     type=str,
     help="Host to connect to (default = ::1)",
 )
-@click.option("--file", "-F", default=None, type=str, help="Snapshot file to read from")
 @click.option("--port", "-p", default=None, type=int, help="Thrift port to connect to")
 @click.option(
     "--timeout", "-t", default=None, type=int, help="Thrift client timeout in seconds"
 )
 @click.pass_context
-def main(ctx, hostname, file, port, timeout):
+def main(ctx, hostname, port, timeout):
     """Main CLI options, all options are passed to children via the context obj
     "ctx" and can be accessed accordingly"""
-    ctx.obj = CliOptions(hostname, file, port, timeout)
+    ctx.obj = CliOptions(hostname, port, timeout)
 
 
 def add_modules(main_func):

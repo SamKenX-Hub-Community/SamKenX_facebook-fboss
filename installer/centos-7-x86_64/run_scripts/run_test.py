@@ -6,7 +6,9 @@ import os
 import re
 import subprocess
 import sys
+import time
 from argparse import ArgumentParser
+from datetime import datetime
 
 # Helper to run HwTests
 #
@@ -14,12 +16,16 @@ from argparse import ArgumentParser
 #  ./run_test.py sai --config $confFile # run ALL Hw SAI tests: coldboot + #  warmboot
 #  ./run_test.py sai --config $confFile --coldboot_only # run cold boot only
 #  ./run_test.py sai --config $confFile --filter=*Route*V6* # run tests #  matching filter
+#  ./run_test.py sai --config $confFile --filter=*Vlan*:*Port* # run tests matching "Vlan" and "Port" filters
+#  ./run_test.py sai --config $confFile --filter=*Vlan*:*Port*:-*Mac*:*Intf* # run tests matching "Vlan" and "Port" filters, but excluding "Mac" and "Intf" tests in that list
 
 #  ./run_test.py sai --config $confFile --filter=HwVlanTest.VlanApplyConfig # single test
 #  ./run_test.py sai --config $confFile --filter=HwVlanTest.VlanApplyConfig --sdk_logging /tmp/XYZ # SAI replayer logging
 #  ./run_test.py sai --config $confFile --filter=HwVlanTest.VlanApplyConfig --coldboot_only # single test, cold boot
 #  ./run_test.py sai --config $confFile --filter=HwAclQualifierTest* # some control plane tests
 #  ./run_test.py sai --config $confFile --filter=HwOlympicQosSchedulerTest* # some dataplane tests
+#  ./run_test.py sai --config $confFile --list_tests # Print all the tests but do not run any test
+#  ./run_test.py sai --config $confFile --filter=<filter_regex> --list_tests # Print the matching tests but do not run any test
 #  ./run_test.py sai --config $confFile --sdk_logging /root/all_replayer_logs # ALL tests with SAI replayer logging
 
 #  ./run_test.py sai --config $confFile --skip-known-bad-tests $knownBadTestsFile --file HwRouteScaleTest.turboFabricScaleTest # skip running known bad tests
@@ -29,9 +35,108 @@ from argparse import ArgumentParser
 #
 # Running non-OSS:
 #  ./run_test.py sai --config fuji.agent.materialized_JSON --filter HwVlanTest.VlanApplyConfig --sdk_logging /root/skhare/sai_replayer_logs --no-oss --sai-bin /root/skhare/sai_test-brcm-7.2.0.0_odp --mgmt-if eth0
+#
+# All tests matching the following filters pass on w400C in VOQ mode
+# VOQ tests
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwVoqSwitchTest.*:-*sendPacketCpu*:*trapPktsOnPort*:*AclQualifier*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwVoqSwitchWithFabricPortsTest.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwVoqSwitchWithMultipleDsfNodesTest.*
+# ECMP Tests
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwEcmpTest.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=SaiNextHopGroupTest.*
+# Basic forwarding tests
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwLoopBackTest.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwL4PortBlackHolingTest.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwJumboFramesTest.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwRxReasonTests.*
+# Route programming tests
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwRouteTest/0.*:-*Mpls*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwRouteTest/1.*:-*Mpls*
+# Neighbor programming tests
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwNeighborTest/0.*:-*LookupClass
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwNeighborTest/2.*:-*LookupClass
+# ACL tests
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwAclCounterTest.*:-*Sport*:*BumpOn*Cpu*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=SaiAclTableRecreateTests.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwAclPriorityTest.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwAclMatchActionsTest.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwAclStatTest.*
+# Counter Tests
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwInDiscardsCounterTest.*
+# ./run_test.py sai --config wedge400c_voq.agent.materialized_JSON --filter=HwResourceStatsTest.aclStats
+#
+# All tests matching the following filters pass on w400C in fabric mode
+# ./run_test.py sai --config wedge400c_fabric.agent.materialized_JSON --filter=HwFabricSwitchTest.*
+
+# All tests matching following filters are expected to PASS on Meru400biu
+# Basic VOQ switch tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwVoqSwitchTest*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwVoqSwitchWithFabriPortsTest.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwVoqSwitchWithMultipleDsfNodesTest.*
+# Basic forwarding tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwJumboFramesTest.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwLoopBackTest.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON  --filter=HwL4PortBlackHolingTest.*
+# Counter tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON  --filter=HwInPauseDiscardsCounterTest.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON  --filter=HwResourceStatsTest.l3Stats
+# ECMP Tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwEcmpTest.*:-*Ucmp*
+# Load Balancer Tests
+# UCMP support lacking in DNX
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwLoadBalancerTestV4.*:-*Ucmp*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwLoadBalancerTestV6.*:-*Ucmp*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwHashConsistencyTest.*:-*EcmpExpand*:*MemberOrder*
+# LB Tests with ROCE traffic
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON  --filter=HwLoadBalancerNegativeTestV6RoCE.*
+# Route programming tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwAlpmStressTest.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=SaiNextHopGroupTest.*
+# Neighbor programming tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwNeighborTest/0.*:-*LookupClass
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwNeighborTest/2.*:-*LookupClass
+# V4 routes
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwRouteTest/0.*:-*Mpls*:*ClassId*:*ClassID*
+# V6 routes
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwRouteTest/1.*:-*Mpls*:*ClassId*:*ClassID*
+# ACLs
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwAclPriorityTest.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwAclCounterTest.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=SaiAclTableRecreateTests.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON
+# Most failures in HwAclStatTest are due to stats on DNX configuring both byte
+# and pkt counters simultaneously
+# --filter=HwAclStatTest.*:-*AclStatCreate:*AclStatCreateShared:*AclStatCreateMultiple:*AclStatMultipleActions:*AclStatDeleteShared*:*AclStatDeleteSharedPostWarmBoot:*AclStatRename*:*AclStatModify:*AclStatShuffle:*StatNumberOfCounters:*AclStatChangeCounterType
+# Failing tests are those that use QPH ACL table, which we don't use or support
+# yet on Meru
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=SaiAclTableGroupTest.*:-*AddTwo*:*AddSecond*:*DeleteFirstTableAfterWarmboot:*DeleteSecondTableAfterWarmboot
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwAclMatchActionsTest.*
+# We only support ipv6 qualifiers (minus classID) on Meru
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwAclQualifierTest.*:-*Ip4*:*Tcp*:*Icmp*:*AclModifyQualifier*:*VlanID*:*LookupClass*
+
+# ACLs + QoS Map tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwDscpQueueMappingTest.*
+# Packet send test
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwPacketSendTest.PortTxEnableTest
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwSendPacketToQueueTest.*
+# PFC tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwPfcTest.*:-*Watchdog*
+# PFC traffic tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwTrafficPfc*:-*Watchdog*:*Zero*
+# Watermark tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwWatermarkTest.*:-*Accuracy
+# Qos  tests
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwOlympicQosTests.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=Hw2QueueToOlympicQoSTest.*
+# CoPP
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwRxReasonTests.*
+# ./run_test.py sai --config meru400biu.agent.materialized_JSON --filter=HwCoppTest/0.Ipv6LinkLocalMcastToMidPriQ:HwCoppTest/0.Ipv6LinkLocalMcastNetworkControlDscpToHighPriQ:HwCoppTest/0.L3MTUErrorToLowPriQ:HwCoppTest/0.UnresolvedRoutesToLowPriQueue
+# All tests matching following filter are expected to PASS on Meru400bfu
+# ./run_test.py sai --config meru400bfu.agent.materialized_JSON --filter=HwFabricSwitchTest*
 
 OPT_ARG_COLDBOOT = "--coldboot_only"
 OPT_ARG_FILTER = "--filter"
+OPT_ARG_LIST_TESTS = "--list_tests"
 OPT_ARG_CONFIG_FILE = "--config"
 OPT_ARG_SDK_LOGGING = "--sdk_logging"
 OPT_ARG_SKIP_KNOWN_BAD_TESTS = "--skip-known-bad-tests"
@@ -39,6 +144,8 @@ OPT_ARG_OSS = "--oss"
 OPT_ARG_NO_OSS = "--no-oss"
 OPT_ARG_MGT_IF = "--mgmt-if"
 OPT_ARG_SAI_BIN = "--sai-bin"
+OPT_ARG_FRUID_PATH = "--fruid-path"
+OPT_ARG_SIMULATOR = "--simulator"
 SUB_CMD_BCM = "bcm"
 SUB_CMD_SAI = "sai"
 WARMBOOT_CHECK_FILE = "/dev/shm/fboss/warm_boot/can_warm_boot_0"
@@ -49,7 +156,7 @@ class TestRunner(abc.ABC):
     WARMBOOT_SETUP_OPTION = "--setup-for-warmboot"
     COLDBOOT_PREFIX = "cold_boot."
     WARMBOOT_PREFIX = "warm_boot."
-    TESTRUN_TIMEOUT = 300
+    TESTRUN_TIMEOUT = 1200
 
     _GTEST_RESULT_PATTERN = re.compile(
         r"""\[\s+(?P<status>(OK)|(FAILED)|(SKIPPED)|(TIMEOUT))\s+\]\s+
@@ -77,6 +184,7 @@ class TestRunner(abc.ABC):
             "--config",
             conf_file,
             "--gtest_filter=" + test_to_run,
+            "--fruid_filepath=" + args.fruid_path,
         ]
 
         return run_cmd + flags if flags else run_cmd
@@ -99,8 +207,8 @@ class TestRunner(abc.ABC):
         with open(args.skip_known_bad_tests) as f:
             lines = f.readlines()
             lines = [line.strip().strip('"') for line in lines]
-        known_bad_tests = "|".join(lines)
-        return re.compile(known_bad_tests)
+        known_bad_tests = ":".join(lines)
+        return known_bad_tests
 
     def _parse_list_test_output(self, output):
         ret = []
@@ -121,16 +229,10 @@ class TestRunner(abc.ABC):
             else:
                 if not class_name:
                     raise "error"
-            func_name = line.strip()
-            ret.append("%s.%s" % (class_name, func_name))
+                func_name = line.strip()
+                ret.append("%s.%s" % (class_name, func_name))
 
-        known_bad_test_regex = self._get_known_bad_test_regex()
-
-        return (
-            [test for test in ret if not known_bad_test_regex.match(test)]
-            if known_bad_test_regex
-            else ret
-        )
+        return ret
 
     def _parse_gtest_run_output(self, test_output):
         test_summary = []
@@ -142,11 +244,55 @@ class TestRunner(abc.ABC):
         return test_summary
 
     def _get_tests_to_run(self, args):
-        filter = ("--gtest_filter=" + args.filter) if (args.filter is not None) else ""
+        # GTEST filter syntax is -
+        #   --gtest_filter=<include_regexes>-<exclude_regexes>
+        #   in case of multiple regexes, each one should be separated by ':'
+        #
+        # For example, to run all tests matching "Vlan" and "Port" but
+        # excluding "Mac" tests in the list is -
+        #   --gtest_filter=*Vlan*:*Port*:-*Mac*
+        #
+        # Also, multiple '-' is allowed but all regexes following the first '-'
+        # are part of exclude list. This means following code would still work
+        # as expected even if user provides an exclude list in the args.filter.
+        filter = (args.filter + ":") if (args.filter is not None) else ""
+        known_bad_tests_regex = self._get_known_bad_test_regex()
+        filter = (
+            (filter + "-" + known_bad_tests_regex)
+            if (known_bad_tests_regex is not None)
+            else filter
+        )
+        filter = "--gtest_filter=" + filter
+        # --gtest_filter matches based on wildcard, while our bad test list is
+        # using regular expression. So, probperly convert regular expressions
+        # like HwRouteTest/[01].StaticIp2MplsRoutes, HwLoadBalancerTestV[46].Ucmp.*
+        filter = filter.replace(".*", "*")
+        filter = filter.replace("[46]", "?")
+        filter = filter.replace("[01]", "?")
         output = subprocess.check_output(
             [self._get_test_binary_name(), "--gtest_list_tests", filter]
         )
+
+        # Print all the matching tests
+        print(output.decode("utf-8"))
+
         return self._parse_list_test_output(output)
+
+    def _restart_bcmsim(self, asic):
+        try:
+            subprocess.Popen(
+                # avoid warmboot, so as to run test with coldboot init, warmboot shut down
+                # as a workaround for intermittent unclean exit issue in OSS environment
+                ["rm", "-f", "/dev/shm/fboss/warm_boot/can_warm_boot_0"]
+            )
+            subprocess.Popen(
+                # command to start th4 bcmsim service
+                ["./runner.sh", "restart", "python3", "brcmsim.py", "-a", asic, "-s"]
+            )
+            time.sleep(60)
+            print("Restarted bcmsim service", flush=True)
+        except subprocess.CalledProcessError:
+            print("Failed to restart bcmsim service", flush=True)
 
     def _run_test(
         self, conf_file, test_to_run, setup_warmboot, warmrun, sdk_logging_dir
@@ -161,7 +307,8 @@ class TestRunner(abc.ABC):
 
         try:
             print(
-                f"Running command {self._get_test_run_cmd(conf_file, test_to_run, flags)}"
+                f"Running command {self._get_test_run_cmd(conf_file, test_to_run, flags)}",
+                flush=True,
             )
 
             run_test_output = subprocess.check_output(
@@ -174,8 +321,13 @@ class TestRunner(abc.ABC):
             run_test_result = self._add_test_prefix_to_gtest_result(
                 run_test_output, test_prefix
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             # Test timed out, mark it as TIMEOUT
+            print("Test timeout!", flush=True)
+            output = e.output.decode("utf-8") if e.output else None
+            print(f"Test output {output}", flush=True)
+            stderr = e.stderr.decode("utf-8") if e.stderr else None
+            print(f"Test error {stderr}", flush=True)
             run_test_result = (
                 "[  TIMEOUT ] "
                 + test_prefix
@@ -184,8 +336,13 @@ class TestRunner(abc.ABC):
                 + str(self.TESTRUN_TIMEOUT * 1000)
                 + " ms)"
             ).encode("utf-8")
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as e:
             # Test aborted, mark it as FAILED
+            print(f"Test aborted with return code {e.returncode}!", flush=True)
+            output = e.output.decode("utf-8") if e.output else None
+            print(f"Test output {output}", flush=True)
+            stderr = e.stderr.decode("utf-8") if e.stderr else None
+            print(f"Test error {stderr}", flush=True)
             run_test_result = (
                 "[   FAILED ] " + test_prefix + test_to_run + " (0 ms)"
             ).encode("utf-8")
@@ -200,6 +357,13 @@ class TestRunner(abc.ABC):
                 )
 
             os.makedirs(args.sdk_logging)
+        if args.simulator:
+            self.ENV_VAR["SOC_TARGET_SERVER"] = "127.0.0.1"
+            self.ENV_VAR["BCM_SIM_PATH"] = "1"
+            self.ENV_VAR["SOC_BOOT_FLAGS"] = "4325376"
+            self.ENV_VAR["SAI_BOOT_FLAGS"] = "4325376"
+            self.ENV_VAR["SOC_TARGET_PORT"] = "22222"
+            self.ENV_VAR["SOC_TARGET_COUNT"] = "1"
 
         # Determine if tests need to be run with warmboot mode too
         warmboot = False
@@ -214,11 +378,19 @@ class TestRunner(abc.ABC):
             return []
 
         test_outputs = []
-        for test_to_run in tests_to_run:
+        num_tests = len(tests_to_run)
+        for idx, test_to_run in enumerate(tests_to_run):
             # Run the test for coldboot verification
             print("########## Running test: " + test_to_run, flush=True)
+            if args.simulator:
+                self._restart_bcmsim(args.simulator)
             test_output = self._run_test(
                 conf_file, test_to_run, warmboot, False, args.sdk_logging
+            )
+            output = test_output.decode("utf-8")
+            print(
+                f"########## Coldboot test results ({idx+1}/{num_tests}): {output}",
+                flush=True,
             )
             test_outputs.append(test_output)
 
@@ -230,6 +402,11 @@ class TestRunner(abc.ABC):
                 )
                 test_output = self._run_test(
                     conf_file, test_to_run, False, True, args.sdk_logging
+                )
+                output = test_output.decode("utf-8")
+                print(
+                    f"########## Warmboot test results ({idx+1}/{num_tests}): {output}",
+                    flush=True,
                 )
                 test_outputs.append(test_output)
 
@@ -253,8 +430,18 @@ class TestRunner(abc.ABC):
 
     def run_test(self, args):
         tests_to_run = self._get_tests_to_run(args)
-        output = self._run_tests(tests_to_run, args)
-        self._print_output_summary(output)
+
+        # Check if tests need to be run or only listed
+        if args.list_tests is False:
+            start_time = datetime.now()
+            output = self._run_tests(tests_to_run, args)
+            end_time = datetime.now()
+            delta_time = end_time - start_time
+            print(
+                f"Running all tests took {delta_time} between {start_time} and {end_time}",
+                flush=True,
+            )
+            self._print_output_summary(output)
 
 
 class BcmTestRunner(TestRunner):
@@ -275,7 +462,7 @@ class SaiTestRunner(TestRunner):
         return ""
 
     def _get_test_binary_name(self):
-        return args.sai_bin if args.sai_bin else "sai_test-sai_impl-1.10.2"
+        return args.sai_bin if args.sai_bin else "sai_test-sai_impl-1.11.0"
 
     def _get_sdk_logging_flags(self, sdk_logging_dir, test_prefix, test_to_run):
         return [
@@ -308,6 +495,12 @@ if __name__ == "__main__":
             + OPT_ARG_FILTER
             + "=*Route*V6*"
         ),
+    )
+    ap.add_argument(
+        OPT_ARG_LIST_TESTS,
+        action="store_true",
+        default=False,
+        help="Only lists the tests, do not run any test",
     )
     ap.add_argument(
         OPT_ARG_CONFIG_FILE,
@@ -356,6 +549,24 @@ if __name__ == "__main__":
         help="No OSS build",
     )
     ap.set_defaults(oss=True)
+
+    ap.add_argument(
+        OPT_ARG_FRUID_PATH,
+        type=str,
+        default="/var/facebook/fboss/fruid.json",
+        help=(
+            "Specify file for storing the fruid data. "
+            "Default is /var/facebook/fboss/fruid.json"
+        ),
+    )
+    ap.add_argument(
+        OPT_ARG_SIMULATOR,
+        type=str,
+        help=(
+            "Specify what asic simulator to use if configured. "
+            "Default is None, meaning physical asic is used"
+        ),
+    )
 
     # Add subparsers for different test types
     subparsers = ap.add_subparsers()

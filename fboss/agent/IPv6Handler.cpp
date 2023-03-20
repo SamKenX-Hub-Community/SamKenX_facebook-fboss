@@ -60,7 +60,7 @@ std::unique_ptr<TxPacket> createICMPv6Pkt(
     SwSwitch* sw,
     folly::MacAddress dstMac,
     folly::MacAddress srcMac,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     const folly::IPAddressV6& dstIP,
     const folly::IPAddressV6& srcIP,
     ICMPv6Type icmp6Type,
@@ -76,7 +76,7 @@ std::unique_ptr<TxPacket> createICMPv6Pkt(
   ICMPHdr icmp6(
       static_cast<uint8_t>(icmp6Type), static_cast<uint8_t>(icmp6Code), 0);
 
-  uint32_t pktLen = icmp6.computeTotalLengthV6(bodyLength);
+  uint32_t pktLen = icmp6.computeTotalLengthV6(bodyLength, vlan.has_value());
   auto pkt = sw->allocatePacket(pktLen);
   RWPrivateCursor cursor(pkt->buf());
   icmp6.serializeFullPacket(
@@ -107,7 +107,7 @@ void IPv6Handler::stateUpdated(const StateDelta& delta) {
 }
 
 bool IPv6Handler::raEnabled(const Interface* intf) const {
-  return *intf->getNdpConfig().routerAdvertisementSeconds() > 0;
+  return intf->routerAdvertisementSeconds() > 0;
 }
 
 void IPv6Handler::intfAdded(const SwitchState* state, const Interface* intf) {
@@ -176,6 +176,15 @@ void IPv6Handler::handlePacket(
   std::shared_ptr<Interface> intf{nullptr};
   auto interfaceMap = state->getInterfaces();
   if (ipv6.dstAddr.isMulticast()) {
+    // If packet is received on a lag member port, ensure that
+    // LAG is in forwarding state
+    if (!AggregatePort::isIngressValid(state, pkt)) {
+      XLOG_EVERY_MS(DBG2, 5000)
+          << "Dropping multicast ipv6 pkt ingressing on disabled agg member port "
+          << pkt->getSrcPort();
+      return;
+    }
+
     // Forward multicast packet directly to corresponding host interface
     // and let Linux handle it. In software we consume ICMPv6 Multicast
     // packets for function of NDP protocol, rest all are forwarded to host.
@@ -202,7 +211,8 @@ void IPv6Handler::handlePacket(
     sw_->portStats(port)->ipv6HopExceeded();
     // Look up cpu mac from platform
     MacAddress cpuMac = sw_->getPlatform()->getLocalMac();
-    sendICMPv6TimeExceeded(pkt->getSrcVlan(), cpuMac, cpuMac, ipv6, cursor);
+    sendICMPv6TimeExceeded(
+        port, pkt->getSrcVlan(), cpuMac, cpuMac, ipv6, cursor);
     return;
   }
 
@@ -210,12 +220,11 @@ void IPv6Handler::handlePacket(
     // packets destined for us
     // Anything not handled by the controller, we will forward it to the host,
     // i.e. ping, ssh, bgp...
-    PortID portID = pkt->getSrcPort();
     if (ipv6.payloadLength > intf->getMtu()) {
       // Generate PTB as interface to dst intf has MTU smaller than payload
       sendICMPv6PacketTooBig(
-          portID, pkt->getSrcVlan(), src, dst, ipv6, intf->getMtu(), cursor);
-      sw_->portStats(portID)->pktDropped();
+          port, pkt->getSrcVlan(), src, dst, ipv6, intf->getMtu(), cursor);
+      sw_->portStats(port)->pktDropped();
       return;
     }
     if (ipv6.nextHeader == static_cast<uint8_t>(IP_PROTO::IP_PROTO_IPV6_ICMP)) {
@@ -227,9 +236,9 @@ void IPv6Handler::handlePacket(
     }
 
     if (sw_->sendPacketToHost(intf->getID(), std::move(pkt))) {
-      sw_->portStats(portID)->pktToHost(l3Len);
+      sw_->portStats(port)->pktToHost(l3Len);
     } else {
-      sw_->portStats(portID)->pktDropped();
+      sw_->portStats(port)->pktDropped();
     }
     return;
   }
@@ -425,7 +434,7 @@ void IPv6Handler::handleNeighborSolicitation(
   }
 
   if (!AggregatePort::isIngressValid(state, pkt)) {
-    XLOG(INFO) << "Dropping invalid NS ingressing on port " << pkt->getSrcPort()
+    XLOG(DBG2) << "Dropping invalid NS ingressing on port " << pkt->getSrcPort()
                << " on vlan " << vlan << " for " << targetIP;
     return;
   }
@@ -541,6 +550,7 @@ void IPv6Handler::handleNeighborAdvertisement(
 }
 
 void IPv6Handler::sendICMPv6TimeExceeded(
+    PortID srcPort,
     VlanID srcVlan,
     MacAddress dst,
     MacAddress src,
@@ -568,7 +578,13 @@ void IPv6Handler::sendICMPv6TimeExceeded(
     sendCursor->push(cursor, remainingLength);
   };
 
-  IPAddressV6 srcIp = getSwitchVlanIPv6(state, srcVlan);
+  IPAddressV6 srcIp;
+  try {
+    srcIp = getSwitchVlanIPv6(state, srcVlan);
+  } catch (const std::exception& ex) {
+    srcIp = getAnyIntfIPv6(state);
+  }
+
   auto icmpPkt = createICMPv6Pkt(
       sw_,
       dst,
@@ -659,7 +675,7 @@ void IPv6Handler::sendMulticastNeighborSolicitation(
     SwSwitch* sw,
     const IPAddressV6& targetIP,
     const MacAddress& srcMac,
-    const VlanID& vlanID) {
+    const std::optional<VlanID>& vlanID) {
   IPAddressV6 solicitedNodeAddr = targetIP.getSolicitedNodeAddress();
   MacAddress dstMac = MacAddress::createMulticast(solicitedNodeAddr);
   // For now, we always use our link local IP as the source.
@@ -668,8 +684,11 @@ void IPv6Handler::sendMulticastNeighborSolicitation(
   NDPOptions ndpOptions;
   ndpOptions.sourceLinkLayerAddress.emplace(srcMac);
 
+  auto vlanIDStr = vlanID.has_value()
+      ? folly::to<std::string>(static_cast<int>(vlanID.value()))
+      : "None";
   XLOG(DBG4) << "sending neighbor solicitation for " << targetIP << " on vlan "
-             << vlanID;
+             << vlanIDStr;
 
   sendNeighborSolicitation(
       sw,
@@ -691,7 +710,7 @@ void IPv6Handler::sendUnicastNeighborSolicitation(
     const folly::IPAddressV6& srcIP,
     const folly::MacAddress& srcMac,
     const VlanID& vlanID,
-    const std::optional<PortDescriptor>& portDescriptor) {
+    const PortDescriptor& portDescriptor) {
   auto state = sw->getState();
   auto vlan = state->getVlans()->getVlanIf(vlanID);
   if (!Interface::isIpAttached(targetIP, vlan->getInterfaceID(), state)) {
@@ -853,22 +872,24 @@ void IPv6Handler::sendMulticastNeighborSolicitations(
 }
 
 void IPv6Handler::floodNeighborAdvertisements() {
-  for (const auto& intf : *sw_->getState()->getInterfaces()) {
+  for (auto iter : std::as_const(*sw_->getState()->getInterfaces())) {
     // This check is mostly for agent tests where we dont want to flood NDP
     // causing loop, when ports are in loopback
+    const auto& intf = iter.second;
     if (isAnyInterfacePortInLoopbackMode(sw_->getState(), intf)) {
       XLOG(DBG2) << "Do not flood neighbor advertisement on interface: "
                  << intf->getName();
       continue;
     }
-    for (const auto& addrEntry : intf->getAddresses()) {
-      if (!addrEntry.first.isV6()) {
+    for (auto iter : std::as_const(*intf->getAddresses())) {
+      auto addrEntry = folly::IPAddress(iter.first);
+      if (!addrEntry.isV6()) {
         continue;
       }
       sendNeighborAdvertisement(
-          intf->getVlanID(),
+          intf->getVlanIDIf(),
           intf->getMac(),
-          addrEntry.first.asV6(),
+          addrEntry.asV6(),
           MacAddress::BROADCAST,
           IPAddressV6());
     }
@@ -876,7 +897,7 @@ void IPv6Handler::floodNeighborAdvertisements() {
 }
 
 void IPv6Handler::sendNeighborAdvertisement(
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     MacAddress srcMac,
     IPAddressV6 srcIP,
     MacAddress dstMac,
@@ -927,7 +948,7 @@ void IPv6Handler::sendNeighborSolicitation(
     const folly::IPAddressV6& srcIP,
     const folly::MacAddress& srcMac,
     const folly::IPAddressV6& neighborIP,
-    const VlanID& vlanID,
+    const std::optional<VlanID>& vlanID,
     const std::optional<PortDescriptor>& portDescriptor,
     const NDPOptions& ndpOptions) {
   sw->getPacketLogger()->log(

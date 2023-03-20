@@ -13,12 +13,14 @@
 #include "fboss/agent/hw/sai/store/SaiObject.h"
 #include "fboss/agent/hw/sai/switch/SaiFdbManager.h"
 #include "fboss/agent/hw/sai/switch/SaiNextHopManager.h"
+#include "fboss/agent/state/Interface.h"
 #include "fboss/agent/state/PortDescriptor.h"
 #include "fboss/agent/state/StateDelta.h"
 #include "fboss/agent/types.h"
 
 #include "folly/container/F14Map.h"
 
+#include <fmt/format.h>
 #include <memory>
 #include <mutex>
 
@@ -36,36 +38,26 @@ struct SaiNeighborHandle {
   const SaiFdbEntry* fdbEntry;
 };
 
-class ManagedNeighbor : public SaiObjectEventAggregateSubscriber<
-                            ManagedNeighbor,
-                            SaiNeighborTraits,
-                            SaiFdbTraits> {
+class ManagedVlanRifNeighbor : public SaiObjectEventAggregateSubscriber<
+                                   ManagedVlanRifNeighbor,
+                                   SaiNeighborTraits,
+                                   SaiFdbTraits> {
  public:
   using Base = SaiObjectEventAggregateSubscriber<
-      ManagedNeighbor,
+      ManagedVlanRifNeighbor,
       SaiNeighborTraits,
       SaiFdbTraits>;
   using FdbWeakptr = std::weak_ptr<const SaiObject<SaiFdbTraits>>;
   using PublisherObjects = std::tuple<FdbWeakptr>;
 
-  ManagedNeighbor(
+  ManagedVlanRifNeighbor(
       SaiNeighborManager* manager,
       std::tuple<SaiPortDescriptor, RouterInterfaceSaiId> saiPortAndIntf,
       std::tuple<InterfaceID, folly::IPAddress, folly::MacAddress>
           intfIDAndIpAndMac,
       std::optional<sai_uint32_t> metadata,
       std::optional<sai_uint32_t> encapIndex,
-      bool isLocal)
-      : Base(std::make_tuple(
-            std::get<InterfaceID>(intfIDAndIpAndMac),
-            std::get<folly::MacAddress>(intfIDAndIpAndMac))),
-        manager_(manager),
-        saiPortAndIntf_(saiPortAndIntf),
-        intfIDAndIpAndMac_(intfIDAndIpAndMac),
-        handle_(std::make_unique<SaiNeighborHandle>()),
-        metadata_(metadata),
-        encapIndex_(encapIndex),
-        isLocal_(isLocal) {}
+      bool isLocal);
 
   void createObject(PublisherObjects objects);
   void removeObject(size_t index, PublisherObjects objects);
@@ -75,27 +67,103 @@ class ManagedNeighbor : public SaiObjectEventAggregateSubscriber<
     return handle_.get();
   }
 
-  SaiPortDescriptor getSaiPortDesc() const {
-    return std::get<SaiPortDescriptor>(saiPortAndIntf_);
-  }
-
-  RouterInterfaceSaiId getRouterInterfaceSaiId() const {
-    return std::get<RouterInterfaceSaiId>(saiPortAndIntf_);
-  }
-
   void notifySubscribers() const;
 
   std::string toString() const;
 
+  SaiPortDescriptor getSaiPortDesc() const {
+    return std::get<SaiPortDescriptor>(saiPortAndIntf_);
+  }
+
  private:
+  RouterInterfaceSaiId getRouterInterfaceSaiId() const {
+    return std::get<RouterInterfaceSaiId>(saiPortAndIntf_);
+  }
+
   SaiNeighborManager* manager_;
   std::tuple<SaiPortDescriptor, RouterInterfaceSaiId> saiPortAndIntf_;
   std::tuple<InterfaceID, folly::IPAddress, folly::MacAddress>
       intfIDAndIpAndMac_;
   std::unique_ptr<SaiNeighborHandle> handle_;
   std::optional<sai_uint32_t> metadata_;
-  std::optional<sai_uint32_t> encapIndex_;
-  bool isLocal_{true};
+};
+
+class PortRifNeighbor {
+ public:
+  PortRifNeighbor(
+      SaiNeighborManager* manager,
+      std::tuple<SaiPortDescriptor, RouterInterfaceSaiId> saiPortAndIntf,
+      std::tuple<InterfaceID, folly::IPAddress, folly::MacAddress>
+          intfIDAndIpAndMac,
+      std::optional<sai_uint32_t> metadata,
+      std::optional<sai_uint32_t> encapIndex,
+      bool isLocal);
+
+  void handleLinkDown();
+
+  SaiNeighborHandle* getHandle() const {
+    return handle_.get();
+  }
+  void notifySubscribers() const {
+    // noop
+  }
+
+  std::string toString() const {
+    return fmt::format("{}", neighbor_->attributes());
+  }
+  SaiPortDescriptor getSaiPortDesc() const {
+    return std::get<SaiPortDescriptor>(saiPortAndIntf_);
+  }
+
+ private:
+  RouterInterfaceSaiId getRouterInterfaceSaiId() const {
+    return std::get<RouterInterfaceSaiId>(saiPortAndIntf_);
+  }
+
+  SaiNeighborManager* manager_;
+  std::tuple<SaiPortDescriptor, RouterInterfaceSaiId> saiPortAndIntf_;
+  std::shared_ptr<SaiNeighbor> neighbor_;
+  std::unique_ptr<SaiNeighborHandle> handle_;
+};
+
+class SaiNeighborEntry {
+ public:
+  SaiNeighborEntry(
+      SaiNeighborManager* manager,
+      std::tuple<SaiPortDescriptor, RouterInterfaceSaiId> saiPortAndIntf,
+      std::tuple<InterfaceID, folly::IPAddress, folly::MacAddress>
+          intfIDAndIpAndMac,
+      std::optional<sai_uint32_t> metadata,
+      std::optional<sai_uint32_t> encapIndex,
+      bool isLocal,
+      cfg::InterfaceType intfType);
+  void handleLinkDown() {
+    std::visit([](auto& handle) { handle->handleLinkDown(); }, neighbor_);
+  }
+
+  cfg::InterfaceType getRifType() const;
+  SaiNeighborHandle* getHandle() const {
+    return std::visit(
+        [](auto& handle) { return handle->getHandle(); }, neighbor_);
+  }
+  void notifySubscribers() const {
+    std::visit([](auto& handle) { handle->notifySubscribers(); }, neighbor_);
+  }
+
+  std::string toString() const {
+    return std::visit(
+        [](auto& handle) { return handle->toString(); }, neighbor_);
+  }
+  SaiPortDescriptor getSaiPortDesc() const {
+    return std::visit(
+        [](auto& handle) { return handle->getSaiPortDesc(); }, neighbor_);
+  }
+
+ private:
+  std::variant<
+      std::shared_ptr<ManagedVlanRifNeighbor>,
+      std::shared_ptr<PortRifNeighbor>>
+      neighbor_;
 };
 
 class SaiNeighborManager {
@@ -127,15 +195,19 @@ class SaiNeighborManager {
   const SaiNeighborHandle* getNeighborHandle(
       const SaiNeighborTraits::NeighborEntry& entry) const;
 
+  cfg::InterfaceType getNeighborRifType(
+      const SaiNeighborTraits::NeighborEntry& entry) const;
+
   void clear();
 
   std::shared_ptr<SaiNeighbor> createSaiObject(
       const SaiNeighborTraits::AdapterHostKey& key,
       const SaiNeighborTraits::CreateAttributes& attributes);
 
-  bool isLinkUp(SaiPortDescriptor port);
-
   std::string listManagedObjects() const;
+  SwitchSaiId getSwitchSaiId() const;
+
+  void handleLinkDown(const SaiPortDescriptor& /*port*/);
 
  private:
   SaiNeighborHandle* getNeighborHandleImpl(
@@ -146,8 +218,8 @@ class SaiNeighborManager {
   const SaiPlatform* platform_;
   folly::F14FastMap<
       SaiNeighborTraits::NeighborEntry,
-      std::shared_ptr<ManagedNeighbor>>
-      managedNeighbors_;
+      std::unique_ptr<SaiNeighborEntry>>
+      neighbors_;
 };
 
 } // namespace facebook::fboss

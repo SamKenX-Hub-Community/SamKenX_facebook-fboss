@@ -27,8 +27,8 @@ import git
 
    Sample invocation:
 
-      cd $HOME/fboss.git/installer/centos-7-x86_64
-      ./build-helper.py $HOME/brcm-sai/build/lib/libsai_impl.a $HOME/brcm-sai/heades/experimental/ $HOME/sai_impl_output
+      cd $HOME/fboss.git/installer/centos-8-x86_64
+      ./build-helper.py $HOME/brcm-sai/build/lib/libsai_impl.a $HOME/brcm-sai/headers/experimental/ $HOME/sai_impl_output
 
    After the above setup, one could simply start FBOSS build e.g.:
 
@@ -164,12 +164,12 @@ class BuildHelper:
             "name = libsai\n"
             "\n"
             "[download]\n"
-            "url = https://github.com/opencomputeproject/SAI/archive/v1.10.2.tar.gz\n"
-            "sha256 = ec6ff2e44a136f72fc7f8081cec74ede9e22a1ca6097c69f0238b72bafea316c\n"
+            "url = https://github.com/opencomputeproject/SAI/archive/v1.11.0.tar.gz\n"
+            "sha256 = 240d0211bbea2758faabfdbfa5e5488d837a47d42839bfe99b4bfbff52ab6c11\n"
             "\n"
             "[build]\n"
             "builder = nop\n"
-            "subdir = SAI-1.10.2\n"
+            "subdir = SAI-1.11.0\n"
             "\n"
             "[install.files]\n"
             "inc = include\n"

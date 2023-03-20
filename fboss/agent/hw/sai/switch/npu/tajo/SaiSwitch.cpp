@@ -1,5 +1,7 @@
 // Copyright 2004-present Facebook. All Rights Reserved.
 
+#include "common/files/FileUtil.h"
+
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
 
 #include "fboss/agent/hw/sai/api/TamApi.h"
@@ -7,6 +9,11 @@
 extern "C" {
 #include <experimental/sai_attr_ext.h>
 }
+
+DEFINE_string(
+    wb_downgrade_target_sdk_version_file,
+    "/var/facebook/fboss/wb_downgrade_target_sdk_version.json",
+    "The SDK version to warm boot downgrade to.");
 
 namespace {
 std::string eventName(sai_switch_event_type_t type) {
@@ -29,6 +36,19 @@ std::string eventName(sai_switch_event_type_t type) {
   return folly::to<std::string>("unknown event type: ", type);
 }
 
+#if defined(TAJO_SDK_VERSION_1_58_0) || defined(TAJO_SDK_VERSION_1_62_0)
+std::string correctionType(sai_tam_switch_event_ecc_err_type_t type) {
+  switch (type) {
+    case SAI_TAM_SWITCH_EVENT_ECC_ERR_TYPE_ECC_COR:
+      return "ECC_COR";
+    case SAI_TAM_SWITCH_EVENT_ECC_ERR_TYPE_ECC_UNCOR:
+      return "ECC_UNCOR";
+    case SAI_TAM_SWITCH_EVENT_ECC_ERR_TYPE_PARITY:
+      return "PARITY";
+  }
+  return "correction-type-unknown";
+}
+#else
 std::string correctionType(sai_tam_switch_event_ecc_err_type_e type) {
   switch (type) {
     case ECC_COR:
@@ -40,6 +60,7 @@ std::string correctionType(sai_tam_switch_event_ecc_err_type_e type) {
   }
   return "correction-type-unknown";
 }
+#endif
 } // namespace
 
 namespace facebook::fboss {
@@ -51,7 +72,7 @@ void SaiSwitch::tamEventCallback(
     uint32_t /*attr_count*/,
     const sai_attribute_t* /*attr_list*/) {
   auto eventDesc = static_cast<const sai_tam_event_desc_t*>(buffer);
-  if (eventDesc->type != SAI_TAM_EVENT_TYPE_SWITCH) {
+  if (eventDesc->type != (sai_tam_event_type_t)SAI_TAM_EVENT_TYPE_SWITCH) {
     // not a switch type event
     return;
   }
@@ -62,6 +83,16 @@ void SaiSwitch::tamEventCallback(
     case SAI_SWITCH_EVENT_TYPE_PARITY_ERROR: {
       auto errorType = eventDesc->event.switch_event.data.parity_error.err_type;
       switch (errorType) {
+#if defined(TAJO_SDK_VERSION_1_58_0) || defined(TAJO_SDK_VERSION_1_62_0)
+        case SAI_TAM_SWITCH_EVENT_ECC_ERR_TYPE_ECC_COR:
+          getSwitchStats()->corrParityError();
+          break;
+        case SAI_TAM_SWITCH_EVENT_ECC_ERR_TYPE_ECC_UNCOR:
+        case SAI_TAM_SWITCH_EVENT_ECC_ERR_TYPE_PARITY:
+          getSwitchStats()->uncorrParityError();
+          break;
+      }
+#else
         case ECC_COR:
           getSwitchStats()->corrParityError();
           break;
@@ -70,6 +101,7 @@ void SaiSwitch::tamEventCallback(
           getSwitchStats()->uncorrParityError();
           break;
       }
+#endif
       sstream << ", correction type=" << correctionType(errorType);
     } break;
     case SAI_SWITCH_EVENT_TYPE_ALL:
@@ -91,5 +123,45 @@ void SaiSwitch::parityErrorSwitchEventCallback(
     const void* /*buffer*/,
     uint32_t /*event_type*/) {
   // noop;
+}
+
+void SaiSwitch::checkAndSetSdkDowngradeVersion() const {
+  if (!files::FileUtil::fileExists(
+          FLAGS_wb_downgrade_target_sdk_version_file)) {
+    return;
+  }
+
+  std::string fileData;
+  folly::readFile(FLAGS_wb_downgrade_target_sdk_version_file.c_str(), fileData);
+  if (fileData.empty()) {
+    throw FbossError(
+        "Could not read contents of file ",
+        FLAGS_wb_downgrade_target_sdk_version_file);
+  }
+  auto versionInfoData = folly::parseJson(fileData);
+  if (!versionInfoData.isObject()) {
+    throw FbossError(
+        "Downgrade version info read from ",
+        FLAGS_wb_downgrade_target_sdk_version_file,
+        " not an object");
+  }
+  const auto& it = versionInfoData.items().begin();
+  std::string sdkKey = it->first.asString();
+  if (sdkKey.compare("sdkVersion")) {
+    throw FbossError(
+        "Expected key 'sdkVersion' not found in ",
+        FLAGS_wb_downgrade_target_sdk_version_file);
+  }
+  auto downgradeVersion = it->second.asString();
+
+  std::vector<int8_t> targetVersion;
+  std::copy(
+      downgradeVersion.c_str(),
+      downgradeVersion.c_str() + downgradeVersion.size() + 1,
+      std::back_inserter(targetVersion));
+  SaiApiTable::getInstance()->switchApi().setAttribute(
+      switchId_,
+      SaiSwitchTraits::Attributes::WarmBootTargetVersion{targetVersion});
+  XLOG(DBG2) << "Downgrade SDK version set as " << downgradeVersion;
 }
 } // namespace facebook::fboss

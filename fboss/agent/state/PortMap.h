@@ -19,22 +19,24 @@ namespace facebook::fboss {
 
 class SwitchState;
 class Port;
-typedef NodeMapTraits<PortID, Port> PortMapTraits;
 
-struct PortMapThriftTraits
-    : public ThriftyNodeMapTraits<int16_t, state::PortFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "portId";
-    return _key;
-  }
-};
+using PortMapTypeClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::integral,
+    apache::thrift::type_class::structure>;
+using PortMapThriftType = std::map<int16_t, state::PortFields>;
+
+class PortMap;
+using PortMapTraits =
+    ThriftMapNodeTraits<PortMap, PortMapTypeClass, PortMapThriftType, Port>;
 
 /*
  * A container for the set of ports.
  */
-class PortMap
-    : public ThriftyNodeMapT<PortMap, PortMapTraits, PortMapThriftTraits> {
+class PortMap : public ThriftMapNode<PortMap, PortMapTraits> {
  public:
+  using Base = ThriftMapNode<PortMap, PortMapTraits>;
+  using Base::modify;
+
   PortMap();
   ~PortMap() override;
 
@@ -57,7 +59,10 @@ class PortMap
    * to a single thread.
    */
 
-  void registerPort(PortID id, const std::string& name);
+  void registerPort(
+      PortID id,
+      const std::string& name,
+      cfg::PortType portType = cfg::PortType::INTERFACE_PORT);
 
   void addPort(const std::shared_ptr<Port>& port);
 
@@ -67,7 +72,7 @@ class PortMap
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyNodeMapT::ThriftyNodeMapT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 

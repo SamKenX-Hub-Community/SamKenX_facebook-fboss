@@ -44,7 +44,7 @@ TEST(QcmConfigTest, applyConfig) {
   EXPECT_TRUE(qcmConfig1);
   EXPECT_FALSE(qcmConfig1->isPublished());
   EXPECT_EQ(qcmConfig1->getNumFlowsClear(), 22);
-  EXPECT_EQ(qcmConfig1->getFlowWeightMap(), map);
+  EXPECT_EQ(qcmConfig1->getFlowWeightMap()->toThrift(), map);
   // default should kick in
   EXPECT_EQ(
       qcmConfig1->getNumFlowSamplesPerView(),
@@ -60,12 +60,13 @@ TEST(QcmConfigTest, applyConfig) {
       folly::CIDRNetwork(folly::IPAddress("11.11.11.0"), 24));
   EXPECT_FALSE(qcmConfig1->getMonitorQcmCfgPortsOnly());
   auto portList = qcmConfig1->getMonitorQcmPortList();
-  EXPECT_EQ(portList.size(), 0);
+  EXPECT_EQ(portList->size(), 0);
   // verify port2QosQueueIds field
   int initPortId = 1;
   int initQosQueueId = 0;
   auto port2QosQueueIds = qcmConfig1->getPort2QosQueueIdMap();
-  for (const auto& perPortQosQueueIds : port2QosQueueIds) {
+  auto perPortQosQueueIdsThrift = port2QosQueueIds->toThrift();
+  for (const auto& perPortQosQueueIds : perPortQosQueueIdsThrift) {
     EXPECT_EQ(perPortQosQueueIds.first, initPortId++);
     for (const auto& qosQueueId : perPortQosQueueIds.second) {
       EXPECT_EQ(qosQueueId, initQosQueueId++);
@@ -95,17 +96,18 @@ TEST(QcmConfigTest, applyConfig) {
   EXPECT_FALSE(qcmConfig2->isPublished());
   EXPECT_EQ(qcmConfig2->getNumFlowsClear(), 22);
   EXPECT_EQ(qcmConfig2->getNumFlowSamplesPerView(), 11);
-  EXPECT_EQ(qcmConfig2->getFlowWeightMap(), map);
+  EXPECT_EQ(qcmConfig2->getFlowWeightMap()->toThrift(), map);
   EXPECT_EQ(qcmConfig2->getFlowLimit(), 13);
   EXPECT_EQ(qcmConfig2->getAgingInterval(), 21);
   EXPECT_EQ(qcmConfig2->getCollectorDscp(), 20);
   EXPECT_EQ(qcmConfig2->getPpsToQcm(), 1000);
   EXPECT_TRUE(qcmConfig2->getMonitorQcmCfgPortsOnly());
   portList = qcmConfig2->getMonitorQcmPortList();
-  EXPECT_EQ(4, portList.size());
+  EXPECT_EQ(4, portList->size());
 
   port2QosQueueIds = qcmConfig2->getPort2QosQueueIdMap();
-  for (const auto& perPortQosQueueIds : port2QosQueueIds) {
+  auto port2QosQueueIdsThrift = port2QosQueueIds->toThrift();
+  for (const auto& perPortQosQueueIds : port2QosQueueIdsThrift) {
     EXPECT_EQ(perPortQosQueueIds.first, initPortId++);
     for (const auto& qosQueueId : perPortQosQueueIds.second) {
       EXPECT_EQ(qosQueueId, initQosQueueId++);
@@ -117,86 +119,6 @@ TEST(QcmConfigTest, applyConfig) {
   auto state3 = publishAndApplyConfig(state2, &config, platform.get());
   EXPECT_NE(nullptr, state3);
   EXPECT_FALSE(state3->getQcmCfg());
-}
-
-TEST(QcmConfigTest, ToFromJSON) {
-  std::string jsonStr = R"(
-        {
-          "agingIntervalInMsecs": 10,
-          "numFlowSamplesPerView": 10,
-          "flowLimit": 10,
-          "numFlowsClear": 10,
-          "scanIntervalInUsecs": 10,
-          "exportThreshold": 10,
-          "flowWeights": {
-            "0": 1,
-            "1": 2,
-            "2": 3
-          },
-          "collectorDstIp": "11::01/128",
-          "collectorSrcPort": 1000,
-          "collectorDscp": 20,
-          "ppsToQcm": 1000,
-          "collectorSrcIp" : "10::01/128",
-          "monitorQcmPortList": [
-            112,
-            113,
-            114
-          ],
-          "port2QosQueueIds": {
-            "10": [
-              0,
-              1,
-              2,
-              3
-            ],
-            "11": [
-              4,
-              5,
-              6,
-              7
-            ]
-           },
-           "monitorQcmCfgPortsOnly": true
-        }
-  )";
-
-  auto qcmCfg = QcmCfg::fromFollyDynamic(folly::parseJson(jsonStr));
-  EXPECT_EQ(10, qcmCfg->getAgingInterval());
-  EXPECT_EQ(10, qcmCfg->getNumFlowSamplesPerView());
-  EXPECT_EQ(10, qcmCfg->getFlowLimit());
-  EXPECT_EQ(10, qcmCfg->getNumFlowsClear());
-  EXPECT_EQ(10, qcmCfg->getScanIntervalInUsecs());
-  EXPECT_EQ(10, qcmCfg->getExportThreshold());
-  EXPECT_TRUE(qcmCfg->getMonitorQcmCfgPortsOnly());
-
-  int initPortId = 10;
-  int initQosQueueId = 0;
-  const auto& port2QosQueueIds = qcmCfg->getPort2QosQueueIdMap();
-  for (const auto& perPortQosQueueIds : port2QosQueueIds) {
-    EXPECT_EQ(perPortQosQueueIds.first, initPortId++);
-    for (const auto& qosQueueId : perPortQosQueueIds.second) {
-      EXPECT_EQ(qosQueueId, initQosQueueId++);
-    }
-  }
-
-  int weightKeyValues = 0;
-  int weightDataValues = 1;
-  for (const auto& weight : qcmCfg->getFlowWeightMap()) {
-    EXPECT_EQ(weight.first, weightKeyValues++);
-    EXPECT_EQ(weight.second, weightDataValues++);
-  }
-  EXPECT_EQ(
-      folly::CIDRNetwork(folly::IPAddress("11::01"), 128),
-      qcmCfg->getCollectorDstIp());
-  EXPECT_EQ(1000, qcmCfg->getCollectorSrcPort());
-  EXPECT_EQ(20, qcmCfg->getCollectorDscp());
-  EXPECT_EQ(1000, qcmCfg->getPpsToQcm());
-  EXPECT_EQ(
-      folly::CIDRNetwork(folly::IPAddress("10::01"), 128),
-      qcmCfg->getCollectorSrcIp());
-  auto portList = qcmCfg->getMonitorQcmPortList();
-  EXPECT_EQ(portList.size(), 3);
 }
 
 // Intent of this test is to enable QCM, modify an

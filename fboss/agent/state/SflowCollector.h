@@ -9,12 +9,12 @@
  */
 #pragma once
 
+#include <memory>
 #include <string>
 #include <utility>
 
 #include <folly/SocketAddress.h>
 
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeBase.h"
 #include "fboss/agent/state/Thrifty.h"
@@ -22,64 +22,33 @@
 
 namespace facebook::fboss {
 
-struct SflowCollectorFields
-    : public ThriftyFields<SflowCollectorFields, state::SflowCollectorFields> {
-  SflowCollectorFields(const std::string& ip, const uint16_t port) {
-    auto address = folly::SocketAddress(ip, port);
-    writableData().id() = folly::to<std::string>(
-        address.getFullyQualified(), ':', address.getPort());
-    state::SocketAddress socketAddr;
-    *socketAddr.host() = address.getFullyQualified();
-    *socketAddr.port() = port;
-    writableData().address() = socketAddr;
-  }
-
-  template <typename Fn>
-  void forEachChild(Fn) {}
-
-  state::SflowCollectorFields toThrift() const override {
-    return data();
-  }
-  static SflowCollectorFields fromThrift(
-      state::SflowCollectorFields const& sflowCollectorThrift);
-  static folly::dynamic migrateToThrifty(folly::dynamic const& dyn);
-  static void migrateFromThrifty(folly::dynamic& dyn);
-  folly::dynamic toFollyDynamicLegacy() const;
-  static SflowCollectorFields fromFollyDynamicLegacy(
-      const folly::dynamic& sflowCollectorJson);
-
-  bool operator==(const SflowCollectorFields& other) const {
-    return data() == other.data();
-  }
-};
+USE_THRIFT_COW(SflowCollector)
 
 /*
  * SflowCollector stores the IP and port of a UDP-based collector of sFlow
  * samples.
  */
-class SflowCollector : public ThriftyBaseT<
-                           state::SflowCollectorFields,
-                           SflowCollector,
-                           SflowCollectorFields> {
+class SflowCollector
+    : public ThriftStructNode<SflowCollector, state::SflowCollectorFields> {
  public:
-  SflowCollector(const std::string& ip, const uint16_t port);
+  using Base = ThriftStructNode<SflowCollector, state::SflowCollectorFields>;
+  SflowCollector(std::string ip, uint16_t port);
 
   const std::string& getID() const {
-    return *getFields()->data().id();
+    return cref<switch_state_tags::id>()->cref();
   }
 
   const folly::SocketAddress getAddress() const {
-    return folly::SocketAddress(
-        *getFields()->data().address()->host(),
-        *getFields()->data().address()->port());
+    const auto& host =
+        cref<switch_state_tags::address>()->cref<switch_state_tags::host>();
+    const auto& port =
+        cref<switch_state_tags::address>()->cref<switch_state_tags::port>();
+    return folly::SocketAddress(host->cref(), port->cref());
   }
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT<
-      state::SflowCollectorFields,
-      SflowCollector,
-      SflowCollectorFields>::ThriftyBaseT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 

@@ -75,8 +75,6 @@ TEST_F(WedgeManagerTest, getTransceiverInfoBasic) {
   }
 }
 
-// Test always fails, disabling until it's debugged
-#if 0
 TEST_F(WedgeManagerTest, getTransceiverInfoWithReadExceptions) {
   // Cause read exceptions while refreshing transceivers and confirm that
   // transceiverInfo still has the old data (this is verified by comparing
@@ -100,12 +98,11 @@ TEST_F(WedgeManagerTest, getTransceiverInfoWithReadExceptions) {
         *cachedTransInfo[info.first].timeCollected());
     EXPECT_EQ(*info.second.present(), true);
   }
-  transceiverManager_->setReadException(false, false);
 
   // Cause read exceptions while reading the management interface. In this case,
-  // the qsfp_service should handle the exception gracefully and still mark
-  // presence for the transceivers but not adding any other data like the
-  // timeCollected timestamp to the transceiverInfo
+  // the qsfp_service should handle the exception gracefully. Since the
+  // management interface is not identified correctly so it will mark it not
+  // present but have the timestamp info there in transceiverInfo
   transceiverManager_->setReadException(
       true, false); // Read exception only while reading mgmt interface
   transceiverManager_->refreshStateMachines();
@@ -115,11 +112,10 @@ TEST_F(WedgeManagerTest, getTransceiverInfoWithReadExceptions) {
   transceiverManager_->getTransceiversInfo(
       transInfo, std::make_unique<std::vector<int32_t>>());
   for (const auto& info : transInfo) {
-    EXPECT_EQ(*info.second.present(), true);
-    EXPECT_EQ(info.second.timeCollected().has_value(), false);
+    EXPECT_EQ(*info.second.present(), false);
+    EXPECT_EQ(info.second.timeCollected().has_value(), true);
   }
 }
-#endif
 
 TEST_F(WedgeManagerTest, readTransceiver) {
   std::map<int32_t, ReadResponse> response;
@@ -349,12 +345,21 @@ TEST_F(
         oneTcvrTo4X25G);
     // First state machine refresh to trigger PROGRAM_IPHY
     transceiverManager_->refreshStateMachines();
-    // Second state machine refresh to trigger PROGRAM_TRANSCEIVER
+
+    // Making mgmt read throw will make readyTransceiver return true so it
+    // can transition to transceiver_ready on refresh()
+    transceiverManager_->setReadException(
+        true /* throwReadExceptionForMgmtInterface */,
+        false /* throwReadExceptionForDomQuery */);
+    // Second state machine refresh to trigger PREPARE_TRANSCEIVER
+    transceiverManager_->refreshStateMachines();
+
+    // Third state machine refresh to trigger PROGRAM_TRANSCEIVER
     transceiverManager_->refreshStateMachines();
     // Override port status
     transceiverManager_->setOverrideAgentPortStatusForTesting(
         isPortUp /* up */, true /* enabled */, false /* clearOnly */);
-    // Thrid state machine refresh to trigger PORT_UP or ALL_PORTS_DOWN
+    // Fourth state machine refresh to trigger PORT_UP or ALL_PORTS_DOWN
     transceiverManager_->refreshStateMachines();
     auto expectedState = isPortUp ? TransceiverStateMachineState::ACTIVE
                                   : TransceiverStateMachineState::INACTIVE;
@@ -380,9 +385,8 @@ TEST_F(
     // If some port is up, the state machine will stay ACTIVE; otherwise, the
     // WedgeManager::updateTransceiverMap() will remove the old QsfpModule,
     // and the refreshStateMachines() will trigger PROGRAM_IPHY again
-    expectedState = isPortUp
-        ? TransceiverStateMachineState::ACTIVE
-        : TransceiverStateMachineState::IPHY_PORTS_PROGRAMMED;
+    expectedState = isPortUp ? TransceiverStateMachineState::ACTIVE
+                             : TransceiverStateMachineState::INACTIVE;
     EXPECT_EQ(curState, expectedState)
         << "Transceiver=0 state doesn't match state expected="
         << apache::thrift::util::enumNameSafe(expectedState)

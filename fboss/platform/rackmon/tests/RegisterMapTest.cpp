@@ -42,14 +42,14 @@ TEST(RegisterMapTest, JSONCoversion) {
       {
         "begin": 0,
         "length": 8,
-        "format": "string",
+        "format": "STRING",
         "name": "MFG_MODEL"
       },
       {
           "begin": 127,
           "length": 1,
           "keep": 10,
-          "format": "float",
+          "format": "FLOAT",
           "precision": 6,
           "name": "BBU Absolute State of Charge"
       }
@@ -81,6 +81,48 @@ TEST(RegisterMapTest, JSONCoversion) {
   EXPECT_THROW(rmap.at(42), std::out_of_range);
 }
 
+TEST(RegisterMapTest, JSONCoversionBaudrate) {
+  std::string inp = R"({
+    "name": "orv2_psu",
+    "address_range": [160, 191],
+    "probe_register": 104,
+    "default_baudrate": 19200,
+    "preferred_baudrate": 19200,
+    "baud_config": {
+      "reg": 163,
+      "baud_value_map": [
+        [19200, 1],
+        [38400, 2],
+        [115200, 3]
+      ]
+    },
+    "registers": [
+      {
+        "begin": 0,
+        "length": 8,
+        "format": "STRING",
+        "name": "MFG_MODEL"
+      }
+    ]
+  })";
+  nlohmann::json j = nlohmann::json::parse(inp);
+  RegisterMap rmap = j;
+  EXPECT_EQ(rmap.applicableAddresses.range.first, 160);
+  EXPECT_EQ(rmap.applicableAddresses.range.second, 191);
+  EXPECT_EQ(rmap.probeRegister, 104);
+  EXPECT_EQ(rmap.defaultBaudrate, 19200);
+  EXPECT_EQ(rmap.preferredBaudrate, 19200);
+  EXPECT_EQ(rmap.name, "orv2_psu");
+  EXPECT_EQ(rmap.registerDescriptors.size(), 1);
+  EXPECT_EQ(rmap.specialHandlers.size(), 0);
+  EXPECT_TRUE(rmap.baudConfig.isSet);
+  EXPECT_EQ(rmap.baudConfig.reg, 163);
+  EXPECT_EQ(rmap.baudConfig.baudValueMap.size(), 3);
+  EXPECT_EQ(rmap.baudConfig.baudValueMap[19200], 1);
+  EXPECT_EQ(rmap.baudConfig.baudValueMap[38400], 2);
+  EXPECT_EQ(rmap.baudConfig.baudValueMap[115200], 3);
+}
+
 TEST(RegisterMapTest, JSONCoversionSpecial) {
   std::string inp = R"({
     "name": "orv2_psu",
@@ -95,7 +137,7 @@ TEST(RegisterMapTest, JSONCoversionSpecial) {
         "period": 3600,
         "action": "write",
         "info": {
-          "interpret": "integer",
+          "interpret": "INTEGER",
           "shell": "date +%s"
         }
       }
@@ -104,14 +146,14 @@ TEST(RegisterMapTest, JSONCoversionSpecial) {
       {
         "begin": 0,
         "length": 8,
-        "format": "string",
+        "format": "STRING",
         "name": "MFG_MODEL"
       },
       {
           "begin": 127,
           "length": 1,
           "keep": 10,
-          "format": "float",
+          "format": "FLOAT",
           "precision": 6,
           "name": "BBU Absolute State of Charge"
       }
@@ -158,7 +200,7 @@ class RegisterMapDatabaseTest : public ::testing::Test {
           {
             "begin": 0,
             "length": 8,
-            "format": "string",
+            "format": "STRING",
             "name": "MFG_MODEL"
           }
         ]
@@ -173,7 +215,7 @@ class RegisterMapDatabaseTest : public ::testing::Test {
           {
             "begin": 0,
             "length": 8,
-            "format": "string",
+            "format": "STRING",
             "name": "MFG_MODEL"
           }
         ]

@@ -4,13 +4,13 @@
 #include <folly/Subprocess.h>
 #include <gflags/gflags.h>
 
+#include <thrift/lib/cpp2/protocol/DebugProtocol.h>
 #include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/LldpManager.h"
 #include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 #include "fboss/agent/hw/test/LoadBalancerUtils.h"
 #include "fboss/agent/hw/test/dataplane_tests/HwTestQosUtils.h"
-#include "fboss/agent/platforms/wedge/WedgePlatformInit.h"
 #include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/PortMap.h"
 #include "fboss/agent/state/SwitchState.h"
@@ -18,11 +18,12 @@
 #include "fboss/agent/test/link_tests/LinkTest.h"
 #include "fboss/lib/CommonUtils.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
+#include "fboss/lib/phy/gen-cpp2/phy_types_custom_protocol.h"
 #include "fboss/lib/thrift_service_client/ThriftServiceClient.h"
+#include "fboss/qsfp_service/if/gen-cpp2/transceiver_types_custom_protocol.h"
 #include "fboss/qsfp_service/lib/QsfpCache.h"
 
 DECLARE_bool(enable_macsec);
-DECLARE_string(config);
 
 namespace {
 const std::vector<std::string> kRestartQsfpService = {
@@ -44,11 +45,11 @@ void LinkTest::SetUp() {
   // programming
   waitForAllCabledPorts(true, 60, 5s);
   waitForAllTransceiverStates(true, 60, 5s);
-  XLOG(INFO) << "Link Test setup ready";
+  XLOG(DBG2) << "Link Test setup ready";
 }
 
 void LinkTest::restartQsfpService() const {
-  XLOG(INFO) << "Restarting QSFP Service";
+  XLOG(DBG2) << "Restarting QSFP Service";
   folly::Subprocess(kRestartQsfpService).waitChecked();
 }
 
@@ -128,7 +129,7 @@ std::map<int32_t, TransceiverInfo> LinkTest::waitForTransceiverInfo(
         return info;
       }
     }
-    XLOG(INFO) << "TransceiverInfo was empty";
+    XLOG(DBG2) << "TransceiverInfo was empty";
     if (retries) {
       /* sleep override */
       std::this_thread::sleep_for(msBetweenRetry);
@@ -162,7 +163,7 @@ void LinkTest::initializeCabledPorts() {
 }
 
 std::tuple<std::vector<PortID>, std::string>
-LinkTest::getOpticalCabledPortsAndNames() const {
+LinkTest::getOpticalCabledPortsAndNames(bool pluggableOnly) const {
   std::string opticalPortNames;
   std::vector<PortID> opticalPorts;
   std::vector<int32_t> transceiverIds;
@@ -179,16 +180,25 @@ LinkTest::getOpticalCabledPortsAndNames() const {
     auto tcvrInfo = transceiverInfos.find(tcvrId);
 
     if (tcvrInfo != transceiverInfos.end()) {
+      auto tcvrState = *tcvrInfo->second.tcvrState();
       if (TransmitterTechnology::OPTICAL ==
-          *(tcvrInfo->second.cable().value_or({}).transmitterTech())) {
-        opticalPorts.push_back(port);
-        opticalPortNames += portName + " ";
+          tcvrState.cable().value_or({}).transmitterTech()) {
+        if (!pluggableOnly ||
+            (pluggableOnly &&
+             (tcvrState.identifier().value_or({}) !=
+              TransceiverModuleIdentifier::MINIPHOTON_OBO))) {
+          opticalPorts.push_back(port);
+          opticalPortNames += portName + " ";
+        } else {
+          XLOG(DBG2) << "Transceiver: " << tcvrId + 1 << ", " << portName
+                     << ", is on-board optics, skip it";
+        }
       } else {
-        XLOG(INFO) << "Transceiver: " << tcvrId + 1 << ", " << portName
+        XLOG(DBG2) << "Transceiver: " << tcvrId + 1 << ", " << portName
                    << ", is not optics, skip it";
       }
     } else {
-      XLOG(INFO) << "TransceiverInfo of transceiver: " << tcvrId + 1 << ", "
+      XLOG(DBG2) << "TransceiverInfo of transceiver: " << tcvrId + 1 << ", "
                  << portName << ", is not present, skip it";
     }
   }
@@ -248,39 +258,48 @@ void LinkTest::createL3DataplaneFlood(
       sw()->getState(), sw()->getPlatform()->getLocalMac());
   programDefaultRoute(ecmpPorts, ecmp6);
   disableTTLDecrements(ecmpPorts);
+  auto vlanID = sw()->getState()->getVlans()->cbegin()->second->getID();
   utility::pumpTraffic(
-      true,
-      sw()->getHw(),
-      sw()->getPlatform()->getLocalMac(),
-      (*sw()->getState()->getVlans()->begin())->getID());
+      true, sw()->getHw(), sw()->getPlatform()->getLocalMac(), vlanID);
   // TODO: Assert that traffic reached a certain rate
-  XLOG(INFO) << "Created L3 Data Plane Flood";
+  XLOG(DBG2) << "Created L3 Data Plane Flood";
 }
 
-bool LinkTest::lldpNeighborsOnAllCabledPorts() const {
+bool LinkTest::checkReachabilityOnAllCabledPorts() const {
   auto lldpDb = sw()->getLldpMgr()->getDB();
   for (const auto& port : getCabledPorts()) {
-    if (!lldpDb->getNeighbors(port).size()) {
-      XLOG(INFO) << " No lldp neighbors on : " << getPortName(port);
+    auto portType = platform()->getPlatformPort(port)->getPortType();
+    if (portType == cfg::PortType::INTERFACE_PORT &&
+        !lldpDb->getNeighbors(port).size()) {
+      XLOG(DBG2) << " No lldp neighbors on : " << getPortName(port);
       return false;
+    }
+    if (portType == cfg::PortType::FABRIC_PORT) {
+      auto fabricReachabilityEntries = sw()->getHw()->getFabricReachability();
+      auto fabricPortEndPoint = fabricReachabilityEntries.find(port);
+      if (fabricPortEndPoint == fabricReachabilityEntries.end() ||
+          !*fabricPortEndPoint->second.isAttached()) {
+        XLOG(DBG2) << " No fabric end points on : " << getPortName(port);
+        return false;
+      }
     }
   }
   return true;
 }
 
 PortID LinkTest::getPortID(const std::string& portName) const {
-  for (auto port : *sw()->getState()->getPorts()) {
-    if (port->getName() == portName) {
-      return port->getID();
+  for (auto port : std::as_const(*sw()->getState()->getPorts())) {
+    if (port.second->getName() == portName) {
+      return port.second->getID();
     }
   }
   throw FbossError("No port named: ", portName);
 }
 
 std::string LinkTest::getPortName(PortID portId) const {
-  for (auto port : *sw()->getState()->getPorts()) {
-    if (port->getID() == portId) {
-      return port->getName();
+  for (auto port : std::as_const(*sw()->getState()->getPorts())) {
+    if (port.second->getID() == portId) {
+      return port.second->getName();
     }
   }
   throw FbossError("No port with ID: ", portId);
@@ -297,7 +316,7 @@ std::set<std::pair<PortID, PortID>> LinkTest::getConnectedPairs() const {
                  << lldpNeighbors.size();
       continue;
     }
-    auto neighborPort = getPortID(lldpNeighbors.begin()->getPortId());
+    auto neighborPort = getPortID((*lldpNeighbors.begin())->getPortId());
     // Insert sorted pairs, so that the same pair does not show up twice in the
     // set
     auto connectedPair = cabledPort < neighborPort
@@ -313,7 +332,7 @@ void LinkTest::waitForStateMachineState(
     TransceiverStateMachineState stateMachineState,
     uint32_t retries,
     std::chrono::duration<uint32_t, std::milli> msBetweenRetry) const {
-  XLOG(INFO) << "Checking qsfp TransceiverStateMachineState on "
+  XLOG(DBG2) << "Checking qsfp TransceiverStateMachineState on "
              << folly::join(",", transceiversToCheck);
 
   std::vector<int32_t> expectedTransceiver;
@@ -338,7 +357,8 @@ void LinkTest::waitForStateMachineState(
       // Only continue if the transceiver state machine matches
       if (auto transceiverInfoIt = info.find(transceiverID);
           transceiverInfoIt != info.end()) {
-        if (auto state = transceiverInfoIt->second.stateMachineState();
+        if (auto state =
+                transceiverInfoIt->second.tcvrState()->stateMachineState();
             state.has_value() && *state == stateMachineState) {
           continue;
         }
@@ -348,7 +368,7 @@ void LinkTest::waitForStateMachineState(
     }
 
     if (badTransceivers.empty()) {
-      XLOG(INFO) << "All qsfp TransceiverStateMachineState on "
+      XLOG(DBG2) << "All qsfp TransceiverStateMachineState on "
                  << folly::join(",", expectedTransceiver) << " match "
                  << apache::thrift::util::enumNameSafe(stateMachineState);
       return;
@@ -368,10 +388,65 @@ void LinkTest::waitForStateMachineState(
 void LinkTest::waitForLldpOnCabledPorts(
     uint32_t retries,
     std::chrono::duration<uint32_t, std::milli> msBetweenRetry) const {
-  WITH_RETRIES_N_TIMED(
-      { ASSERT_EVENTUALLY_TRUE(lldpNeighborsOnAllCabledPorts()); },
-      retries,
-      msBetweenRetry);
+  WITH_RETRIES_N_TIMED(retries, msBetweenRetry, {
+    ASSERT_EVENTUALLY_TRUE(checkReachabilityOnAllCabledPorts());
+  });
+}
+
+// Log debug information from IPHY, XPHY and optics
+void LinkTest::logLinkDbgMessage(std::vector<PortID>& portIDs) const {
+  auto iPhyInfos = sw()->getIPhyInfo(portIDs);
+  auto qsfpServiceClient = utils::createQsfpServiceClient();
+  auto portNames = getPortNames(portIDs);
+  std::map<std::string, phy::PhyInfo> xPhyInfos;
+  std::map<int32_t, TransceiverInfo> tcvrInfos;
+
+  try {
+    qsfpServiceClient->sync_getInterfacePhyInfo(xPhyInfos, portNames);
+  } catch (const std::exception& ex) {
+    XLOG(WARN) << "Failed to call qsfp_service getInterfacePhyInfo(). "
+               << folly::exceptionStr(ex);
+  }
+
+  std::vector<int32_t> tcvrIds;
+  for (auto portID : portIDs) {
+    tcvrIds.push_back(
+        platform()->getPlatformPort(portID)->getTransceiverID().value());
+  }
+
+  try {
+    qsfpServiceClient->sync_getTransceiverInfo(tcvrInfos, tcvrIds);
+  } catch (const std::exception& ex) {
+    XLOG(WARN) << "Failed to call qsfp_service getTransceiverInfo(). "
+               << folly::exceptionStr(ex);
+  }
+
+  for (auto portID : portIDs) {
+    auto portName = getPortName(portID);
+    XLOG(ERR) << "Debug information for " << portName;
+    if (iPhyInfos.find(portID) != iPhyInfos.end()) {
+      XLOG(ERR) << "IPHY INFO: "
+                << apache::thrift::debugString(iPhyInfos[portID]);
+    } else {
+      XLOG(ERR) << "IPHY info missing for " << portName;
+    }
+
+    if (xPhyInfos.find(portName) != xPhyInfos.end()) {
+      XLOG(ERR) << "XPHY INFO: "
+                << apache::thrift::debugString(xPhyInfos[portName]);
+    } else {
+      XLOG(ERR) << "XPHY info missing for " << portName;
+    }
+
+    auto tcvrId =
+        platform()->getPlatformPort(portID)->getTransceiverID().value();
+    if (tcvrInfos.find(tcvrId) != tcvrInfos.end()) {
+      XLOG(ERR) << "Transceiver INFO: "
+                << apache::thrift::debugString(tcvrInfos[tcvrId]);
+    } else {
+      XLOG(ERR) << "Transceiver info missing for " << portName;
+    }
+  }
 }
 
 int linkTestMain(int argc, char** argv, PlatformInitFn initPlatformFn) {

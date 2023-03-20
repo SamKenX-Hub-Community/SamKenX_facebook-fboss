@@ -17,6 +17,15 @@
 
 namespace facebook::fboss {
 
+class VlanDelta;
+namespace thrift_cow {
+template <>
+struct ThriftMapNodeDeltaTraits<VlanMap> {
+  using mapped_type = typename VlanMap::mapped_type;
+  using ExtractorT = ThriftMapNodeExtractor<VlanMap>;
+  using DeltaValueT = VlanDelta;
+};
+} // namespace thrift_cow
 /*
  * VlanMapDelta is a small wrapper on top of NodeMapDelta<VlanMap>.
  *
@@ -25,9 +34,9 @@ namespace facebook::fboss {
  */
 class VlanDelta : public DeltaValue<Vlan> {
  public:
-  typedef NodeMapDelta<ArpTable> ArpTableDelta;
-  typedef NodeMapDelta<NdpTable> NdpTableDelta;
-  typedef NodeMapDelta<MacTable> MacTableDelta;
+  using ArpTableDelta = thrift_cow::ThriftMapDelta<ArpTable>;
+  using NdpTableDelta = thrift_cow::ThriftMapDelta<NdpTable>;
+  using MacTableDelta = thrift_cow::ThriftMapDelta<MacTable>;
 
   using DeltaValue<Vlan>::DeltaValue;
 
@@ -42,7 +51,7 @@ class VlanDelta : public DeltaValue<Vlan> {
         getNew() ? getNew()->getNdpTable().get() : nullptr);
   }
   template <typename NTableT>
-  NodeMapDelta<NTableT> getNeighborDelta() const;
+  thrift_cow::ThriftMapDelta<NTableT> getNeighborDelta() const;
 
   MacTableDelta getMacDelta() const {
     return MacTableDelta(
@@ -51,15 +60,17 @@ class VlanDelta : public DeltaValue<Vlan> {
   }
 };
 
-typedef NodeMapDelta<VlanMap, VlanDelta> VlanMapDelta;
+using VlanMapDelta = thrift_cow::ThriftMapDelta<VlanMap>;
 
 template <>
-inline NodeMapDelta<ArpTable> VlanDelta::getNeighborDelta() const {
+inline thrift_cow::ThriftMapDelta<ArpTable> VlanDelta::getNeighborDelta()
+    const {
   return getArpDelta();
 }
 
 template <>
-inline NodeMapDelta<NdpTable> VlanDelta::getNeighborDelta() const {
+inline thrift_cow::ThriftMapDelta<NdpTable> VlanDelta::getNeighborDelta()
+    const {
   return getNdpDelta();
 }
 

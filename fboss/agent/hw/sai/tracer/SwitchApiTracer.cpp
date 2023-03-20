@@ -8,6 +8,7 @@
  *
  */
 
+#include "fboss/agent/hw/sai/tracer/SwitchApiTracer.h"
 #include <typeindex>
 #include <utility>
 
@@ -81,6 +82,7 @@ void handleExtensionAttributes() {
   SAI_EXT_ATTR_MAP(Switch, AclFieldList)
   SAI_EXT_ATTR_MAP(Switch, EgressPoolAvaialableSize)
   SAI_EXT_ATTR_MAP(Switch, HwEccErrorInitiate)
+  SAI_EXT_ATTR_MAP(Switch, WarmBootTargetVersion)
 }
 
 } // namespace
@@ -91,19 +93,25 @@ sai_status_t wrap_create_switch(
     sai_object_id_t* switch_id,
     uint32_t attr_count,
     const sai_attribute_t* attr_list) {
+  auto begin = FLAGS_enable_elapsed_time_log
+      ? std::chrono::system_clock::now()
+      : std::chrono::system_clock::time_point::min();
   auto rv = SaiTracer::getInstance()->switchApi_->create_switch(
       switch_id, attr_count, attr_list);
-
-  SaiTracer::getInstance()->logSwitchCreateFn(
-      switch_id, attr_count, attr_list, rv);
+  SaiTracer::getInstance()->logSwitchCreateFn(switch_id, attr_count, attr_list);
+  SaiTracer::getInstance()->logPostInvocation(rv, *switch_id, begin);
   return rv;
 }
 
 sai_status_t wrap_remove_switch(sai_object_id_t switch_id) {
+  SaiTracer::getInstance()->logRemoveFn(
+      "remove_switch", switch_id, SAI_OBJECT_TYPE_SWITCH);
+  auto begin = FLAGS_enable_elapsed_time_log
+      ? std::chrono::system_clock::now()
+      : std::chrono::system_clock::time_point::min();
   auto rv = SaiTracer::getInstance()->switchApi_->remove_switch(switch_id);
 
-  SaiTracer::getInstance()->logRemoveFn(
-      "remove_switch", switch_id, SAI_OBJECT_TYPE_SWITCH, rv);
+  SaiTracer::getInstance()->logPostInvocation(rv, switch_id, begin);
   return rv;
 }
 
@@ -117,10 +125,14 @@ sai_status_t wrap_set_switch_attribute(
     auto* tracer = SaiTracer::getInstance().get();
     rv = tracer->switchApi_->set_switch_attribute(switch_id, attr);
   } else {
+    SaiTracer::getInstance()->logSetAttrFn(
+        "set_switch_attribute", switch_id, attr, SAI_OBJECT_TYPE_SWITCH);
+    auto begin = FLAGS_enable_elapsed_time_log
+        ? std::chrono::system_clock::now()
+        : std::chrono::system_clock::time_point::min();
     rv = SaiTracer::getInstance()->switchApi_->set_switch_attribute(
         switch_id, attr);
-    SaiTracer::getInstance()->logSetAttrFn(
-        "set_switch_attribute", switch_id, attr, SAI_OBJECT_TYPE_SWITCH, rv);
+    SaiTracer::getInstance()->logPostInvocation(rv, switch_id, begin);
   }
   return rv;
 }
@@ -129,6 +141,21 @@ sai_status_t wrap_get_switch_attribute(
     sai_object_id_t switch_id,
     uint32_t attr_count,
     sai_attribute_t* attr_list) {
+  if (FLAGS_enable_get_attr_log) {
+    auto begin = FLAGS_enable_elapsed_time_log
+        ? std::chrono::system_clock::now()
+        : std::chrono::system_clock::time_point::min();
+    auto rv = SaiTracer::getInstance()->switchApi_->get_switch_attribute(
+        switch_id, attr_count, attr_list);
+    SaiTracer::getInstance()->logGetAttrFn(
+        "get_switch_attribute",
+        switch_id,
+        attr_count,
+        attr_list,
+        SAI_OBJECT_TYPE_SWITCH);
+    SaiTracer::getInstance()->logPostInvocation(rv, switch_id, begin);
+    return rv;
+  }
   return SaiTracer::getInstance()->switchApi_->get_switch_attribute(
       switch_id, attr_count, attr_list);
 }

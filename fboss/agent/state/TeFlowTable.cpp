@@ -17,56 +17,79 @@ TeFlowTable::TeFlowTable() {}
 
 TeFlowTable::~TeFlowTable() {}
 
+void TeFlowTable::fillTeFlowEntry(
+    std::shared_ptr<TeFlowEntry>& teFlowEntry,
+    const FlowEntry& entry,
+    std::shared_ptr<SwitchState>* state) {
+  teFlowEntry->setNextHops(*entry.nextHops());
+  std::vector<NextHopThrift> resolvedNextHops;
+  for (const auto& nexthop : *entry.nextHops()) {
+    if (!TeFlowTable::isNexthopResolved(nexthop, *state)) {
+      auto nhop = util::fromThrift(nexthop, true);
+      throw FbossError(
+          "Invalid redirection nexthop. NH: ",
+          nhop.str(),
+          " TeFlow entry: ",
+          teFlowEntry->str());
+    }
+    resolvedNextHops.emplace_back(nexthop);
+  }
+  teFlowEntry->setResolvedNextHops(std::move(resolvedNextHops));
+  if (entry.counterID().has_value()) {
+    teFlowEntry->setCounterID(entry.counterID().value());
+  } else {
+    teFlowEntry->setCounterID(std::nullopt);
+  }
+  teFlowEntry->setEnabled(true);
+}
+
+std::shared_ptr<TeFlowEntry> TeFlowTable::createTeFlowEntry(
+    const FlowEntry& entry,
+    std::shared_ptr<SwitchState>* state) {
+  auto teFlowEntry = std::make_shared<TeFlowEntry>(*entry.flow());
+  fillTeFlowEntry(teFlowEntry, entry, state);
+  return teFlowEntry;
+}
+
 TeFlowTable* TeFlowTable::addTeFlowEntry(
     std::shared_ptr<SwitchState>* state,
     const FlowEntry& entry) {
-  auto* writableTable = modify(state);
-  auto oldFlowEntry = writableTable->getTeFlowIf(*entry.flow());
-
-  auto fillFlowInfo = [&entry, &state](auto& tableEntry) {
-    tableEntry->setNextHops(*entry.nextHops());
-    std::vector<NextHopThrift> resolvedNextHops;
-    for (const auto& nexthop : *entry.nextHops()) {
-      if (!TeFlowTable::isNexthopResolved(nexthop, *state)) {
-        std::string nhJson;
-        apache::thrift::SimpleJSONSerializer::serialize(nexthop, &nhJson);
-        throw FbossError(
-            "Invalid redirection nexthop for TE flow. NH: ", nhJson);
-      }
-      resolvedNextHops.emplace_back(nexthop);
-    }
-    tableEntry->setResolvedNextHops(std::move(resolvedNextHops));
-    if (entry.counterID().has_value()) {
-      tableEntry->setCounterID(entry.counterID().value());
-    } else {
-      tableEntry->setCounterID(std::nullopt);
-    }
-    tableEntry->setEnabled(true);
-  };
+  auto oldFlowEntry = getTeFlowIf(*entry.flow());
 
   if (!oldFlowEntry) {
-    auto teFlowEntry = std::make_shared<TeFlowEntry>(*entry.flow());
-    fillFlowInfo(teFlowEntry);
+    auto* writableTable = modify(state);
+    auto teFlowEntry = createTeFlowEntry(entry, state);
     writableTable->addNode(teFlowEntry);
+    XLOG(DBG3) << "Adding TeFlow " << teFlowEntry->str();
+    return writableTable;
   } else {
-    auto* entryToUpdate = oldFlowEntry->modify(state);
-    fillFlowInfo(entryToUpdate);
+    auto teFlowEntry = createTeFlowEntry(entry, state);
+    if (*teFlowEntry != *oldFlowEntry) {
+      auto* writableTable = modify(state);
+      writableTable->updateNode(teFlowEntry);
+      XLOG(DBG3) << "Updating TeFlow " << teFlowEntry->str();
+      return writableTable;
+    } else {
+      XLOG(DBG3) << "Skipping update to TeFlow entry due to no changes"
+                 << oldFlowEntry->str();
+      return this;
+    }
   }
-  return writableTable;
+  return this;
 }
 
 TeFlowTable* TeFlowTable::removeTeFlowEntry(
     std::shared_ptr<SwitchState>* state,
     const TeFlow& flowId) {
   auto* writableTable = modify(state);
+  auto id = getTeFlowStr(flowId);
   auto oldFlowEntry = writableTable->getTeFlowIf(flowId);
   if (!oldFlowEntry) {
-    std::string flowStr;
-    toAppend(flowId, &flowStr);
-    XLOG(ERR) << "Request to delete a non existing flow entry :" << flowStr;
+    XLOG(ERR) << "Request to delete a non existing flow entry :" << id;
     return writableTable;
   }
-  writableTable->removeNodeIf(flowId);
+  writableTable->removeNodeIf(id);
+  XLOG(DBG3) << "Deleting TeFlow " << oldFlowEntry->str();
   return writableTable;
 }
 
@@ -75,6 +98,7 @@ TeFlowTable* TeFlowTable::modify(std::shared_ptr<SwitchState>* state) {
     CHECK(!(*state)->isPublished());
     return this;
   }
+  SwitchState::modify(state);
 
   auto newTable = clone();
   auto* ptr = newTable.get();
@@ -130,6 +154,12 @@ void toAppend(const TeFlow& flow, std::string* result) {
   result->append(flowJson);
 }
 
-FBOSS_INSTANTIATE_NODE_MAP(TeFlowTable, TeFlowTableTraits);
+std::string getTeFlowStr(const TeFlow& flow) {
+  std::string flowStr;
+  toAppend(flow, &flowStr);
+  return flowStr;
+}
+
+template class ThriftMapNode<TeFlowTable, TeFlowTableThriftTraits>;
 
 } // namespace facebook::fboss

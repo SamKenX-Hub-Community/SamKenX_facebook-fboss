@@ -4,9 +4,23 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/configs/interface/rackmon_pls.conf fboss/platform/rackmon/configs/interface/rackmon_pls.conf
   COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/configs/register_map/orv2_psu.json fboss/platform/rackmon/configs/register_map/orv2_psu.json
   COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/fboss/platform/rackmon/generate_rackmon_config.sh fboss/platform/rackmon/generate_rackmon_config.sh
-  COMMAND fboss/platform/rackmon/generate_rackmon_config.sh --install_dir=fboss/platform/rackmon/ --fbcode_dir=.
+  COMMAND fboss/platform/rackmon/generate_rackmon_config.sh --install_dir=fboss/platform/rackmon/
   DEPENDS fboss/platform/rackmon/configs/interface/rackmon.conf fboss/platform/rackmon/configs/interface/rackmon_pls.conf fboss/platform/rackmon/configs/register_map/orv2_psu.json
 )
+
+add_fbthrift_cpp_library(
+  rackmon_cpp2
+  fboss/platform/rackmon/if/rackmonsvc.thrift
+  SERVICES
+  RackmonCtrl
+  OPTIONS
+    json
+    reflection
+  DEPENDS
+    fb303_cpp2
+    fboss_cpp2
+)
+
 
 add_library(rackmon_lib
   fboss/platform/rackmon/RackmonThriftHandler.cpp

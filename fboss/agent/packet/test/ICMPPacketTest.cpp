@@ -87,14 +87,16 @@ IPv6Hdr makeIPv6Hdr() {
   return ipv6;
 }
 
-TEST(ICMPv4Packet, serializeFullPacket) {
+void serializedFullIPv4PacketHelper(bool taggedPkt) {
+  auto vlanID = taggedPkt ? std::make_optional(VlanID(1)) : std::nullopt;
+
   auto ipv4 = makeIPv4Hdr();
   ICMPHdr icmp4(
       static_cast<uint8_t>(ICMPv4Type::ICMPV4_TYPE_DESTINATION_UNREACHABLE),
       static_cast<uint8_t>(
           ICMPv4Code::ICMPV4_CODE_DESTINATION_UNREACHABLE_NET_UNREACHABLE),
       0);
-  auto totalLength = icmp4.computeTotalLengthV4(0);
+  auto totalLength = icmp4.computeTotalLengthV4(0, taggedPkt);
   auto buf = IOBuf(IOBuf::CREATE, totalLength);
   buf.append(totalLength);
   RWPrivateCursor cursor(&buf);
@@ -102,18 +104,20 @@ TEST(ICMPv4Packet, serializeFullPacket) {
       &cursor,
       MacAddress("33:33:00:00:00:01"),
       MacAddress("33:33:00:00:00:02"),
-      VlanID(1),
+      vlanID,
       ipv4,
       0,
       emptyBody);
 
   XLOG(DBG1) << "ip csum: " << ipv4.csum << "icmp csum: " << icmp4.csum;
 
-  auto pkt = MockRxPacket::fromHex(
+  std::string pktPreVlanHeader(
       // Ethernet Header
       "33 33 00 00 00 01" // Destination MAC Address
-      "33 33 00 00 00 02" // Source MAC Address
-      "81 00 00 01" // VLAN: 1
+      "33 33 00 00 00 02");
+  std::string vlanHeader("81 00 00 01" // VLAN: 1
+  );
+  std::string pktPostVlanHeader(
       "08 00" // EtherType: IPv4
       // IPv4 Header
       "4" // version: 4
@@ -131,6 +135,15 @@ TEST(ICMPv4Packet, serializeFullPacket) {
       "03 00" // ICMP type, code
       "fc ff" // ICMP checksum
   );
+
+  std::string pktHexDump;
+  if (taggedPkt) {
+    pktHexDump = pktPreVlanHeader + vlanHeader + pktPostVlanHeader;
+  } else {
+    pktHexDump = pktPreVlanHeader + pktPostVlanHeader;
+  }
+  auto pkt = MockRxPacket::fromHex(pktHexDump.c_str());
+
   const uint8_t* serializedData = buf.data();
   const uint8_t* expectedData = pkt->buf()->data();
   for (int i = 0; i < totalLength; i++) {
@@ -143,12 +156,26 @@ TEST(ICMPv4Packet, serializeFullPacket) {
   ICMPHdr icmpHdr(cursor2);
   EXPECT_EQ(ethHdr.srcAddr, MacAddress("33:33:00:00:00:02"));
   EXPECT_EQ(ethHdr.dstAddr, MacAddress("33:33:00:00:00:01"));
-  EXPECT_EQ(ethHdr.vlanTags[0].vid(), 1);
+  if (taggedPkt) {
+    EXPECT_EQ(ethHdr.vlanTags[0].vid(), 1);
+  } else {
+    EXPECT_EQ(ethHdr.vlanTags.size(), 0);
+  }
   EXPECT_EQ(ipHdr, ipv4);
   EXPECT_EQ(icmpHdr, icmp4);
 }
 
-TEST(ICMPv6Packet, serializeFullPacket) {
+TEST(ICMPv4Packet, serializeFullUntaggedPacket) {
+  serializedFullIPv4PacketHelper(false /* untagged pkt */);
+}
+
+TEST(ICMPv4Packet, serializeFullTaggedPacket) {
+  serializedFullIPv4PacketHelper(true /* tagged pkt */);
+}
+
+void serializedFullIPv6PacketHelper(bool taggedPkt) {
+  auto vlanID = taggedPkt ? std::make_optional(VlanID(1)) : std::nullopt;
+
   auto ipv6 = makeIPv6Hdr();
   ICMPHdr icmp6(
       static_cast<uint8_t>(ICMPv6Type::ICMPV6_TYPE_NDP_NEIGHBOR_SOLICITATION),
@@ -163,17 +190,21 @@ TEST(ICMPv6Packet, serializeFullPacket) {
       &cursor,
       MacAddress("33:33:00:00:00:01"),
       MacAddress("33:33:00:00:00:02"),
-      VlanID(1),
+      vlanID,
       ipv6,
       0,
       emptyBody);
+
   // check the serialized data
-  auto pkt = MockRxPacket::fromHex(
+  std::string pktPreVlanHeader(
       // Ethernet Header
       "33 33 00 00 00 01" // Destination MAC Address
       "33 33 00 00 00 02" // Source MAC Address
-      "81 00 00 01" // VLAN: 1
-      "86 dd" // EtherType: IPv4
+  );
+  std::string vlanHeader("81 00 00 01" // VLAN: 1
+  );
+  std::string pktPostVlanHeader(
+      "86 dd" // EtherType: IPv6
       // IPv6 Header
       "6" // VERSION: 6
       "e0" // Traffic Class
@@ -191,6 +222,15 @@ TEST(ICMPv6Packet, serializeFullPacket) {
       "87 00" // ICMP type, code
       "9c c6" // ICMP checksum
   );
+
+  std::string pktHexDump;
+  if (taggedPkt) {
+    pktHexDump = pktPreVlanHeader + vlanHeader + pktPostVlanHeader;
+  } else {
+    pktHexDump = pktPreVlanHeader + pktPostVlanHeader;
+  }
+  auto pkt = MockRxPacket::fromHex(pktHexDump.c_str());
+
   const uint8_t* serializedData = buf.data();
   const uint8_t* expectedData = pkt->buf()->data();
   for (int i = 0; i < totalLength; i++) {
@@ -205,7 +245,19 @@ TEST(ICMPv6Packet, serializeFullPacket) {
 
   EXPECT_EQ(ethHdr.srcAddr, MacAddress("33:33:00:00:00:02"));
   EXPECT_EQ(ethHdr.dstAddr, MacAddress("33:33:00:00:00:01"));
-  EXPECT_EQ(ethHdr.vlanTags[0].vid(), 1);
+  if (taggedPkt) {
+    EXPECT_EQ(ethHdr.vlanTags[0].vid(), 1);
+  } else {
+    EXPECT_EQ(ethHdr.vlanTags.size(), 0);
+  }
   EXPECT_EQ(ipHdr, ipv6);
   EXPECT_EQ(icmpHdr, icmp6);
+}
+
+TEST(ICMPv6Packet, serializeFullUntaggedPacket) {
+  serializedFullIPv6PacketHelper(false /* untagged pkt */);
+}
+
+TEST(ICMPv6Packet, serializeFullTaggedPacket) {
+  serializedFullIPv6PacketHelper(true /* tagged pkt */);
 }

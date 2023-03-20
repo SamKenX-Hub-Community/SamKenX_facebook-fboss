@@ -52,9 +52,9 @@ class SaiTamManager;
 class SaiTunnelManager;
 class SaiVirtualRouterManager;
 class SaiVlanManager;
-class SaiUnsupportedFeatureManager;
 class SaiWredManager;
 class SaiStore;
+class UnsupportedFeatureManager;
 
 class SaiManagerTable {
  public:
@@ -86,6 +86,9 @@ class SaiManagerTable {
 
   SaiDebugCounterManager& debugCounterManager();
   const SaiDebugCounterManager& debugCounterManager() const;
+
+  UnsupportedFeatureManager& teFlowEntryManager();
+  const UnsupportedFeatureManager& teFlowEntryManager() const;
 
   SaiFdbManager& fdbManager();
   const SaiFdbManager& fdbManager() const;
@@ -193,6 +196,7 @@ class SaiManagerTable {
   std::unique_ptr<SaiWredManager> wredManager_;
   std::unique_ptr<SaiTamManager> tamManager_;
   std::unique_ptr<SaiTunnelManager> tunnelManager_;
+  std::unique_ptr<UnsupportedFeatureManager> teFlowEntryManager_;
 };
 
 } // namespace facebook::fboss

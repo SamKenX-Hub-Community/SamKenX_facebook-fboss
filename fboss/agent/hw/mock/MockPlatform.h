@@ -34,7 +34,7 @@ class HwSwitchWarmBootHelper;
 class MockPlatform : public Platform {
  public:
   MockPlatform();
-  explicit MockPlatform(
+  MockPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
       std::unique_ptr<MockHwSwitch> hw);
   ~MockPlatform() override;
@@ -62,6 +62,10 @@ class MockPlatform : public Platform {
   MOCK_CONST_METHOD0(getQsfpCache, QsfpCache*());
 
  private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
   void createTmpDir();
   void cleanupTmpDir();
 

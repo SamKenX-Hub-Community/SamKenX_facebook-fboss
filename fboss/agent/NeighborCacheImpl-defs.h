@@ -16,8 +16,10 @@
 #include <folly/logging/xlog.h>
 #include <list>
 #include "fboss/agent/ArpHandler.h"
+#include "fboss/agent/EncapIndexAllocator.h"
 #include "fboss/agent/IPv6Handler.h"
 #include "fboss/agent/NeighborCacheImpl.h"
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/state/ArpTable.h"
 #include "fboss/agent/state/NdpTable.h"
 #include "fboss/agent/state/NeighborEntry.h"
@@ -62,11 +64,36 @@ bool checkVlanAndIntf(
 
 template <typename NTable>
 void NeighborCacheImpl<NTable>::programEntry(Entry* entry) {
+  SwSwitch::StateUpdateFn updateFn;
+
+  switch (sw_->getState()->getSwitchSettings()->getSwitchType()) {
+    case cfg::SwitchType::NPU:
+      updateFn = getUpdateFnToProgramEntryForNpu(entry);
+      break;
+    case cfg::SwitchType::VOQ:
+      updateFn = getUpdateFnToProgramEntryForVoq(entry);
+      break;
+    case cfg::SwitchType::FABRIC:
+    case cfg::SwitchType::PHY:
+      throw FbossError(
+          "Programming entry is not supported for switch type: ",
+          (sw_->getState()->getSwitchSettings()->getSwitchType()));
+  }
+
+  sw_->updateState(
+      folly::to<std::string>("add neighbor ", entry->getFields().ip),
+      std::move(updateFn));
+}
+
+template <typename NTable>
+SwSwitch::StateUpdateFn
+NeighborCacheImpl<NTable>::getUpdateFnToProgramEntryForNpu(Entry* entry) {
   CHECK(!entry->isPending());
 
   auto fields = entry->getFields();
   auto vlanID = vlanID_;
-  auto updateFn = [fields, vlanID](const std::shared_ptr<SwitchState>& state)
+  auto updateFn =
+      [this, fields, vlanID](const std::shared_ptr<SwitchState>& state) mutable
       -> std::shared_ptr<SwitchState> {
     if (!ncachehelpers::checkVlanAndIntf<NTable>(state, fields, vlanID)) {
       // Either the vlan or intf is no longer valid.
@@ -76,7 +103,12 @@ void NeighborCacheImpl<NTable>::programEntry(Entry* entry) {
     auto vlan = state->getVlans()->getVlanIf(vlanID).get();
     std::shared_ptr<SwitchState> newState{state};
     auto* table = vlan->template getNeighborTable<NTable>().get();
-    auto node = table->getNodeIf(fields.ip);
+    auto node = table->getNodeIf(fields.ip.str());
+    auto asic = sw_->getPlatform()->getAsic();
+    if (asic->isSupported(HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE)) {
+      fields.encapIndex =
+          EncapIndexAllocator::getNextAvailableEncapIdx(state, *asic);
+    }
 
     if (!node) {
       table = table->modify(&vlan, &newState);
@@ -100,8 +132,25 @@ void NeighborCacheImpl<NTable>::programEntry(Entry* entry) {
     return newState;
   };
 
-  sw_->updateState(
-      folly::to<std::string>("add neighbor ", fields.ip), std::move(updateFn));
+  return updateFn;
+}
+
+template <typename NTable>
+SwSwitch::StateUpdateFn
+NeighborCacheImpl<NTable>::getUpdateFnToProgramEntryForVoq(Entry* entry) {
+  CHECK(!entry->isPending());
+
+  auto fields = entry->getFields();
+  auto updateFn = [this,
+                   fields](const std::shared_ptr<SwitchState>& state) mutable
+      -> std::shared_ptr<SwitchState> {
+    std::shared_ptr<SwitchState> newState{state};
+
+    // TODO
+    return newState;
+  };
+
+  return updateFn;
 }
 
 template <typename NTable>
@@ -121,7 +170,7 @@ void NeighborCacheImpl<NTable>::programPendingEntry(Entry* entry, bool force) {
     auto vlan = state->getVlans()->getVlanIf(vlanID).get();
     std::shared_ptr<SwitchState> newState{state};
     auto* table = vlan->template getNeighborTable<NTable>().get();
-    auto node = table->getNodeIf(fields.ip);
+    auto node = table->getNodeIf(fields.ip.str());
     table = table->modify(&vlan, &newState);
 
     if (node) {
@@ -149,11 +198,11 @@ NeighborCacheImpl<NTable>::~NeighborCacheImpl() {}
 
 template <typename NTable>
 void NeighborCacheImpl<NTable>::repopulate(std::shared_ptr<NTable> table) {
-  for (auto it = table->begin(); it != table->end(); ++it) {
-    auto entry = *it;
+  for (auto it = table->cbegin(); it != table->cend(); ++it) {
+    auto entry = it->second;
     auto state = entry->isPending() ? NeighborEntryState::INCOMPLETE
                                     : NeighborEntryState::STALE;
-    setEntryInternal(*entry->getFields(), state);
+    setEntryInternal(EntryFields::fromThrift(entry->toThrift()), state);
   }
 }
 
@@ -207,7 +256,7 @@ void NeighborCacheImpl<NTable>::updateEntryClassID(
           auto vlan = state->getVlans()->getVlanIf(vlanID_).get();
           std::shared_ptr<SwitchState> newState{state};
           auto* table = vlan->template getNeighborTable<NTable>().get();
-          auto node = table->getNodeIf(ip);
+          auto node = table->getNodeIf(ip.str());
 
           if (node) {
             auto fields = EntryFields(
@@ -216,7 +265,9 @@ void NeighborCacheImpl<NTable>::updateEntryClassID(
                 node->getPort(),
                 node->getIntfID(),
                 node->getState(),
-                classID);
+                classID,
+                node->getEncapIndex(),
+                node->getIsLocal());
             table = table->modify(&vlan, &newState);
             table->updateEntry(fields);
           }
@@ -229,7 +280,9 @@ void NeighborCacheImpl<NTable>::updateEntryClassID(
         : "None";
     sw_->updateState(
         folly::to<std::string>(
-            "NeighborCache configure lookup classID: ", classIDStr),
+            "NeighborCache configure lookup classID: ",
+            classIDStr,
+            " for " + ip.str()),
         std::move(updateClassIDFn));
   }
 }
@@ -317,13 +370,13 @@ bool NeighborCacheImpl<NTable>::flushEntryFromSwitchState(
     AddressType ip) {
   auto* vlan = (*state)->getVlans()->getVlan(vlanID_).get();
   auto* table = vlan->template getNeighborTable<NTable>().get();
-  const auto& entry = table->getNodeIf(ip);
+  const auto& entry = table->getNodeIf(ip.str());
   if (!entry) {
     return false;
   }
 
   table = table->modify(&vlan, state);
-  table->removeNode(ip);
+  table->removeNode(ip.str());
   return true;
 }
 

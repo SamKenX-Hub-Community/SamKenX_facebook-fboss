@@ -77,7 +77,7 @@ class BcmQcmDataTest : public BcmLinkStateDependentTests {
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
     };
-    auto config = utility::onePortPerVlanConfig(
+    auto config = utility::onePortPerInterfaceConfig(
         getHwSwitch(), std::move(ports), cfg::PortLoopbackMode::MAC, true);
     return config;
   }
@@ -233,7 +233,12 @@ class BcmQcmDataTest : public BcmLinkStateDependentTests {
       folly::IPAddress dstIp,
       PortID from,
       const std::optional<folly::IPAddress>& srcIp = std::nullopt) {
-    auto vlanId = utility::firstVlanID(initialConfig());
+    // TODO: Remove the dependency on VLAN below
+    auto vlan = utility::firstVlanID(initialConfig());
+    if (!vlan) {
+      throw FbossError("VLAN id unavailable for test");
+    }
+    auto vlanId = *vlan;
     // construct eth hdr
     const auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
 
@@ -419,7 +424,7 @@ TEST_F(BcmQcmDataTest, VerifyQcmFirmwareInit) {
     getHwSwitch()->printDiagCmd("mcsstatus Quick=true");
     std::string mcsStatusStr =
         logBuffer.getBuffer()->moveToFbString().toStdString();
-    XLOG(INFO) << "MCStatus:" << mcsStatusStr;
+    XLOG(DBG2) << "MCStatus:" << mcsStatusStr;
     EXPECT_TRUE(mcsStatusStr.find("uC 0 status: OK") != std::string::npos);
   };
   verifyAcrossWarmBoots(setup, verify);

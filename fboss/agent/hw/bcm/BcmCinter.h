@@ -159,6 +159,68 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       uint32 param0,
       uint32 param1) override;
   int bcm_port_loopback_set(int unit, bcm_port_t port, uint32 value) override;
+  int bcm_udf_hash_config_add(
+      int unit,
+      uint32 options,
+      bcm_udf_hash_config_t* config) override;
+  int bcm_udf_hash_config_delete(int unit, bcm_udf_hash_config_t* config)
+      override;
+  int bcm_udf_create(
+      int unit,
+      bcm_udf_alloc_hints_t* hints,
+      bcm_udf_t* udf_info,
+      bcm_udf_id_t* udf_id) override;
+  int bcm_udf_destroy(int unit, bcm_udf_id_t udf_id) override;
+  int bcm_udf_pkt_format_create(
+      int unit,
+      bcm_udf_pkt_format_options_t options,
+      bcm_udf_pkt_format_info_t* pkt_format,
+      bcm_udf_pkt_format_id_t* pkt_format_id) override;
+  int bcm_udf_pkt_format_destroy(
+      int unit,
+      bcm_udf_pkt_format_id_t pkt_format_id) override;
+  int bcm_udf_pkt_format_add(
+      int unit,
+      bcm_udf_id_t udf_id,
+      bcm_udf_pkt_format_id_t pkt_format_id) override;
+  int bcm_udf_pkt_format_delete(
+      int unit,
+      bcm_udf_id_t udf_id,
+      bcm_udf_pkt_format_id_t pkt_format_id) override;
+  int bcm_udf_pkt_format_get(
+      int /*unit*/,
+      bcm_udf_pkt_format_id_t /*pkt_format_id*/,
+      int /*max*/,
+      bcm_udf_id_t* /*udf_id_list*/,
+      int* /*actual*/) override {
+    return 0;
+  }
+  int bcm_port_pause_addr_set(int unit, bcm_port_t port, bcm_mac_t mac)
+      override;
+
+  int bcm_udf_hash_config_get(int /*unit*/, bcm_udf_hash_config_t* /*config*/)
+      override {
+    return 0;
+  }
+  int bcm_udf_pkt_format_info_get(
+      int /*unit*/,
+      bcm_udf_pkt_format_id_t /*pkt_format_id*/,
+      bcm_udf_pkt_format_info_t* /*pkt_format*/) override {
+    return 0;
+  }
+  void bcm_udf_pkt_format_info_t_init(
+      bcm_udf_pkt_format_info_t* pkt_format) override;
+
+  void bcm_udf_alloc_hints_t_init(bcm_udf_alloc_hints_t* udf_hints) override;
+  void bcm_udf_t_init(bcm_udf_t* udf_info) override;
+  void bcm_udf_hash_config_t_init(bcm_udf_hash_config_t* config) override;
+  int bcm_udf_init(int unit) override;
+  int bcm_udf_get(
+      int /*unit*/,
+      bcm_udf_id_t /*udf_id*/,
+      bcm_udf_t* /*udf_info*/) override {
+    return 0;
+  }
   int bcm_port_autoneg_set(int unit, bcm_port_t port, int autoneg) override;
   int bcm_port_phy_modify(
       int unit,
@@ -220,6 +282,21 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       uint16 data,
       uint16 mask) override;
   int bcm_switch_control_set(int unit, bcm_switch_control_t type, int arg)
+      override;
+  int bcm_l3_egress_ecmp_ethertype_set(
+      int unit,
+      uint32 flags,
+      int ethertype_count,
+      int* ethertype_array) override;
+  int bcm_l3_egress_ecmp_ethertype_get(
+      int unit,
+      uint32* flags,
+      int ethertype_max,
+      int* ethertype_array,
+      int* ethertype_count) override;
+  int bcm_l3_egress_ecmp_member_status_set(int unit, bcm_if_t intf, int status)
+      override;
+  int bcm_l3_egress_ecmp_member_status_get(int unit, bcm_if_t intf, int* status)
       override;
   int bcm_switch_control_port_set(
       int unit,
@@ -386,6 +463,10 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       bcm_field_action_t action,
       uint32 param0,
       uint32 param1) override;
+  int bcm_field_action_remove(
+      int unit,
+      bcm_field_entry_t entry,
+      bcm_field_action_t action) override;
   int bcm_field_entry_prio_set(int unit, bcm_field_entry_t entry, int prio)
       override;
   int bcm_field_entry_enable_set(int unit, bcm_field_entry_t entry, int enable)
@@ -854,6 +935,14 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       uint64* /*value*/) override {
     return 0;
   }
+  int bcm_cosq_bst_stat_extended_get(
+      int /*unit*/,
+      bcm_cosq_object_id_t* /*id*/,
+      bcm_bst_stat_id_t /*bid*/,
+      uint32 /*options*/,
+      uint64* /*value*/) override {
+    return 0;
+  }
   int bcm_field_entry_stat_get(
       int /*unit*/,
       bcm_field_entry_t /*entry*/,
@@ -868,6 +957,19 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       int* /*intf_count*/) override {
     return 0;
   }
+
+  void bcm_l3_ecmp_dlb_port_quality_attr_t_init(
+      bcm_l3_ecmp_dlb_port_quality_attr_t* /*quality_attr*/) override {}
+
+  int bcm_l3_ecmp_dlb_port_quality_attr_set(
+      int /*unit*/,
+      bcm_port_t /*port*/,
+      bcm_l3_ecmp_dlb_port_quality_attr_t* /*quality_attr*/) override;
+
+  int bcm_l3_ecmp_dlb_port_quality_attr_get(
+      int /*unit*/,
+      bcm_port_t /*port*/,
+      bcm_l3_ecmp_dlb_port_quality_attr_t* /*quality_attr*/) override;
 
   int bcm_l3_enable_set(int unit, int enable) override;
 
@@ -1495,6 +1597,14 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
       uint64* /*value*/) override {
     return 0;
   }
+  int bcm_stat_sync_multi_get(
+      int /*unit*/,
+      bcm_port_t /*port*/,
+      int /*nstat*/,
+      bcm_stat_val_t* /*stat_arr*/,
+      uint64* /*value_arr*/) override {
+    return 0;
+  }
   int bcm_l3_intf_find(int /*unit*/, bcm_l3_intf_t* /*intf*/) override {
     return 0;
   }
@@ -1855,6 +1965,7 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
   std::string getNextTimeInterfaceVar();
   std::string getNextTimeSpecVar();
   std::string getNextStateCounterVar();
+  std::string getNextEthertypeVar();
 
   /*
    * Wrap a generated cint function call with return error code
@@ -1906,6 +2017,17 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
   std::vector<std::string> cintForMirrorDestination(
       const bcm_mirror_destination_t* mirror_dest);
 
+  std::vector<std::string> cintForBcmUdfHashConfig(
+      const bcm_udf_hash_config_t& config);
+
+  std::vector<std::string> cintForBcmUdfAllocHints(
+      const bcm_udf_alloc_hints_t* hints);
+
+  std::vector<std::string> cintForBcmUdfInfo(const bcm_udf_t* udf_info);
+
+  std::vector<std::string> cintForBcmUdfPktFormatInfo(
+      const bcm_udf_pkt_format_info_t& pktFormat);
+
   std::vector<std::string> cintForTrunkInfo(const bcm_trunk_info_t& t_data);
 
   std::vector<std::string> cintForTrunkMember(const bcm_trunk_member_t& member);
@@ -1930,6 +2052,9 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
   std::vector<std::string> cintForEcmpMembersArray(
       const bcm_l3_ecmp_member_t* members,
       int member_count);
+
+  std::vector<std::string> cintForDlbPortQualityAttr(
+      bcm_l3_ecmp_dlb_port_quality_attr_t quality_attr);
 
   std::vector<std::string> cintForPathsArray(
       const bcm_if_t* paths,
@@ -2019,6 +2144,7 @@ class BcmCinter : public BcmSdkInterface, public BcmInterface {
   std::atomic<uint> tmpTimeInterfaceCreated_{0};
   std::atomic<uint> tmpTimeSpecCreated_{0};
   std::atomic<uint> tmpStateCounterCreated_{0};
+  std::atomic<uint> tmpEthertype_{0};
 
   std::unique_ptr<AsyncLogger> asyncLogger_;
 

@@ -28,12 +28,15 @@ class CmisFirmwareUpgrader {
         "FTCD4313E2PCL-FB",
         "FTCD4313E2PCLFB1",
         "FTCD4313E2PCLFB2",
-        "FTCD4313E2PCLFB3"}},
+        "FTCD4313E2PCLFB3",
+        "FTCD4313E2PCLFB4"}},
       {"finisar-400g-lr4", {"FTCD4323E2PCL   "}},
       {"innolight-200g-fr4",
        {"T-FX4FNT-HFB    ", "T-FX4FNT-HFP    ", "T-FX4FNT-HFS    "}},
-      {"innolight-400g-fr4", {"T-DQ4CNT-NFB    ", "T-DQ4CNT-NF2    "}},
+      {"innolight-400g-fr4",
+       {"T-DQ4CNT-NFB    ", "T-DQ4CNT-NF2    ", "T-DQ4CNT-NFM    "}},
       {"intel-200g-fr4", {"SPTSMP3CLCK8    ", "SPTSMP3CLCK9    "}},
+      {"intel-400g-fr4", {"SPTSHP3CLCKS    "}},
   };
 
   // Constructor. The caller is responsible for interfacing with Firmware

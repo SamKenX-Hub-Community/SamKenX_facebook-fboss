@@ -43,7 +43,8 @@ std::shared_ptr<SwitchState> MirrorManager::resolveMirrors(
   auto mirrors = state->getMirrors()->clone();
   bool mirrorsUpdated = false;
 
-  for (const auto& mirror : *state->getMirrors()) {
+  for (auto iter : std::as_const(*state->getMirrors())) {
+    auto mirror = iter.second;
     if (!mirror->getDestinationIp()) {
       /* SPAN mirror does not require resolving */
       continue;
@@ -53,7 +54,7 @@ std::shared_ptr<SwitchState> MirrorManager::resolveMirrors(
         ? v4Manager_->updateMirror(mirror)
         : v6Manager_->updateMirror(mirror);
     if (updatedMirror) {
-      XLOG(INFO) << "Mirror: " << updatedMirror->getID() << " updated.";
+      XLOG(DBG2) << "Mirror: " << updatedMirror->getID() << " updated.";
       mirrors->updateNode(updatedMirror);
       mirrorsUpdated = true;
     }

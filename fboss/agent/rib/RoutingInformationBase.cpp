@@ -16,7 +16,6 @@
 #include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/rib/ConfigApplier.h"
-#include "fboss/agent/rib/ForwardingInformationBaseUpdater.h"
 #include "fboss/agent/rib/NetworkToRouteMap.h"
 #include "fboss/agent/state/ForwardingInformationBase.h"
 #include "fboss/agent/state/ForwardingInformationBaseContainer.h"
@@ -28,6 +27,7 @@
 
 #include <exception>
 #include <memory>
+#include <type_traits>
 #include <utility>
 
 #include <folly/ScopeGuard.h>
@@ -62,7 +62,7 @@ class RibIpRouteUpdate {
     } else {
       ++stats.v6RoutesAdded;
     }
-    return {
+    return RibRoute{
         {network, mask},
         RouteNextHopEntry::from(route, distance, counterID, classID)};
   }
@@ -91,7 +91,7 @@ class RibMplsRouteUpdate {
       const AdminDistance distance,
       RoutingInformationBase::UpdateStatistics& stats) {
     ++stats.mplsRoutesAdded;
-    return {
+    return RibRoute{
         LabelID(route.get_topLabel()),
         RouteNextHopEntry::from(route, distance, std::nullopt, std::nullopt)};
   }
@@ -136,7 +136,8 @@ void reconstructRibFromFib(
         }
       });
   addrToRoute->clear();
-  for (auto& route : *fib) {
+  for (auto& iter : std::as_const(*fib)) {
+    const auto& route = iter.second;
     addrToRoute->insert(route->prefix(), route);
   }
   // Copy unresolved routes
@@ -594,38 +595,26 @@ RibRouteTables RibRouteTables::fromFollyDynamic(
   }
 
   if (fibs) {
-    auto importRoutes = [](const auto& fib, auto* addrToRoute) {
-      for (auto& route : *fib) {
-        auto [itr, inserted] = addrToRoute->insert(route->prefix(), route);
-        if (!inserted) {
-          // If RIB already had a route, replace it with FIB route so we
-          // share the same objects. The only case where this can occur is
-          // when we WB from old style RIB ser (all routes ser) to FIB assisted
-          // ser/deser
-          itr->value() = route;
-        }
-        DCHECK_EQ(
-            addrToRoute
-                ->exactMatch(route->prefix().network(), route->prefix().mask())
-                ->value(),
-            route);
-      }
-    };
-    for (auto& fib : *fibs) {
-      auto& routeTables = (*lockedRouteTables)[fib->getID()];
-      importRoutes(fib->getFibV6(), &routeTables.v6NetworkToRoute);
-      importRoutes(fib->getFibV4(), &routeTables.v4NetworkToRoute);
-      auto mplsTable = &routeTables.labelToRoute;
-      if (FLAGS_mpls_rib && labelFib) {
-        for (const auto& route : *labelFib) {
-          auto [itr, inserted] = mplsTable->insert(route->prefix(), route);
-          if (!inserted) {
-            itr->second = route;
-          }
-          DCHECK_EQ(mplsTable->find(route->getID().value())->second, route);
-        }
-      }
-    }
+    rib.importFibs(lockedRouteTables, fibs, labelFib);
+  }
+  return rib;
+}
+
+RibRouteTables RibRouteTables::fromThrift(
+    const std::map<int32_t, state::RouteTableFields>& ribThrift,
+    const std::shared_ptr<ForwardingInformationBaseMap>& fibs,
+    const std::shared_ptr<LabelForwardingInformationBase>& labelFib) {
+  RibRouteTables rib;
+  auto lockedRouteTables = rib.synchronizedRouteTables_.wlock();
+
+  for (const auto& [rid, table] : ribThrift) {
+    RouteTable rtable = RouteTable::fromThrift(table);
+    auto vrf = RouterID(rid);
+    lockedRouteTables->emplace(vrf, std::move(rtable));
+  }
+
+  if (fibs) {
+    rib.importFibs(lockedRouteTables, fibs, labelFib);
   }
   return rib;
 }
@@ -637,6 +626,15 @@ RoutingInformationBase::fromFollyDynamic(
     const std::shared_ptr<LabelForwardingInformationBase>& labelFib) {
   auto rib = std::make_unique<RoutingInformationBase>();
   rib->ribTables_ = RibRouteTables::fromFollyDynamic(ribJson, fibs, labelFib);
+  return rib;
+}
+
+std::unique_ptr<RoutingInformationBase> RoutingInformationBase::fromThrift(
+    const std::map<int32_t, state::RouteTableFields>& ribThrift,
+    const std::shared_ptr<ForwardingInformationBaseMap>& fibs,
+    const std::shared_ptr<LabelForwardingInformationBase>& labelFib) {
+  auto rib = std::make_unique<RoutingInformationBase>();
+  rib->ribTables_ = RibRouteTables::fromThrift(ribThrift, fibs, labelFib);
   return rib;
 }
 
@@ -726,6 +724,122 @@ RoutingInformationBase::UpdateStatistics RoutingInformationBase::update(
       updateType,
       fibUpdateCallback,
       cookie);
+}
+
+state::RouteTableFields RibRouteTables::RouteTable ::toThrift() const {
+  state::RouteTableFields obj{};
+  obj.v4NetworkToRoute() = v4NetworkToRoute.toThrift();
+  obj.v6NetworkToRoute() = v6NetworkToRoute.toThrift();
+  obj.labelToRoute() = labelToRoute.toThrift();
+  return obj;
+}
+
+state::RouteTableFields RibRouteTables::RouteTable::warmBootState() const {
+  state::RouteTableFields obj{};
+  obj.v4NetworkToRoute() = v4NetworkToRoute.warmBootState();
+  obj.v6NetworkToRoute() = v6NetworkToRoute.warmBootState();
+  obj.labelToRoute() = labelToRoute.warmBootState();
+  return obj;
+}
+
+RibRouteTables::RouteTable RibRouteTables::RouteTable::fromThrift(
+    const state::RouteTableFields& obj) {
+  RouteTable routeTable;
+  routeTable.v4NetworkToRoute =
+      IPv4NetworkToRouteMap::fromThrift(*obj.v4NetworkToRoute());
+  routeTable.v6NetworkToRoute =
+      IPv6NetworkToRouteMap::fromThrift(*obj.v6NetworkToRoute());
+  routeTable.labelToRoute = LabelToRouteMap::fromThrift(*obj.labelToRoute());
+  return routeTable;
+}
+
+std::map<int32_t, state::RouteTableFields> RibRouteTables::toThrift() const {
+  std::map<int32_t, state::RouteTableFields> obj{};
+  auto routeTables = synchronizedRouteTables_.rlock();
+  for (const auto& [rid, routeTable] : *routeTables) {
+    obj.emplace(rid, routeTable.toThrift());
+  }
+  return obj;
+}
+
+std::map<int32_t, state::RouteTableFields> RibRouteTables::warmBootState()
+    const {
+  std::map<int32_t, state::RouteTableFields> obj{};
+  const auto& routeTables = *synchronizedRouteTables_.rlock();
+  for (const auto& [rid, routeTable] : routeTables) {
+    obj.emplace(rid, routeTable.warmBootState());
+  }
+  return obj;
+}
+
+RibRouteTables RibRouteTables::fromThrift(
+    const std::map<int32_t, state::RouteTableFields>& obj) {
+  RibRouteTables ribRouteTables;
+  auto routeTables = ribRouteTables.synchronizedRouteTables_.wlock();
+  for (const auto& [rid, routeTableFields] : obj) {
+    // @lint-ignore CLANGTIDY
+    routeTables->emplace(
+        RouterID(rid),
+        RibRouteTables::RouteTable::fromThrift(routeTableFields));
+  }
+  return ribRouteTables;
+}
+
+std::map<int32_t, state::RouteTableFields> RoutingInformationBase::toThrift()
+    const {
+  return ribTables_.toThrift();
+}
+std::unique_ptr<RoutingInformationBase> RoutingInformationBase::fromThrift(
+    const std::map<int32_t, state::RouteTableFields>& obj) {
+  auto rib = std::make_unique<RoutingInformationBase>();
+  rib->ribTables_ = RibRouteTables::fromThrift(obj);
+  return rib;
+}
+
+void RibRouteTables::importFibs(
+    const SynchronizedRouteTables::WLockedPtr& lockedRouteTables,
+    const std::shared_ptr<ForwardingInformationBaseMap>& fibs,
+    const std::shared_ptr<LabelForwardingInformationBase>& labelFib) {
+  auto importRoutes = [](const auto& fib, auto* addrToRoute) {
+    for (const auto& iter : std::as_const(*fib)) {
+      const auto& route = iter.second;
+      auto [itr, inserted] = addrToRoute->insert(route->prefix(), route);
+      if (!inserted) {
+        // If RIB already had a route, replace it with FIB route so we
+        // share the same objects. The only case where this can occur is
+        // when we WB from old style RIB ser (all routes ser) to FIB assisted
+        // ser/deser
+        itr->value() = route;
+      }
+      DCHECK_EQ(
+          addrToRoute
+              ->exactMatch(route->prefix().network(), route->prefix().mask())
+              ->value(),
+          route);
+    }
+  };
+  for (const auto& iter : std::as_const(*fibs)) {
+    const auto& fib = iter.second;
+    auto& routeTables = (*lockedRouteTables)[fib->getID()];
+    importRoutes(fib->getFibV6(), &routeTables.v6NetworkToRoute);
+    importRoutes(fib->getFibV4(), &routeTables.v4NetworkToRoute);
+    auto mplsTable = &routeTables.labelToRoute;
+    if (FLAGS_mpls_rib && labelFib) {
+      for (const auto& entry : std::as_const(*labelFib)) {
+        const auto& route = entry.second;
+        auto [itr, inserted] = mplsTable->insert(route->prefix(), route);
+        if (!inserted) {
+          itr->second = route;
+        }
+        DCHECK_EQ(mplsTable->find(route->getID())->second, route);
+      }
+    }
+  }
+}
+
+std::map<int32_t, state::RouteTableFields>
+RoutingInformationBase::warmBootState() const {
+  return ribTables_.warmBootState();
 }
 
 template std::shared_ptr<Route<folly::IPAddressV4>>

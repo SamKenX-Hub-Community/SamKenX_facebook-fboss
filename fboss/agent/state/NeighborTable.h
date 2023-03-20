@@ -12,6 +12,7 @@
 #include <folly/MacAddress.h>
 #include <folly/dynamic.h>
 #include <folly/json.h>
+#include <type_traits>
 #include "fboss/agent/state/NeighborEntry.h"
 #include "fboss/agent/state/NodeMap.h"
 #include "fboss/agent/state/PortDescriptor.h"
@@ -20,6 +21,7 @@ namespace facebook::fboss {
 
 class SwitchState;
 class Vlan;
+class Interface;
 
 template <typename IPADDR, typename ENTRY>
 struct NeighborTableTraits {
@@ -34,22 +36,17 @@ struct NeighborTableTraits {
   }
 };
 
-template <typename IPADDR, typename ENTRY>
-struct NeighborTableThriftTraits
-    : public ThriftyNodeMapTraits<std::string, state::NeighborEntryFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "ipaddress";
-    return _key;
-  }
+using NbrTableTypeClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::string,
+    apache::thrift::type_class::structure>;
+using NbrTableThriftType = std::map<std::string, state::NeighborEntryFields>;
 
-  static const KeyType convertKey(const IPADDR& key) {
-    return key.str();
-  }
-
-  static const KeyType parseKey(const folly::dynamic& key) {
-    return key.asString();
-  }
-};
+template <typename SUBCLASS, typename NODE>
+struct NbrTableTraits : ThriftMapNodeTraits<
+                            SUBCLASS,
+                            NbrTableTypeClass,
+                            NbrTableThriftType,
+                            NODE> {};
 
 /*
  * A map of IP --> MAC for the IP addresses of other nodes on a VLAN.
@@ -62,45 +59,51 @@ struct NeighborTableThriftTraits
  * allow us to perform cheaper copy-on-write updates.
  */
 template <typename IPADDR, typename ENTRY, typename SUBCLASS>
-class NeighborTable : public ThriftyNodeMapT<
-                          SUBCLASS,
-                          NeighborTableTraits<IPADDR, ENTRY>,
-                          NeighborTableThriftTraits<IPADDR, ENTRY>> {
+class NeighborTable
+    : public ThriftMapNode<SUBCLASS, NbrTableTraits<SUBCLASS, ENTRY>> {
  public:
   typedef IPADDR AddressType;
   typedef ENTRY Entry;
-
+  using ThriftMapNode<SUBCLASS, NbrTableTraits<SUBCLASS, ENTRY>>::modify;
   NeighborTable();
 
-  const std::shared_ptr<Entry>& getEntry(AddressType ip) const {
-    return this->getNode(ip);
+  const std::shared_ptr<Entry> getEntry(AddressType ip) const {
+    static_assert(std::is_same_v<typename Parent::Node, ENTRY>, "Not Entry");
+    return this->getNode(ip.str());
   }
   std::shared_ptr<Entry> getEntryIf(AddressType ip) const {
-    return this->getNodeIf(ip);
+    return this->getNodeIf(ip.str());
   }
-
-  SUBCLASS* modify(Vlan** vlan, std::shared_ptr<SwitchState>* state);
-
   /**
    * Return a modifiable version of current table. If the table is cloned, all
    * nodes to the root are cloned, and cloned state is put in the output
    * parameter.
    */
+
+  SUBCLASS* modify(Vlan** vlan, std::shared_ptr<SwitchState>* state);
   SUBCLASS* modify(VlanID vlanId, std::shared_ptr<SwitchState>* state);
+  SUBCLASS* modify(Interface** intf, std::shared_ptr<SwitchState>* state);
+  SUBCLASS* modify(InterfaceID intfId, std::shared_ptr<SwitchState>* state);
 
   void addEntry(
       AddressType ip,
       folly::MacAddress mac,
       PortDescriptor port,
       InterfaceID intfID,
-      NeighborState state = NeighborState::REACHABLE);
+      NeighborState state = NeighborState::REACHABLE,
+      std::optional<cfg::AclLookupClass> classID = std::nullopt,
+      std::optional<int64_t> encapIndex = std::nullopt,
+      bool isLocal = true);
   void addEntry(const NeighborEntryFields<AddressType>& fields);
   void updateEntry(
       AddressType ip,
       folly::MacAddress mac,
       PortDescriptor port,
       InterfaceID intfID,
-      std::optional<cfg::AclLookupClass> classID = std::nullopt);
+      NeighborState state,
+      std::optional<cfg::AclLookupClass> classID = std::nullopt,
+      std::optional<int64_t> encapIndex = std::nullopt,
+      bool isLocal = true);
   void updateEntry(const NeighborEntryFields<AddressType>& fields);
   void updateEntry(AddressType ip, std::shared_ptr<ENTRY>);
   void addPendingEntry(AddressType ip, InterfaceID intfID);
@@ -108,11 +111,7 @@ class NeighborTable : public ThriftyNodeMapT<
   void removeEntry(AddressType ip);
 
  private:
-  typedef ThriftyNodeMapT<
-      SUBCLASS,
-      NeighborTableTraits<IPADDR, ENTRY>,
-      NeighborTableThriftTraits<IPADDR, ENTRY>>
-      Parent;
+  using Parent = ThriftMapNode<SUBCLASS, NbrTableTraits<SUBCLASS, ENTRY>>;
   // Inherit the constructors required for clone()
   using Parent::Parent;
   friend class CloneAllocator;

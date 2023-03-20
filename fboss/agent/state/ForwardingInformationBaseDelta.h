@@ -21,8 +21,8 @@ class ForwardingInformationBaseContainerDelta
  public:
   using DeltaValue<ForwardingInformationBaseContainer>::DeltaValue;
 
-  NodeMapDelta<ForwardingInformationBaseV4> getV4FibDelta() const;
-  NodeMapDelta<ForwardingInformationBaseV6> getV6FibDelta() const;
+  thrift_cow::ThriftMapDelta<ForwardingInformationBaseV4> getV4FibDelta() const;
+  thrift_cow::ThriftMapDelta<ForwardingInformationBaseV6> getV6FibDelta() const;
 
   template <typename AddrT>
   auto getFibDelta() const {
@@ -34,8 +34,16 @@ class ForwardingInformationBaseContainerDelta
   }
 };
 
-using ForwardingInformationBaseMapDelta = NodeMapDelta<
+template <typename IGNORED>
+struct ForwardingInformationBaseMapDeltaTraits {
+  using mapped_type = typename ForwardingInformationBaseMap::mapped_type;
+  using ExtractorT =
+      thrift_cow::ThriftMapNodeExtractor<ForwardingInformationBaseMap>;
+  using DeltaValueT = ForwardingInformationBaseContainerDelta;
+};
+
+using ForwardingInformationBaseMapDelta = MapDelta<
     ForwardingInformationBaseMap,
-    ForwardingInformationBaseContainerDelta>;
+    ForwardingInformationBaseMapDeltaTraits>;
 
 } // namespace facebook::fboss

@@ -9,7 +9,6 @@
  */
 #pragma once
 
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeBase.h"
@@ -24,8 +23,7 @@
 
 namespace facebook::fboss {
 
-struct LoadBalancerFields
-    : public ThriftyFields<LoadBalancerFields, state::LoadBalancerFields> {
+struct LoadBalancerFields {
   using IPv4Field = cfg::IPv4Field;
   using IPv4Fields = boost::container::flat_set<IPv4Field>;
 
@@ -38,31 +36,10 @@ struct LoadBalancerFields
   using MPLSField = cfg::MPLSField;
   using MPLSFields = boost::container::flat_set<MPLSField>;
 
-  state::LoadBalancerFields toThrift() const override;
-  static LoadBalancerFields fromThrift(state::LoadBalancerFields const& fields);
-  static folly::dynamic migrateToThrifty(folly::dynamic const& dyn);
-  static void migrateFromThrifty(folly::dynamic& dyn);
-
-  LoadBalancerFields(
-      LoadBalancerID id,
-      cfg::HashingAlgorithm algorithm,
-      uint32_t seed,
-      IPv4Fields v4Fields,
-      IPv6Fields v6Fields,
-      TransportFields transportFields,
-      MPLSFields mplsFields = MPLSFields{});
-
-  template <typename Fn>
-  void forEachChild(Fn /* unused */) {}
-
-  const LoadBalancerID id_;
-  cfg::HashingAlgorithm algorithm_;
-  int32_t seed_;
-  IPv4Fields v4Fields_;
-  IPv6Fields v6Fields_;
-  TransportFields transportFields_;
-  MPLSFields mplsFields_;
+  using UdfGroupIds = std::vector<std::string>;
 };
+
+USE_THRIFT_COW(LoadBalancer);
 
 /* A LoadBalancer represents a logical point in the data-path which may
  * distribute traffic between any number of load-bearing elements.
@@ -87,30 +64,41 @@ struct LoadBalancerFields
  * load-balancing are fixed and so it does not follow to support abitrary
  * handles on LoadBalancer SwitchState nodes.
  */
-class LoadBalancer : public ThriftyBaseT<
-                         state::LoadBalancerFields,
-                         LoadBalancer,
-                         LoadBalancerFields> {
+
+class LoadBalancer
+    : public ThriftStructNode<LoadBalancer, state::LoadBalancerFields> {
  public:
+  template <typename T>
+  struct Fields {
+    using ElementType = T;
+    using ElemnentTC = apache::thrift::type_class::enumeration;
+    using FieldsTC = apache::thrift::type_class::set<ElemnentTC>;
+    using FieldsType =
+        thrift_cow::ThriftSetNode<FieldsTC, std::set<ElementType>>;
+    using const_iterator = typename FieldsType::Fields::const_iterator;
+  };
+
+  template <typename T>
+  using FieldsConstIter = typename Fields<T>::const_iterator;
+
+  using BaseT = ThriftStructNode<LoadBalancer, state::LoadBalancerFields>;
   using IPv4Field = LoadBalancerFields::IPv4Field;
   using IPv4Fields = LoadBalancerFields::IPv4Fields;
-  using IPv4FieldsRange =
-      folly::Range<LoadBalancerFields::IPv4Fields::const_iterator>;
+  using IPv4FieldsRange = folly::Range<FieldsConstIter<cfg::IPv4Field>>;
 
   using IPv6Field = LoadBalancerFields::IPv6Field;
   using IPv6Fields = LoadBalancerFields::IPv6Fields;
-  using IPv6FieldsRange =
-      folly::Range<LoadBalancerFields::IPv6Fields::const_iterator>;
+  using IPv6FieldsRange = folly::Range<FieldsConstIter<cfg::IPv6Field>>;
 
   using TransportField = LoadBalancerFields::TransportField;
   using TransportFields = LoadBalancerFields::TransportFields;
   using TransportFieldsRange =
-      folly::Range<LoadBalancerFields::TransportFields::const_iterator>;
+      folly::Range<FieldsConstIter<cfg::TransportField>>;
 
   using MPLSField = LoadBalancerFields::MPLSField;
   using MPLSFields = LoadBalancerFields::MPLSFields;
-  using MPLSFieldsRange =
-      folly::Range<LoadBalancerFields::MPLSFields::const_iterator>;
+  using UdfGroupIds = LoadBalancerFields::UdfGroupIds;
+  using MPLSFieldsRange = folly::Range<FieldsConstIter<cfg::MPLSField>>;
 
   LoadBalancer(
       LoadBalancerID id,
@@ -119,7 +107,8 @@ class LoadBalancer : public ThriftyBaseT<
       IPv4Fields v4Fields,
       IPv6Fields v6Fields,
       TransportFields transportFields,
-      MPLSFields mplsFields);
+      MPLSFields mplsFields,
+      UdfGroupIds udfGroupIds);
 
   LoadBalancerID getID() const;
   uint32_t getSeed() const;
@@ -128,17 +117,14 @@ class LoadBalancer : public ThriftyBaseT<
   IPv6FieldsRange getIPv6Fields() const;
   TransportFieldsRange getTransportFields() const;
   MPLSFieldsRange getMPLSFields() const;
+  UdfGroupIds getUdfGroupIds() const;
 
-  static std::shared_ptr<LoadBalancer> fromFollyDynamicLegacy(
-      const folly::dynamic& json);
-  folly::dynamic toFollyDynamicLegacy() const;
-
-  bool operator==(const LoadBalancer& rhs) const;
-  bool operator!=(const LoadBalancer& rhs) const;
+  static std::shared_ptr<LoadBalancer> fromThrift(
+      const state::LoadBalancerFields& fields);
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT::ThriftyBaseT;
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 

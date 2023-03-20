@@ -25,7 +25,7 @@ sai_status_t create_system_port_fn(
     const sai_attribute_t* attr_list) {
   auto fs = FakeSai::getInstance();
   sai_system_port_config_t config;
-  bool adminState;
+  bool adminState{false};
   sai_object_id_t qosToTcMapId;
   for (int i = 0; i < attr_count; ++i) {
     switch (attr_list[i].id) {
@@ -42,6 +42,13 @@ sai_status_t create_system_port_fn(
   }
   *id =
       fs->systemPortManager.create(config, switch_id, adminState, qosToTcMapId);
+  auto& port = fs->systemPortManager.get(*id);
+  for (uint8_t queueId = 0; queueId < config.num_voq; ++queueId) {
+    auto saiQueueId =
+        fs->queueManager.create(SAI_QUEUE_TYPE_UNICAST_VOQ, *id, queueId, *id);
+    port.queueIdList.push_back(saiQueueId);
+  }
+
   return SAI_STATUS_SUCCESS;
 }
 
@@ -81,7 +88,6 @@ sai_status_t get_system_port_attribute_fn(
     sai_attribute_t* attr_list) {
   auto fs = FakeSai::getInstance();
   auto& systemPort = fs->systemPortManager.get(system_port_id);
-  static const auto voqs = 8;
   for (int i = 0; i < attr_count; ++i) {
     switch (attr_list[i].id) {
       case SAI_SYSTEM_PORT_ATTR_TYPE:
@@ -90,18 +96,16 @@ sai_status_t get_system_port_attribute_fn(
             : SAI_SYSTEM_PORT_TYPE_REMOTE;
         break;
       case SAI_SYSTEM_PORT_ATTR_QOS_NUMBER_OF_VOQS:
-        attr_list[i].value.u32 = voqs;
+        attr_list[i].value.u32 = systemPort.config.num_voq;
         break;
       case SAI_SYSTEM_PORT_ATTR_QOS_VOQ_LIST: {
-        if (attr_list[i].value.objlist.count < voqs) {
-          attr_list[i].value.objlist.count = voqs;
+        if (attr_list[i].value.objlist.count < systemPort.config.num_voq) {
+          attr_list[i].value.objlist.count = systemPort.config.num_voq;
           return SAI_STATUS_BUFFER_OVERFLOW;
         }
-        sai_object_list_t objlist;
-        for (auto v = 0; v < voqs; ++v) {
-          objlist.list[v] = v + 1;
+        for (auto v = 0; v < systemPort.config.num_voq; ++v) {
+          attr_list[i].value.objlist.list[v] = systemPort.queueIdList[v];
         }
-        attr_list[i].value.objlist = objlist;
       } break;
       case SAI_SYSTEM_PORT_ATTR_PORT:
         attr_list[i].value.oid = systemPort.config.port_id;

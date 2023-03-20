@@ -9,8 +9,9 @@
  */
 
 #include "fboss/agent/platforms/sai/sandia/SaiSandiaPhyPlatform.h"
+#include "fboss/agent/hw/HwSwitchWarmBootHelper.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
-#include "fboss/agent/hw/switch_asics/Mvl88X93161Asic.h"
+#include "fboss/agent/hw/switch_asics/MarvelPhyAsic.h"
 #include "fboss/agent/platforms/common/MultiPimPlatformMapping.h"
 #include "fboss/agent/platforms/common/sandia/SandiaPlatformMapping.h"
 
@@ -22,52 +23,54 @@ const std::string& SaiSandiaPhyPlatform::getFirmwareDirectory() {
 }
 
 namespace {
-static auto constexpr kSaiBootType = "SAI_KEY_BOOT_TYPE";
-static auto constexpr kSaiConfigFile = "SAI_KEY_INIT_CONFIG_FILE";
-
-const std::array<std::string, 8> kPhyConfigProfiles = {
-    SaiSandiaPhyPlatform::getFirmwareDirectory() + "dummy.xml",
-    SaiSandiaPhyPlatform::getFirmwareDirectory() + "dummy.xml",
-    SaiSandiaPhyPlatform::getFirmwareDirectory() + "dummy.xml",
-    SaiSandiaPhyPlatform::getFirmwareDirectory() + "dummy.xml",
-    SaiSandiaPhyPlatform::getFirmwareDirectory() + "dummy.xml",
-    SaiSandiaPhyPlatform::getFirmwareDirectory() + "dummy.xml",
-    SaiSandiaPhyPlatform::getFirmwareDirectory() + "dummy.xml",
-    SaiSandiaPhyPlatform::getFirmwareDirectory() + "dummy.xml"};
+// SAI profile values for warm-boot and initial config
+// The map key includes profile Id (representing XPHY switch) and the key
+// string
+std::map<std::string, std::string> kSaiProfileValues;
 
 /*
  * saiProfileGetValue
  *
  * This function returns some key values to the SAI while doing
  * sai_api_initialize.
- * For SAI_KEY_BOOT_TYPE, currently we only return the cold boot type.
- * For SAI_KEY_INIT_CONFIG_FILE, the profile id tells SAI which default
- * configuration to pick up for the Phy.
+ *  SAI_KEY_BOOT_TYPE - Return warm(1) or cold(0) depending on warm-boot helper
+ *    file presence logic
+ *  SAI_KEY_INIT_CONFIG_FILE - Hw config dump file location
+ *  SAI_KEY_WARM_BOOT_READ_FILE - Warm boot state read file (accessed on init)
+ *  SAI_KEY_WARM_BOOT_WRITE_FILE - Warm boot state write file (accessed during
+ *    graceful exit)
  */
 const char* FOLLY_NULLABLE
 saiProfileGetValue(sai_switch_profile_id_t profileId, const char* variable) {
-  if (strcmp(variable, kSaiBootType) == 0) {
-    // TODO(rajank) Support warmboot
-    return "cold";
-  } else if (strcmp(variable, kSaiConfigFile) == 0) {
-    if (profileId >= 0 && profileId <= 7) {
-      return kPhyConfigProfiles[profileId].c_str();
-    }
-  }
-  return nullptr;
+  std::string profileMapKey =
+      folly::sformat("XPHY{:d}_{:s}", profileId, variable);
+  auto saiProfileValItr = kSaiProfileValues.find(profileMapKey);
+  return saiProfileValItr != kSaiProfileValues.end()
+      ? saiProfileValItr->second.c_str()
+      : nullptr;
 }
 
 /*
  * saiProfileGetNextValue
  *
- * This function lets SAI pick up next value for a given key. Currently this
- * returns null
+ * This function lets SAI pick up next value for a given key
  */
 int saiProfileGetNextValue(
     sai_switch_profile_id_t /* profile_id */,
-    const char** /* variable */,
-    const char** /* value */) {
-  return -1;
+    const char** variable,
+    const char** value) {
+  static auto saiProfileValItr = kSaiProfileValues.begin();
+  if (!value) {
+    saiProfileValItr = kSaiProfileValues.begin();
+    return 0;
+  }
+  if (saiProfileValItr == kSaiProfileValues.end()) {
+    return -1;
+  }
+  *variable = saiProfileValItr->first.c_str();
+  *value = saiProfileValItr->second.c_str();
+  ++saiProfileValItr;
+  return 0;
 }
 
 sai_service_method_table_t kSaiServiceMethodTable = {
@@ -83,13 +86,18 @@ SaiSandiaPhyPlatform::SaiSandiaPhyPlatform(
     int phyId)
     : SaiHwPlatform(
           std::move(productInfo),
-          std::make_unique<SandiaPlatformMapping>(),
+          std::make_unique<SandiaPlatformMapping>(""),
           localMac),
       pimId_(pimId),
-      phyId_(phyId) {
-  asic_ = std::make_unique<Mvl88X93161Asic>();
-}
+      phyId_(phyId) {}
 
+void SaiSandiaPhyPlatform::setupAsic(
+    cfg::SwitchType switchType,
+    std::optional<int64_t> switchId,
+    std::optional<cfg::Range64> systemPortRange) {
+  asic_ =
+      std::make_unique<MarvelPhyAsic>(switchType, switchId, systemPortRange);
+}
 SaiSandiaPhyPlatform::~SaiSandiaPhyPlatform() {}
 
 std::string SaiSandiaPhyPlatform::getHwConfig() {
@@ -107,11 +115,62 @@ std::vector<FlexPortMode> SaiSandiaPhyPlatform::getSupportedFlexPortModes()
     const {
   throw FbossError("SaiSandiaPhyPlatform doesn't support FlexPort");
 }
+
 std::optional<sai_port_interface_type_t> SaiSandiaPhyPlatform::getInterfaceType(
-    TransmitterTechnology /* transmitterTech */,
-    cfg::PortSpeed /* speed */) const {
-  throw FbossError("SaiSandiaPhyPlatform doesn't support getInterfaceType()");
+    TransmitterTechnology transmitterTech,
+    cfg::PortSpeed speed) const {
+  if (!getAsic()->isSupported(HwAsic::Feature::PORT_INTERFACE_TYPE)) {
+    return std::nullopt;
+  }
+
+  static std::map<
+      cfg::PortSpeed,
+      std::map<TransmitterTechnology, sai_port_interface_type_t>>
+      kSpeedAndMediaType2InterfaceType = {
+          {cfg::PortSpeed::HUNDREDG,
+           {{TransmitterTechnology::OPTICAL, SAI_PORT_INTERFACE_TYPE_SR4},
+            {TransmitterTechnology::BACKPLANE, SAI_PORT_INTERFACE_TYPE_SR2},
+            // What to default to
+            {TransmitterTechnology::COPPER, SAI_PORT_INTERFACE_TYPE_SR4},
+            {TransmitterTechnology::UNKNOWN, SAI_PORT_INTERFACE_TYPE_SR4}}},
+          {cfg::PortSpeed::TWOHUNDREDG,
+           {{TransmitterTechnology::OPTICAL, SAI_PORT_INTERFACE_TYPE_SR4},
+            {TransmitterTechnology::BACKPLANE, SAI_PORT_INTERFACE_TYPE_SR2},
+            // What to default to
+            {TransmitterTechnology::COPPER, SAI_PORT_INTERFACE_TYPE_SR4},
+            {TransmitterTechnology::UNKNOWN, SAI_PORT_INTERFACE_TYPE_SR4}}},
+          {cfg::PortSpeed::FOURHUNDREDG,
+           // TODO(rajank):
+           // Replace 22 with SR8 once wedge_qsfp_util is build for
+           // SDK >=1.10.0
+           {{TransmitterTechnology::OPTICAL, sai_port_interface_type_t(22)},
+            {TransmitterTechnology::BACKPLANE, SAI_PORT_INTERFACE_TYPE_SR4},
+            // What to default to
+            {TransmitterTechnology::COPPER, SAI_PORT_INTERFACE_TYPE_SR4},
+            {TransmitterTechnology::UNKNOWN, SAI_PORT_INTERFACE_TYPE_SR4}}},
+      };
+
+  auto mediaType2InterfaceTypeIter =
+      kSpeedAndMediaType2InterfaceType.find(speed);
+  if (mediaType2InterfaceTypeIter == kSpeedAndMediaType2InterfaceType.end()) {
+    throw FbossError(
+        "unsupported speed for interface type retrieval : ", speed);
+  }
+
+  auto interfaceTypeIter =
+      mediaType2InterfaceTypeIter->second.find(transmitterTech);
+  if (interfaceTypeIter == mediaType2InterfaceTypeIter->second.end()) {
+    throw FbossError(
+        "unsupported media type for interface type retrieval : ",
+        transmitterTech);
+  }
+  XLOG(DBG3) << "getInterfaceType for speed " << static_cast<int>(speed)
+             << " transmitterTech " << static_cast<int>(transmitterTech)
+             << " interfaceType = " << interfaceTypeIter->second;
+
+  return interfaceTypeIter->second;
 }
+
 bool SaiSandiaPhyPlatform::isSerdesApiSupported() const {
   return true;
 }
@@ -148,7 +207,30 @@ void SaiSandiaPhyPlatform::preHwInitialized() {
       getServiceMethodTable(), getSupportedApiList());
 }
 
+void SaiSandiaPhyPlatform::initSandiaSaiProfileValues() {
+  kSaiProfileValues.insert(std::make_pair(
+      folly::sformat("XPHY{:d}_{:s}", phyId_, SAI_KEY_INIT_CONFIG_FILE),
+      getHwConfigDumpFile()));
+  kSaiProfileValues.insert(std::make_pair(
+      folly::sformat("XPHY{:d}_{:s}", phyId_, SAI_KEY_WARM_BOOT_READ_FILE),
+      getWarmBootHelper()->warmBootDataPath()));
+  kSaiProfileValues.insert(std::make_pair(
+      folly::sformat("XPHY{:d}_{:s}", phyId_, SAI_KEY_WARM_BOOT_WRITE_FILE),
+      getWarmBootHelper()->warmBootDataPath()));
+  kSaiProfileValues.insert(std::make_pair(
+      folly::sformat("XPHY{:d}_{:s}", phyId_, SAI_KEY_BOOT_TYPE),
+      getWarmBootHelper()->canWarmBoot() ? "1" : "0"));
+  kSaiProfileValues.insert(std::make_pair(
+      folly::sformat("XPHY{:d}_{:s}", phyId_, SAI_KEY_BOOT_TYPE), "0"));
+
+  for (auto& profile : kSaiProfileValues) {
+    XLOG(DBG3) << "initSandiaSaiProfileValues: " << profile.first << " = "
+               << profile.second;
+  }
+}
+
 void SaiSandiaPhyPlatform::initImpl(uint32_t hwFeaturesDesired) {
+  initSandiaSaiProfileValues();
   saiSwitch_ = std::make_unique<SaiSwitch>(this, hwFeaturesDesired);
 }
 } // namespace facebook::fboss

@@ -49,6 +49,8 @@ DEFINE_int32(
     "Log timeout value in milliseconds. Logger will periodically"
     "flush logs even if the buffer is not full");
 
+DEFINE_int32(pbmp_word_max, 8, "Max pbmp width as suggested by Vendor.");
+
 using folly::join;
 using folly::to;
 using std::array;
@@ -232,6 +234,7 @@ vector<string> BcmCinter::cintForFpGroupConfig(
       to<string>("group_config.flags=", group_config->flags),
       to<string>("group_config.priority=", group_config->priority),
       to<string>("group_config.group=", group_config->group),
+      to<string>("group_config.hintid=", group_config->hintid),
       to<string>("group_config.mode=", group_config->mode)};
   auto cintForFn = cintForQset(group_config->qset);
   cintLines.insert(
@@ -305,6 +308,10 @@ string BcmCinter::getNextPriorityToPgVar() {
 
 string BcmCinter::getNextPfcPriToPgVar() {
   return to<string>("pfcPriToPg_", ++tmpPfcPriToPgCreated_);
+}
+
+string BcmCinter::getNextEthertypeVar() {
+  return to<string>("etherType_", ++tmpEthertype_);
 }
 
 string BcmCinter::getNextPfcPriToQueueVar() {
@@ -398,7 +405,11 @@ vector<string> BcmCinter::cintForL3Ecmp(const bcm_l3_egress_ecmp_t& ecmp) {
       to<string>("ecmp.flags=", ecmp.flags),
       to<string>("ecmp.max_paths=", ecmp.max_paths),
       to<string>("ecmp.ecmp_intf=", getCintVar(l3IntfIdVars, ecmp.ecmp_intf)),
-      to<string>("ecmp.ecmp_group_flags=", ecmp.ecmp_group_flags)};
+      to<string>("ecmp.ecmp_group_flags=", ecmp.ecmp_group_flags),
+      to<string>("ecmp.dynamic_mode=", ecmp.dynamic_mode),
+      to<string>("ecmp.dynamic_size=", ecmp.dynamic_size),
+      to<string>("ecmp.dynamic_age=", ecmp.dynamic_age)};
+
   return cintLines;
 }
 
@@ -1438,6 +1449,17 @@ int BcmCinter::bcm_field_action_add(
   return 0;
 }
 
+int BcmCinter::bcm_field_action_remove(
+    int unit,
+    bcm_field_entry_t entry,
+    bcm_field_action_t action) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_field_action_remove(",
+      makeParamStr(unit, getCintVar(fieldEntryVars, entry), action),
+      ")")));
+  return 0;
+}
+
 int BcmCinter::bcm_field_action_delete(
     int unit,
     bcm_field_entry_t entry,
@@ -1912,9 +1934,275 @@ int BcmCinter::bcm_port_loopback_set(int unit, bcm_port_t port, uint32 value) {
   return 0;
 }
 
+vector<string> BcmCinter::cintForBcmUdfHashConfig(
+    const bcm_udf_hash_config_t& config) {
+  vector<string> cintLines = {
+      "bcm_udf_hash_config_t_init(&config)",
+      to<string>("config.flags=", config.flags),
+      to<string>("config.udf_id=", config.udf_id),
+      to<string>("config.mask_length=", config.mask_length),
+  };
+  for (int i = 0; i < config.mask_length; i++) {
+    cintLines.push_back(
+        to<string>("config.hash_mask", "[", i, "]=", config.hash_mask[i]));
+  }
+  return cintLines;
+}
+
+int BcmCinter::bcm_udf_hash_config_add(
+    int unit,
+    uint32 options,
+    bcm_udf_hash_config_t* config) {
+  auto cint = cintForBcmUdfHashConfig(*config);
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_udf_hash_config_add(", makeParamStr(unit, options, "&config"), ")"));
+  cint.insert(
+      cint.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cint));
+  return 0;
+}
+
+int BcmCinter::bcm_udf_hash_config_delete(
+    int unit,
+    bcm_udf_hash_config_t* config) {
+  auto cint = cintForBcmUdfHashConfig(*config);
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_udf_hash_config_delete(", makeParamStr(unit, "&config"), ")"));
+  cint.insert(
+      cint.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cint));
+  return 0;
+}
+
+vector<string> BcmCinter::cintForBcmUdfAllocHints(
+    const bcm_udf_alloc_hints_t* hints) {
+  if (hints == nullptr) {
+    return {"bcm_udf_alloc_hints_init(&hints)"};
+  }
+  vector<string> cintLines = {
+      "bcm_udf_alloc_hints_init(&hints)",
+      to<string>("hints.flags=", hints->flags),
+      to<string>("hints.shared_udf=", hints->shared_udf),
+  };
+  auto cintQset = cintForQset(hints->qset);
+  cintLines.insert(
+      cintLines.end(),
+      make_move_iterator(cintQset.begin()),
+      make_move_iterator(cintQset.end()));
+  return cintLines;
+}
+
+vector<string> BcmCinter::cintForBcmUdfInfo(const bcm_udf_t* udf_info) {
+  if (udf_info == nullptr) {
+    return {"bcm_udf_t_init(&udf_info)"};
+  }
+  string pbmp;
+  vector<string> pbmpCint, cintLines;
+  tie(pbmp, pbmpCint) = cintForPortBitmap(udf_info->ports);
+  cintLines.insert(
+      cintLines.end(),
+      make_move_iterator(pbmpCint.begin()),
+      make_move_iterator(pbmpCint.end()));
+  vector<string> udfInfoCintLines = {
+      "bcm_udf_t_init(&udf_info)",
+      to<string>("udf_info.flags=", udf_info->flags),
+      to<string>("udf_info.layer=", udf_info->layer),
+      to<string>("udf_info.start=", udf_info->start),
+      to<string>("udf_info.width=", udf_info->width),
+      to<string>("udf_info.ports=", pbmp),
+  };
+  cintLines.insert(
+      cintLines.end(),
+      make_move_iterator(udfInfoCintLines.begin()),
+      make_move_iterator(udfInfoCintLines.end()));
+  return cintLines;
+}
+
+int BcmCinter::bcm_udf_create(
+    int unit,
+    bcm_udf_alloc_hints_t* hints,
+    bcm_udf_t* udf_info,
+    bcm_udf_id_t* udf_id) {
+  auto cintHints = cintForBcmUdfAllocHints(hints);
+
+  auto cintInfo = cintForBcmUdfInfo(udf_info);
+
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_udf_create(",
+      makeParamStr(unit, "&hints", "&udf_info", "&udf_id"),
+      ")"));
+  cintHints.insert(
+      cintHints.end(),
+      make_move_iterator(cintInfo.begin()),
+      make_move_iterator(cintInfo.end()));
+  cintHints.insert(
+      cintHints.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cintHints));
+  return 0;
+}
+
+int BcmCinter::bcm_udf_destroy(int unit, bcm_udf_id_t udf_id) {
+  writeCintLines(wrapFunc(
+      to<string>("bcm_udf_destroy(", makeParamStr(unit, udf_id), ")")));
+  return 0;
+}
+
+vector<string> BcmCinter::cintForBcmUdfPktFormatInfo(
+    const bcm_udf_pkt_format_info_t& pktFormat) {
+  vector<string> cintLines = {
+    "bcm_udf_pkt_format_info_t_init(&pktFormat)",
+    to<string>("pktFormat.prio=", pktFormat.prio),
+    to<string>("pktFormat.ethertype=", pktFormat.ethertype),
+    to<string>("pktFormat.ethertype_mask=", pktFormat.ethertype_mask),
+    to<string>("pktFormat.ip_protocol=", pktFormat.ip_protocol),
+    to<string>("pktFormat.ip_protocol_mask=", pktFormat.ip_protocol_mask),
+    to<string>("pktFormat.l2=", pktFormat.l2),
+    to<string>("pktFormat.vlan_tag=", pktFormat.vlan_tag),
+    to<string>("pktFormat.outer_ip=", pktFormat.outer_ip),
+    to<string>("pktFormat.inner_ip=", pktFormat.inner_ip),
+    to<string>("pktFormat.tunnel=", pktFormat.tunnel),
+    to<string>("pktFormat.mpls=", pktFormat.mpls),
+    to<string>("pktFormat.fibre_chan_outer=", pktFormat.fibre_chan_outer),
+    to<string>("pktFormat.fibre_chan_inner=", pktFormat.fibre_chan_inner),
+    to<string>("pktFormat.higig=", pktFormat.higig),
+    to<string>("pktFormat.vntag=", pktFormat.vntag),
+    to<string>("pktFormat.etag=", pktFormat.etag),
+    to<string>("pktFormat.cntag=", pktFormat.cntag),
+    to<string>("pktFormat.icnm=", pktFormat.icnm),
+    to<string>("pktFormat.subport_tag=", pktFormat.subport_tag),
+    to<string>("pktFormat.class_id=", pktFormat.class_id),
+    to<string>("pktFormat.inner_protocol=", pktFormat.inner_protocol),
+    to<string>("pktFormat.inner_protocol_mask=", pktFormat.inner_protocol_mask),
+    to<string>("pktFormat.l4_dst_port=", pktFormat.l4_dst_port),
+    to<string>("pktFormat.l4_dst_port_mask=", pktFormat.l4_dst_port_mask),
+    to<string>("pktFormat.opaque_tag_type=", pktFormat.opaque_tag_type),
+    to<string>(
+        "pktFormat.opaque_tag_type_mask=", pktFormat.opaque_tag_type_mask),
+    to<string>("pktFormat.int_pkt=", pktFormat.int_pkt),
+    to<string>("pktFormat.src_port=", pktFormat.src_port),
+    to<string>("pktFormat.src_port_mask=", pktFormat.src_port_mask),
+    to<string>("pktFormat.lb_pkt_type=", pktFormat.lb_pkt_type),
+    to<string>(
+        "pktFormat.first_2bytes_after_mpls_bos=",
+        pktFormat.first_2bytes_after_mpls_bos),
+    to<string>(
+        "pktFormat.first_2bytes_after_mpls_bos_mask=",
+        pktFormat.first_2bytes_after_mpls_bos_mask),
+    to<string>("pktFormat.outer_ifa=", pktFormat.outer_ifa),
+    to<string>("pktFormat.inner_ifa=", pktFormat.inner_ifa),
+#if (defined(BCM_SDK_VERSION_GTE_6_5_24))
+    to<string>("pktFormat.ip_gre_first_2bytes=", pktFormat.ip_gre_first_2bytes),
+    to<string>(
+        "pktFormat.ip_gre_first_2bytes_mask=",
+        pktFormat.ip_gre_first_2bytes_mask),
+#endif
+
+  };
+  return cintLines;
+}
+
+int BcmCinter::bcm_udf_pkt_format_create(
+    int unit,
+    bcm_udf_pkt_format_options_t options,
+    bcm_udf_pkt_format_info_t* pkt_format,
+    bcm_udf_pkt_format_id_t* pkt_format_id) {
+  auto cintPktFormat = cintForBcmUdfPktFormatInfo(*pkt_format);
+
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_udf_pkt_format_create(",
+      makeParamStr(unit, options, "&pkt_format", *pkt_format_id),
+      ")"));
+  cintPktFormat.insert(
+      cintPktFormat.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cintPktFormat));
+  return 0;
+}
+
+int BcmCinter::bcm_udf_pkt_format_destroy(
+    int unit,
+    bcm_udf_pkt_format_id_t pkt_format_id) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_udf_pkt_format_destroy(", makeParamStr(unit, pkt_format_id), ")")));
+  return 0;
+}
+
+int BcmCinter::bcm_port_pause_addr_set(
+    int unit,
+    bcm_port_t port,
+    bcm_mac_t mac) {
+  string cintMac, macVar;
+  tie(cintMac, macVar) = cintForMac(mac);
+  vector<string> cint = {cintMac};
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_port_pause_addr_set(", makeParamStr(unit, port, macVar), ")"));
+  cint.insert(
+      cint.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cint));
+  return 0;
+}
+
+int BcmCinter::bcm_udf_pkt_format_add(
+    int unit,
+    bcm_udf_id_t udf_id,
+    bcm_udf_pkt_format_id_t pkt_format_id) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_udf_pkt_format_add(",
+      makeParamStr(unit, udf_id, pkt_format_id),
+      ")")));
+  return 0;
+}
+
+int BcmCinter::bcm_udf_pkt_format_delete(
+    int unit,
+    bcm_udf_id_t udf_id,
+    bcm_udf_pkt_format_id_t pkt_format_id) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_udf_pkt_format_delete(",
+      makeParamStr(unit, udf_id, pkt_format_id),
+      ")")));
+  return 0;
+}
+
+void BcmCinter::bcm_udf_pkt_format_info_t_init(
+    bcm_udf_pkt_format_info_t* pkt_format) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_udf_pkt_format_info_t_init(", makeParamStr("pkt_format"), ")")));
+}
+
+void BcmCinter::bcm_udf_alloc_hints_t_init(bcm_udf_alloc_hints_t* udf_hints) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_udf_alloc_hints_t_init(", makeParamStr("udf_hints"), ")")));
+}
+
+void BcmCinter::bcm_udf_t_init(bcm_udf_t* udf_info) {
+  writeCintLines(
+      wrapFunc(to<string>("bcm_udf_t_init(", makeParamStr("udf_info"), ")")));
+}
+
+void BcmCinter::bcm_udf_hash_config_t_init(bcm_udf_hash_config_t* config) {
+  writeCintLines(wrapFunc(
+      to<string>("bcm_udf_hash_config_t_init(", makeParamStr("config"), ")")));
+}
+
 int BcmCinter::bcm_port_autoneg_set(int unit, bcm_port_t port, int autoneg) {
   writeCintLines(wrapFunc(to<string>(
       "bcm_port_autoneg_set(", makeParamStr(unit, port, autoneg), ")")));
+  return 0;
+}
+
+int BcmCinter::bcm_udf_init(int unit) {
+  writeCintLines(
+      wrapFunc(to<string>("bcm_udf_init(", makeParamStr(unit), ")")));
   return 0;
 }
 
@@ -2311,7 +2599,16 @@ vector<string> BcmCinter::cintForL3Egress(const bcm_l3_egress_t* l3_egress) {
       to<string>("l3_egress.qos_map_id = ", l3_egress->qos_map_id),
       to<string>("l3_egress.mpls_qos_map_id = ", l3_egress->mpls_qos_map_id),
       to<string>("l3_egress.mpls_flags = ", l3_egress->mpls_flags),
-      to<string>("l3_egress.mpls_label = ", l3_egress->mpls_label)};
+      to<string>("l3_egress.mpls_label = ", l3_egress->mpls_label),
+      to<string>(
+          "l3_egress.dynamic_load_weight = ", l3_egress->dynamic_load_weight),
+      to<string>(
+          "l3_egress.dynamic_queue_size_weight = ",
+          l3_egress->dynamic_queue_size_weight),
+      to<string>(
+          "l3_egress.dynamic_scaling_factor = ",
+          l3_egress->dynamic_scaling_factor)};
+
   return cintLines;
 }
 
@@ -2364,7 +2661,7 @@ int BcmCinter::bcm_vlan_create(int unit, bcm_vlan_t vid) {
 pair<string, vector<string>> BcmCinter::cintForPortBitmap(bcm_pbmp_t pbmp) {
   auto pbmpVar = getNextTmpPortBitmapVar();
   vector<string> pbmpCint;
-  for (int i = 0; i < _SHR_PBMP_WORD_MAX; i++) {
+  for (int i = 0; i < FLAGS_pbmp_word_max; i++) {
     pbmpCint.push_back(to<string>("pbmp.pbits[", i, "] = ", pbmp.pbits[i]));
   }
   pbmpCint.push_back(to<string>("bcm_pbmp_t ", pbmpVar, " = (auto) pbmp"));
@@ -2639,6 +2936,81 @@ int BcmCinter::bcm_port_dscp_map_mode_set(int unit, bcm_port_t port, int mode) {
   return 0;
 }
 
+int BcmCinter::bcm_l3_egress_ecmp_ethertype_set(
+    int unit,
+    uint32 flags,
+    int ethertype_count,
+    int* ethertype_array) {
+  std::vector<string> argValues;
+  string arrayVarName = getNextEthertypeVar();
+  for (int i = 0; i < ethertype_count; ++i) {
+    argValues.push_back(to<string>(ethertype_array[i]));
+  }
+  string argVarArray = to<string>(
+      "int ", arrayVarName, "[] =", " {", join(", ", argValues), "}");
+  vector<string> cint = {argVarArray};
+
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_l3_egress_ecmp_ethertype_set(",
+      makeParamStr(unit, flags, ethertype_count, arrayVarName),
+      ")"));
+  cint.insert(
+      cint.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cint));
+  return 0;
+}
+
+int BcmCinter::bcm_l3_egress_ecmp_ethertype_get(
+    int unit,
+    uint32* flags,
+    int ethertype_max,
+    int* ethertype_array,
+    int* ethertype_count) {
+  std::vector<string> argValues;
+  string arrayVarName = getNextEthertypeVar();
+  for (int i = 0; i < *ethertype_count; ++i) {
+    argValues.push_back(to<string>(ethertype_array[i]));
+  }
+  string argVarArray = to<string>(
+      "int ", arrayVarName, "[] =", " {", join(", ", argValues), "}");
+  vector<string> cint = {argVarArray};
+
+  auto cintForFn = wrapFunc(to<string>(
+      "bcm_l3_egress_ecmp_ethertype_get(",
+      makeParamStr(unit, *flags, ethertype_max, arrayVarName, *ethertype_count),
+      ")"));
+  cint.insert(
+      cint.end(),
+      make_move_iterator(cintForFn.begin()),
+      make_move_iterator(cintForFn.end()));
+  writeCintLines(std::move(cint));
+  return 0;
+}
+
+int BcmCinter::bcm_l3_egress_ecmp_member_status_set(
+    int unit,
+    bcm_if_t intf,
+    int status) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_l3_egress_ecmp_member_status_set(",
+      makeParamStr(unit, intf, status),
+      ")")));
+  return 0;
+}
+
+int BcmCinter::bcm_l3_egress_ecmp_member_status_get(
+    int unit,
+    bcm_if_t intf,
+    int* status) {
+  writeCintLines(wrapFunc(to<string>(
+      "bcm_l3_egress_ecmp_member_status_get(",
+      makeParamStr(unit, intf, *status),
+      ")")));
+  return 0;
+}
+
 int BcmCinter::bcm_l3_ecmp_create(
     int unit,
     uint32 options,
@@ -2712,6 +3084,41 @@ int BcmCinter::bcm_l3_egress_ecmp_create(
       make_move_iterator(cintForFn.begin()),
       make_move_iterator(cintForFn.end()));
   writeCintLines(std::move(cint));
+  return 0;
+}
+
+std::vector<std::string> BcmCinter::cintForDlbPortQualityAttr(
+    bcm_l3_ecmp_dlb_port_quality_attr_t quality_attr) {
+  return {
+      "bcm_l3_ecmp_dlb_port_quality_attr_t_init(&quality_attr)",
+      to<string>("quality_attr.load_weight = ", quality_attr.load_weight),
+      to<string>(
+          "quality_attr.queue_size_weight = ", quality_attr.queue_size_weight),
+      to<string>(
+          "quality_attr.scaling_factor = ", quality_attr.scaling_factor)};
+}
+
+int BcmCinter::bcm_l3_ecmp_dlb_port_quality_attr_set(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+  writeCintLines(cintForDlbPortQualityAttr(*quality_attr));
+  writeCintLines(wrapFunc(fmt::format(
+      "bcm_l3_ecmp_dlb_port_quality_attr_set({}, {}, &quality_attr)",
+      unit,
+      port)));
+  return 0;
+}
+
+int BcmCinter::bcm_l3_ecmp_dlb_port_quality_attr_get(
+    int unit,
+    bcm_port_t port,
+    bcm_l3_ecmp_dlb_port_quality_attr_t* quality_attr) {
+  writeCintLines(cintForDlbPortQualityAttr(*quality_attr));
+  writeCintLines(wrapFunc(fmt::format(
+      "bcm_l3_ecmp_dlb_port_quality_attr_get({}, {}, &quality_attr)",
+      unit,
+      port)));
   return 0;
 }
 
@@ -3699,7 +4106,7 @@ int BcmCinter::sh_process_command(int unit, char* cmd) {
   /* Add cmd in the output to associate output with the command */
   vector<string> cmdShowCint = {to<string>("printf(\"\\n== ", cmd, ":\\n\")")};
   writeCintLines(std::move(cmdShowCint));
-  auto funcCint = wrapFunc(to<string>("bshell(", unit, ", \"", cmd, "\")"));
+  auto funcCint = wrapFunc(to<string>("bshell(", unit, ", \'", cmd, "\')"));
   vector<string> cintLine = {funcCint};
   writeCintLines(cintLine);
   return 0;

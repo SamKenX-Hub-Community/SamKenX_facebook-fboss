@@ -7,9 +7,9 @@
 #include <iomanip>
 #include <string>
 #include "fboss/agent/FbossError.h"
-#include "fboss/lib/platforms/PlatformMode.h"
 #include "fboss/lib/usb/TransceiverI2CApi.h"
 #include "fboss/qsfp_service/StatsPublisher.h"
+#include "fboss/qsfp_service/lib/QsfpConfigParserHelper.h"
 #include "fboss/qsfp_service/module/QsfpFieldInfo.h"
 #include "fboss/qsfp_service/module/TransceiverImpl.h"
 #include "fboss/qsfp_service/module/sff/SffFieldInfo.h"
@@ -153,6 +153,10 @@ static std::map<ExtendedSpecComplianceCode, MediaInterfaceCode>
          MediaInterfaceCode::CWDM4_100G},
         {ExtendedSpecComplianceCode::CR4_100G, MediaInterfaceCode::CR4_100G},
         {ExtendedSpecComplianceCode::FR1_100G, MediaInterfaceCode::FR1_100G},
+        // If we need to support other 50G copper channel interface types, we'll
+        // need to use byte 113 to determine the number of channels
+        {ExtendedSpecComplianceCode::CR_50G_CHANNELS,
+         MediaInterfaceCode::CR4_200G},
 };
 
 void getQsfpFieldAddress(
@@ -540,8 +544,20 @@ PowerControlState SffModule::getPowerControlValue() {
 
 bool SffModule::getSignalsPerHostLane(std::vector<HostLaneSignals>& signals) {
   assert(signals.size() == numHostLanes());
-  // Currently no signals to report on host lanes
-  return false;
+
+  auto txLos = getSettingsValue(SffField::LOS, UPPER_BITS_MASK) >> 4;
+  auto txLol = getSettingsValue(SffField::LOL, UPPER_BITS_MASK) >> 4;
+  auto txAdaptEqFault = getSettingsValue(SffField::FAULT, UPPER_BITS_MASK) >> 4;
+
+  for (int lane = 0; lane < signals.size(); lane++) {
+    auto laneMask = (1 << lane);
+    signals[lane].lane() = lane;
+    signals[lane].txLos() = txLos & laneMask;
+    signals[lane].txLol() = txLol & laneMask;
+    signals[lane].txAdaptEqFault() = txAdaptEqFault & laneMask;
+  }
+
+  return true;
 }
 
 /*
@@ -550,6 +566,7 @@ bool SffModule::getSignalsPerHostLane(std::vector<HostLaneSignals>& signals) {
 bool SffModule::getSignalsPerMediaLane(std::vector<MediaLaneSignals>& signals) {
   assert(signals.size() == numMediaLanes());
 
+  // TODO(ccpowers): Remove tx flags once everyone uses hostLaneSignals
   auto txLos = getSettingsValue(SffField::LOS, UPPER_BITS_MASK) >> 4;
   auto rxLos = getSettingsValue(SffField::LOS, LOWER_BITS_MASK);
   auto txLol = getSettingsValue(SffField::LOL, UPPER_BITS_MASK) >> 4;
@@ -972,8 +989,8 @@ phy::PrbsStats SffModule::getPortPrbsStatsSideLocked(
     phy::PrbsStats stats;
     stats.portId() = getID();
     stats.component() = side == Side::SYSTEM
-        ? phy::PrbsComponent::TRANSCEIVER_SYSTEM
-        : phy::PrbsComponent::TRANSCEIVER_LINE;
+        ? phy::PortComponent::TRANSCEIVER_SYSTEM
+        : phy::PortComponent::TRANSCEIVER_LINE;
     int lanes = side == Side::SYSTEM ? numHostLanes() : numMediaLanes();
     for (int lane = 0; lane < lanes; lane++) {
       phy::PrbsLaneStats laneStat;
@@ -1214,8 +1231,8 @@ void SffModule::setPowerOverrideIfSupportedLocked(
 bool SffModule::remediateFlakyTransceiver() {
   QSFP_LOG(INFO, this) << "Performing potentially disruptive remediations";
 
-  ensureTxEnabled();
   resetLowPowerMode();
+  ensureTxEnabled();
   lastRemediateTime_ = std::time(nullptr);
   return true;
 }
@@ -1328,15 +1345,45 @@ void SffModule::overwriteChannelControlSettings() {
     return;
   }
 
-  std::array<uint8_t, 2> buf = {{0}};
-  writeSffField(SffField::TX_EQUALIZATION, buf.data());
-  writeSffField(SffField::RX_EMPHASIS, buf.data(), /* skipPageChange */ true);
+  auto getSettingForAllLanes =
+      [](uint8_t oneLaneValue) -> std::array<uint8_t, 2> {
+    std::array<uint8_t, 2> buf = {{0}};
+    // Example: If oneLaneValue = 2, we need to return {0x22, 0x22} for all 4
+    // lanes.
+    buf.fill(((oneLaneValue & 0xF) << 4) | (oneLaneValue & 0xF));
+    return buf;
+  };
 
-  buf.fill(0x22);
-  writeSffField(SffField::RX_AMPLITUDE, buf.data(), /* skipPageChange */ true);
+  bool settingsOverwritten = false;
+  // Set the Equalizer setting based on QSFP config.
+  // TODO: Skip configuring settings if the current values are same as what we
+  // want to configure
+  const auto& qsfpCfg = getTransceiverManager()->getQsfpConfig()->thrift;
+  for (const auto& override : *qsfpCfg.transceiverConfigOverrides()) {
+    // Check if this override factor requires overriding TxEqualization
+    if (auto txEqualization = sffTxEqualizationOverride(*override.config())) {
+      auto settingValue = getSettingForAllLanes(*txEqualization);
+      writeSffField(SffField::TX_EQUALIZATION, settingValue.data());
+      settingsOverwritten = true;
+    }
+    // Check if this override factor requires overriding RxPreEmphasis
+    if (auto rxPreemphasis = sffRxPreemphasisOverride(*override.config())) {
+      auto settingValue = getSettingForAllLanes(*rxPreemphasis);
+      writeSffField(SffField::RX_EMPHASIS, settingValue.data());
+      settingsOverwritten = true;
+    }
+    // Check if this override factor requires overriding RxAmplitude
+    if (auto rxAmplitude = sffRxAmplitudeOverride(*override.config())) {
+      auto settingValue = getSettingForAllLanes(*rxAmplitude);
+      writeSffField(SffField::RX_AMPLITUDE, settingValue.data());
+      settingsOverwritten = true;
+    }
+  }
 
-  // Bump up the ODS counter.
-  StatsPublisher::bumpAOIOverride();
+  if (settingsOverwritten) {
+    // Bump up the ODS counter.
+    StatsPublisher::bumpAOIOverride();
+  }
 }
 
 void SffModule::customizeTransceiverLocked(cfg::PortSpeed speed) {
@@ -1348,11 +1395,7 @@ void SffModule::customizeTransceiverLocked(cfg::PortSpeed speed) {
 
     // Before turning up power, check whether we want to override
     // channel control settings or no.
-    // TODO(clin82) Remove aoi_override flag once this solution has been
-    // deployed.
-    if (getTransceiverManager()->getPlatformMode() == PlatformMode::YAMP) {
-      overwriteChannelControlSettings();
-    }
+    overwriteChannelControlSettings();
 
     // We want this on regardless of speed
     setPowerOverrideIfSupportedLocked(*settings.powerControl());
@@ -1365,6 +1408,99 @@ void SffModule::customizeTransceiverLocked(cfg::PortSpeed speed) {
   } else {
     QSFP_LOG(DBG1, this) << "Customization not supported";
   }
+}
+
+/*
+ * ensureTransceiverReadyLocked
+ *
+ * If the current power configuration state (either of: LP mode, Power
+ * override, High Power override) is not same as desired one then change it to
+ * that (by configuring power mode register) otherwise return true when module
+ * is in ready state otherwise return false.
+ */
+bool SffModule::ensureTransceiverReadyLocked() {
+  // If customization is not supported then the Power control bit can't be
+  // touched. Return true as nothing needs to be done here
+  if (!customizationSupported()) {
+    QSFP_LOG(DBG1, this)
+        << "ensureTransceiverReadyLocked: Customization not supported";
+    return true;
+  }
+
+  int offset;
+  int length;
+  int dataAddress;
+
+  getQsfpFieldAddress(
+      SffField::ETHERNET_COMPLIANCE, dataAddress, offset, length);
+  const uint8_t* ether = getQsfpValuePtr(dataAddress, offset, length);
+
+  getQsfpFieldAddress(
+      SffField::EXTENDED_IDENTIFIER, dataAddress, offset, length);
+  const uint8_t* extId = getQsfpValuePtr(dataAddress, offset, length);
+
+  auto desiredSetting = PowerControlState::POWER_OVERRIDE;
+
+  // For 40G SR4 the desired power setting is LP mode. For other modules if the
+  // Power Class is defined then use that value for high power override
+  // otherwise just do power override
+  if (*ether == EthernetCompliance::SR4_40GBASE) {
+    desiredSetting = PowerControlState::POWER_LPMODE;
+  } else {
+    uint8_t highPowerLevel = (*extId & EXT_ID_HI_POWER_MASK);
+    if (highPowerLevel > 0) {
+      desiredSetting = PowerControlState::HIGH_POWER_OVERRIDE;
+    }
+  }
+
+  // Find the current power control value
+  uint8_t powerCtrl;
+  PowerControlState currPowerControl;
+  readSffField(SffField::POWER_CONTROL, &powerCtrl);
+  switch (static_cast<PowerControl>(
+      powerCtrl & uint8_t(PowerControl::POWER_CONTROL_MASK))) {
+    case PowerControl::POWER_SET_BY_HW:
+      currPowerControl = PowerControlState::POWER_SET_BY_HW;
+      break;
+    case PowerControl::HIGH_POWER_OVERRIDE:
+      currPowerControl = PowerControlState::HIGH_POWER_OVERRIDE;
+      break;
+    case PowerControl::POWER_OVERRIDE:
+      currPowerControl = PowerControlState::POWER_OVERRIDE;
+      break;
+    default:
+      currPowerControl = PowerControlState::POWER_LPMODE;
+      break;
+  }
+
+  // If the current power control value is same as desired power value then
+  // check if the module is in ready state then return true, otherwise return
+  // false as the module is in transition and needs more time to be ready for
+  // any other configuration
+  if (currPowerControl == desiredSetting) {
+    // Check if the data is ready
+    std::array<uint8_t, 2> status = {{0, 0}};
+    readSffField(SffField::STATUS, status.data());
+
+    return (!(status[1] & DATA_NOT_READY_MASK));
+  }
+
+  // Set the SFF power value register as either of: LP Mode, Power override,
+  // High Power Override
+  uint8_t power = uint8_t(PowerControl::POWER_OVERRIDE);
+  if (desiredSetting == PowerControlState::HIGH_POWER_OVERRIDE) {
+    power = uint8_t(PowerControl::HIGH_POWER_OVERRIDE);
+  } else if (desiredSetting == PowerControlState::POWER_LPMODE) {
+    power = uint8_t(PowerControl::POWER_LPMODE);
+  }
+
+  // enable target power class and return false as the optics need some time to
+  // come back to ready state
+  writeSffField(SffField::POWER_CONTROL, &power);
+  QSFP_LOG(INFO, this) << "QSFP set to power setting "
+                       << apache::thrift::util::enumNameSafe(desiredSetting)
+                       << " (" << power << ")";
+  return false;
 }
 
 /*

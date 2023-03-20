@@ -29,6 +29,7 @@
 #include "fboss/agent/hw/bcm/BcmControlPlane.h"
 #include "fboss/agent/hw/bcm/BcmEgress.h"
 #include "fboss/agent/hw/bcm/BcmError.h"
+#include "fboss/agent/hw/bcm/BcmExactMatchUtils.h"
 #include "fboss/agent/hw/bcm/BcmFieldProcessorFBConvertors.h"
 #include "fboss/agent/hw/bcm/BcmFieldProcessorUtils.h"
 #include "fboss/agent/hw/bcm/BcmHost.h"
@@ -43,6 +44,7 @@
 #include "fboss/agent/hw/bcm/BcmSwitch.h"
 #include "fboss/agent/hw/bcm/BcmTrunkTable.h"
 #include "fboss/agent/hw/bcm/BcmTypes.h"
+#include "fboss/agent/hw/bcm/BcmUdfManager.h"
 #include "fboss/agent/hw/bcm/BcmWarmBootHelper.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/state/ArpTable.h"
@@ -82,6 +84,7 @@ using std::shared_ptr;
 using std::string;
 using std::vector;
 using namespace facebook::fboss;
+using namespace facebook::fboss::utility;
 
 namespace {
 auto constexpr kEcmpObjects = "ecmpObjects";
@@ -124,6 +127,8 @@ folly::dynamic BcmWarmBootCache::getWarmBootStateFollyDynamic() const {
   bcmWarmBootState[kWarmBootCache] = toFollyDynamic();
   bcmWarmBootState[kQosPolicyTable] =
       bcmWarmBootState_->qosTableToFollyDynamic();
+  bcmWarmBootState[kTeFlow] = bcmWarmBootState_->teFlowToFollyDynamic();
+  bcmWarmBootState[kUdf] = bcmWarmBootState_->udfToFollyDynamic();
 
   return bcmWarmBootState;
 }
@@ -161,6 +166,21 @@ BcmWarmBootCache::AclEntry2AclStatItr BcmWarmBootCache::findAclStat(
     return aclEntry2AclStat_.end();
   }
   return aclStatItr;
+}
+
+void BcmWarmBootCache::programmed(TeFlowEntry2TeFlowStatItr itr) {
+  XLOG(DBG1) << "Programmed teflow stat=" << itr->second.stat;
+  itr->second.claimed = true;
+}
+
+BcmWarmBootCache::TeFlowEntry2TeFlowStatItr BcmWarmBootCache::findTeFlowStat(
+    const BcmTeFlowEntryHandle& bcmTeFlowEntry) {
+  auto teFlowStatItr = teFlowEntry2TeFlowStat_.find(bcmTeFlowEntry);
+  if (teFlowStatItr != teFlowEntry2TeFlowStat_.end() &&
+      teFlowStatItr->second.claimed) {
+    return teFlowEntry2TeFlowStat_.end();
+  }
+  return teFlowStatItr;
 }
 
 const BcmWarmBootCache::EgressId2Weight& BcmWarmBootCache::getPathsForEcmp(
@@ -211,34 +231,11 @@ folly::dynamic BcmWarmBootCache::toFollyDynamic() const {
   return warmBootCache;
 }
 
-folly::dynamic BcmWarmBootCache::getWarmBootState() const {
-  return hw_->getPlatform()->getWarmBootHelper()->getWarmBootState();
-}
-
-void BcmWarmBootCache::populateFromWarmBootState(
-    const folly::dynamic& warmBootState) {
-  dumpedSwSwitchState_ =
-      SwitchState::uniquePtrFromFollyDynamic(warmBootState[kSwSwitch]);
-  dumpedSwSwitchState_->publish();
-  CHECK(dumpedSwSwitchState_)
-      << "Was not able to recover software state after warmboot";
-
-  // Extract ecmps for dumped host table
-  auto& hostTable = warmBootState[kHwSwitch][kHostTable];
-  for (const auto& ecmpEntry : hostTable[kEcmpHosts]) {
-    auto ecmpEgressId = ecmpEntry[kEcmpEgressId].asInt();
-    if (ecmpEgressId == BcmEgressBase::INVALID) {
-      continue;
-    }
-    // If the entry is valid, then there must be paths associated with it.
-    for (auto path : ecmpEntry[kEcmpEgress][kPaths]) {
-      EgressId e = path.asInt();
-      hwSwitchEcmp2EgressIds_[ecmpEgressId][e]++;
-    }
-  }
+void BcmWarmBootCache::populateEcmpEntryFromWarmBootState(
+    const folly::dynamic& hwWarmBootState) {
   // Extract ecmps from dumped warm boot cache. We
   // may have shut down before a FIB sync
-  auto& ecmpObjects = warmBootState[kHwSwitch][kWarmBootCache][kEcmpObjects];
+  auto& ecmpObjects = hwWarmBootState[kWarmBootCache][kEcmpObjects];
   for (const auto& ecmpEntry : ecmpObjects) {
     auto ecmpEgressId = ecmpEntry[kEcmpEgressId].asInt();
     CHECK(ecmpEgressId != BcmEgressBase::INVALID);
@@ -252,8 +249,11 @@ void BcmWarmBootCache::populateFromWarmBootState(
     XLOG(DBG1) << ecmpIdAndEgress.first << " (from warmboot file) ==> "
                << toEgressId2WeightStr(ecmpIdAndEgress.second);
   }
+}
 
-  auto& wbCache = warmBootState[kHwSwitch][kWarmBootCache];
+void BcmWarmBootCache::populateTrunksFromWarmBootState(
+    const folly::dynamic& hwWarmBootState) {
+  auto& wbCache = hwWarmBootState[kWarmBootCache];
   if (auto it = wbCache.find(kTrunks); it != wbCache.items().end()) {
     auto& trunks = it->second;
     for (const auto& e : trunks.items()) {
@@ -264,7 +264,11 @@ void BcmWarmBootCache::populateFromWarmBootState(
       XLOG(DBG0) << "Aggregate port " << e.first << " => trunk ID " << e.second;
     }
   }
+}
 
+void BcmWarmBootCache::populateRouteCountersFromWarmBootState(
+    const folly::dynamic& hwWarmBootState) {
+  auto& wbCache = hwWarmBootState[kWarmBootCache];
   if (wbCache.find(BcmRouteCounterTableBase::kRouteCounters) !=
       wbCache.items().end()) {
     auto& routeCounterInfo = wbCache[BcmRouteCounterTableBase::kRouteCounters];
@@ -299,8 +303,10 @@ void BcmWarmBootCache::populateFromWarmBootState(
                  << e.second.str();
     }
   }
+}
 
-  // Extract BcmHost and its egress object from the warm boot file
+void BcmWarmBootCache::populateHostEntryFromWarmBootState(
+    const folly::dynamic& hostTable) {
   for (const auto& hostEntry : hostTable[kHosts]) {
     auto egressId = hostEntry[kEgressId].asInt();
     if (egressId == BcmEgressBase::INVALID) {
@@ -337,11 +343,13 @@ void BcmWarmBootCache::populateFromWarmBootState(
                << ") pointing to the egress entry, id=" << egressId
                << " classID: " << classID;
   }
+}
 
-  // extract MPLS next hop and its egress object from the  warm boot file
-  const auto& mplsNextHops = (warmBootState[kHwSwitch].find(kMplsNextHops) !=
-                              warmBootState[kHwSwitch].items().end())
-      ? warmBootState[kHwSwitch][kMplsNextHops]
+void BcmWarmBootCache::populateMplsNextHopFromWarmBootState(
+    const folly::dynamic& hwWarmBootState) {
+  const auto& mplsNextHops =
+      (hwWarmBootState.find(kMplsNextHops) != hwWarmBootState.items().end())
+      ? hwWarmBootState[kMplsNextHops]
       : folly::dynamic::array();
 
   for (const auto& mplsNextHop : mplsNextHops) {
@@ -371,25 +379,30 @@ void BcmWarmBootCache::populateFromWarmBootState(
           BcmLabeledHostKey(vrf, std::move(labels), ip, intfID), egressId);
     }
   }
+}
 
+void BcmWarmBootCache::populateIntfFromWarmBootState(
+    const folly::dynamic& hwWarmBootState) {
   // get l3 intfs for each known vlan in warmboot state file
   // TODO(pshaikh): in earlier warm boot state file, kIntfTable could be
   // absent after two pushes this condition can be removed
-  const auto& intfTable = (warmBootState[kHwSwitch].find(kIntfTable) !=
-                           warmBootState[kHwSwitch].items().end())
-      ? warmBootState[kHwSwitch][kIntfTable]
+  const auto& intfTable =
+      (hwWarmBootState.find(kIntfTable) != hwWarmBootState.items().end())
+      ? hwWarmBootState[kIntfTable]
       : folly::dynamic::array();
   for (const auto& intfTableEntry : intfTable) {
     vlan2BcmIfIdInWarmBootFile_.emplace(
         VlanID(intfTableEntry[kVlan].asInt()), intfTableEntry[kIntfId].asInt());
   }
+}
 
+void BcmWarmBootCache::populateQosPolicyFromWarmBootState(
+    const folly::dynamic& hwWarmBootState) {
   // TODO(pshaikh): in earlier warm boot state file, kQosPolicyTable could be
   // absent after two pushes this condition can be removed
   const auto& qosPolicyTable =
-      (warmBootState[kHwSwitch].find(kQosPolicyTable) !=
-       warmBootState[kHwSwitch].items().end())
-      ? warmBootState[kHwSwitch][kQosPolicyTable]
+      (hwWarmBootState.find(kQosPolicyTable) != hwWarmBootState.items().end())
+      ? hwWarmBootState[kQosPolicyTable]
       : folly::dynamic::object();
   for (const auto& qosPolicy : qosPolicyTable.keys()) {
     auto policyName = qosPolicy.asString();
@@ -412,6 +425,138 @@ void BcmWarmBootCache::populateFromWarmBootState(
           qosPolicyTable[policyName][kOutExp].asInt());
     }
   }
+}
+
+void BcmWarmBootCache::populateTeFlowFromWarmBootState(
+    const folly::dynamic& hwWarmBootState) {
+  // Recover Teflow warmboot state when force_init_fp is false
+  // force_init_fp is true, switch setting config change will setup Teflow group
+  if (!FLAGS_force_init_fp) {
+    // get teFlowGroup id and hint id from warmboot state file
+    if (hwWarmBootState.find(kTeFlow) != hwWarmBootState.items().end()) {
+      const auto& teFlow = hwWarmBootState[kTeFlow];
+      teFlowDstIpPrefixLength_ = teFlow[kDstIpPrefixLength].asInt();
+      teFlowHintId_ = teFlow[kHintId].asInt();
+      teFlowGroupId_ = teFlow[kTeFlowGroupId].asInt();
+      teFlowFlexCounterId_ = teFlow[kTeFlowFlexCounterId].asInt();
+    }
+  }
+}
+
+void BcmWarmBootCache::populateUdfGroupFromWarmBootState(
+    const folly::dynamic& udfGroup) {
+  for (const auto& name : udfGroup.keys()) {
+    const auto udfGroupId = udfGroup[name][kUdfGroupIds].asInt();
+    /* get udf info */
+    bcm_udf_t udfInfo;
+    bcm_udf_t_init(&udfInfo);
+    auto rv = bcm_udf_get(hw_->getUnit(), udfGroupId, &udfInfo);
+    bcmCheckError(rv, "Unable to get udfInfo for udfGroupId: ", udfGroupId);
+    XLOG(DBG1) << "udfGroupId=" << udfGroupId
+               << " udfInfo layer=" << udfInfo.layer
+               << " start=" << udfInfo.start << " width=" << udfInfo.width;
+    for (const auto& udfPktMatcherName :
+         udfGroup[name][kUdfGroupPktMatchers].keys()) {
+      const auto& packetMatcherName = udfPktMatcherName.asString();
+      const auto& packetMatcherId =
+          udfGroup[name][kUdfGroupPktMatchers][udfPktMatcherName].asInt();
+      UdfGroupPacketMatcherMap udfGroupPacketMatcherMap;
+      udfGroupPacketMatcherMap.insert({packetMatcherName, packetMatcherId});
+      udfGroupNameToPacketMatcherMap_.insert(
+          {name.asString(), udfGroupPacketMatcherMap});
+      XLOG(DBG2) << "Populating packetMatcher = " << packetMatcherName
+                 << ", with id = " << packetMatcherId;
+    }
+    UdfGroupInfoPair udfGroupInfoPair = {udfGroupId, udfInfo};
+    udfGroupNameToInfoMap_.insert({name.asString(), udfGroupInfoPair});
+  }
+}
+
+void BcmWarmBootCache::populateUdfPacketMatcherFromWarmBootState(
+    const folly::dynamic& udfPacketMatcher) {
+  for (const auto& name : udfPacketMatcher.keys()) {
+    const auto udfPacketMatcherId = udfPacketMatcher[name].asInt();
+    /* get udf pkt info */
+    bcm_udf_pkt_format_info_t pktFormat;
+    bcm_udf_pkt_format_info_t_init(&pktFormat);
+    auto rv = bcm_udf_pkt_format_info_get(
+        hw_->getUnit(), udfPacketMatcherId, &pktFormat);
+    bcmCheckError(
+        rv,
+        "Unable to get pkt_format for udfPacketMatcherId: ",
+        udfPacketMatcherId);
+    XLOG(DBG1) << "udfPacketMatcherId=" << udfPacketMatcherId
+               << " pkt_format l2=" << pktFormat.l2
+               << " ip_protocol=" << pktFormat.ip_protocol
+               << " ip_protocol_mask=" << pktFormat.ip_protocol_mask
+               << " outer_ip=" << pktFormat.outer_ip
+               << " l4_dst_port=" << pktFormat.l4_dst_port;
+    UdfPktMatcherInfoPair udfPacketMatcherInfoPair = {
+        udfPacketMatcherId, pktFormat};
+    udfPktMatcherNameToInfoMap_.insert(
+        {name.asString(), udfPacketMatcherInfoPair});
+  }
+}
+
+void BcmWarmBootCache::populateUdfFromWarmBootState(
+    const folly::dynamic& hwWarmBootState) {
+  if (hwWarmBootState.find(kUdf) != hwWarmBootState.items().end()) {
+    const auto& udfDyanmic = hwWarmBootState[kUdf];
+    const auto& udfGroup = udfDyanmic[kUdfGroups];
+    populateUdfGroupFromWarmBootState(udfGroup);
+    const auto& udfPacketMatcher = udfDyanmic[kUdfPacketMatchers];
+    populateUdfPacketMatcherFromWarmBootState(udfPacketMatcher);
+    udfEnabled_ = udfDyanmic[kUdfInitState].asBool();
+  }
+}
+
+void BcmWarmBootCache::populateFromWarmBootState(
+    const folly::dynamic& warmBootState,
+    std::optional<state::WarmbootState> thriftState) {
+  if (thriftState) {
+    dumpedSwSwitchState_ =
+        SwitchState::uniquePtrFromThrift(*thriftState->swSwitchState());
+  } else {
+    XLOG(FATAL) << "Thrift switch state not found";
+  }
+  dumpedSwSwitchState_->publish();
+  CHECK(dumpedSwSwitchState_)
+      << "Was not able to recover software state after warmboot";
+
+  auto& hwWarmBootState = warmBootState[kHwSwitch];
+  // Extract ecmps for dumped host table
+  auto& hostTable = hwWarmBootState[kHostTable];
+  for (const auto& ecmpEntry : hostTable[kEcmpHosts]) {
+    auto ecmpEgressId = ecmpEntry[kEcmpEgressId].asInt();
+    if (ecmpEgressId == BcmEgressBase::INVALID) {
+      continue;
+    }
+    // If the entry is valid, then there must be paths associated with it.
+    for (auto path : ecmpEntry[kEcmpEgress][kPaths]) {
+      EgressId e = path.asInt();
+      hwSwitchEcmp2EgressIds_[ecmpEgressId][e]++;
+    }
+  }
+
+  populateEcmpEntryFromWarmBootState(hwWarmBootState);
+
+  populateTrunksFromWarmBootState(hwWarmBootState);
+
+  populateRouteCountersFromWarmBootState(hwWarmBootState);
+
+  // Extract BcmHost and its egress object from the warm boot file
+  populateHostEntryFromWarmBootState(hostTable);
+
+  // extract MPLS next hop and its egress object from the  warm boot file
+  populateMplsNextHopFromWarmBootState(hwWarmBootState);
+
+  populateIntfFromWarmBootState(hwWarmBootState);
+
+  populateQosPolicyFromWarmBootState(hwWarmBootState);
+
+  populateTeFlowFromWarmBootState(hwWarmBootState);
+
+  populateUdfFromWarmBootState(hwWarmBootState);
 }
 
 BcmWarmBootCache::EgressId2EgressCitr BcmWarmBootCache::findEgressFromHost(
@@ -445,8 +590,10 @@ BcmWarmBootCache::findEgressFromLabeledHostKey(const BcmLabeledHostKey& key) {
       : findEgress(iter->second);
 }
 
-void BcmWarmBootCache::populate(const folly::dynamic& warmBootState) {
-  populateFromWarmBootState(warmBootState);
+void BcmWarmBootCache::populate(
+    const folly::dynamic& warmBootState,
+    std::optional<state::WarmbootState> thriftState) {
+  populateFromWarmBootState(warmBootState, thriftState);
   bcm_vlan_data_t* vlanList = nullptr;
   int vlanCount = 0;
   SCOPE_EXIT {
@@ -574,6 +721,12 @@ void BcmWarmBootCache::populate(const folly::dynamic& warmBootState) {
       hw_->getPlatform()->getAsic()->getDefaultACLGroupID(),
       this->aclEntry2AclStat_,
       this->priority2BcmAclEntryHandle_);
+
+  // populate teflows, teflow stats
+  populateTeFlows(
+      teFlowGroupId_,
+      this->teFlowEntry2TeFlowStat_,
+      this->teFlow2BcmTeFlowEntryHandle_);
 
   populateRtag7State();
   populateMirrors();
@@ -760,17 +913,7 @@ std::string BcmWarmBootCache::toEgressId2WeightStr(
   return ss.str();
 }
 
-void BcmWarmBootCache::clear() {
-  // Get rid of all unclaimed entries. The order is important here
-  // since we want to delete entries only after there are no more
-  // references to them.
-  XLOG(DBG1) << "Warm boot: removing unreferenced entries";
-  dumpedSwSwitchState_.reset();
-  hwSwitchEcmp2EgressIds_.clear();
-  // First delete routes (fully qualified and others).
-  //
-  // Nothing references routes, but routes reference ecmp egress and egress
-  // entries which are deleted later
+void BcmWarmBootCache::removeUnclaimedRoutes() {
   for (auto vrfPfxAndRoute : vrfPrefix2Route_) {
     const std::string& routeInfo = folly::to<std::string>(
         "unreferenced route in vrf : ",
@@ -804,12 +947,9 @@ void BcmWarmBootCache::clear() {
     }
   }
   vrfAndIP2Route_.clear();
+}
 
-  // purge any lingering label FIB entries
-  removeUnclaimedLabelSwitchActions();
-
-  // Delete bcm host entries. Nobody references bcm hosts, but
-  // hosts reference egress objects
+void BcmWarmBootCache::removeUnclaimedHostEntries() {
   for (auto vrfIpAndHost : vrfIp2Host_) {
     XLOG(DBG1) << "Deleting host entry in vrf: " << vrfIpAndHost.first.first
                << " for : " << vrfIpAndHost.first.second;
@@ -823,10 +963,9 @@ void BcmWarmBootCache::clear() {
         vrfIpAndHost.first.second);
   }
   vrfIp2Host_.clear();
+}
 
-  // Both routes and host entries (which have been deleted earlier) can refer
-  // to ecmp egress objects.  Ecmp egress objects in turn refer to egress
-  // objects which we delete later
+void BcmWarmBootCache::removeUnclaimedEcmpEgressObjects() {
   for (auto idsAndEcmp : egressIds2Ecmp_) {
     auto& ecmp = idsAndEcmp.second;
     XLOG(DBG1) << "Deleting ecmp egress object  " << ecmp.ecmp_intf
@@ -846,10 +985,9 @@ void BcmWarmBootCache::clear() {
         toEgressId2WeightStr(idsAndEcmp.first));
   }
   egressIds2Ecmp_.clear();
+}
 
-  // Delete bcm egress entries. These are referenced by routes, ecmp egress
-  // and host objects all of which we deleted above. Egress objects in turn
-  // my point to a interface which we delete later
+void BcmWarmBootCache::removeUnclaimedEgressObjects() {
   for (auto egressIdAndEgress : egressId2Egress_) {
     // This is not used yet
     XLOG(DBG1) << "Deleting egress object: " << egressIdAndEgress.first;
@@ -858,11 +996,9 @@ void BcmWarmBootCache::clear() {
         rv, hw_, "failed to destroy egress object ", egressIdAndEgress.first);
   }
   egressId2Egress_.clear();
+}
 
-  // delete any MPLS tunnels
-  removeUnclaimedLabeledTunnels();
-
-  // Delete interfaces
+void BcmWarmBootCache::removeUnclaimedInterfaces() {
   for (auto vlanMacAndIntf : vlanAndMac2Intf_) {
     XLOG(DBG1) << "Deleting l3 interface for vlan: "
                << vlanMacAndIntf.first.first
@@ -877,7 +1013,9 @@ void BcmWarmBootCache::clear() {
         vlanMacAndIntf.first.second);
   }
   vlanAndMac2Intf_.clear();
-  // Delete stations
+}
+
+void BcmWarmBootCache::removeUnclaimedStations() {
   for (auto vlanAndStation : vlan2Station_) {
     XLOG(DBG1) << "Deleting station for vlan : " << vlanAndStation.first;
     auto stationId =
@@ -887,6 +1025,9 @@ void BcmWarmBootCache::clear() {
         rv, hw_, "failed to delete station for vlan : ", vlanAndStation.first);
   }
   vlan2Station_.clear();
+}
+
+void BcmWarmBootCache::removeUnclaimedVlans() {
   bcm_vlan_t defaultVlan;
   auto rv = bcm_vlan_default_get(hw_->getUnit(), &defaultVlan);
   bcmLogFatal(rv, hw_, "failed to get default VLAN");
@@ -902,10 +1043,9 @@ void BcmWarmBootCache::clear() {
     bcmLogFatal(rv, hw_, "failed to destroy vlan: ", vlanItr->first);
     vlanItr = vlan2VlanInfo_.erase(vlanItr);
   }
+}
 
-  egressId2WeightInWarmBootFile_.clear();
-  vrfIp2EgressFromBcmHostInWarmBootFile_.clear();
-
+void BcmWarmBootCache::removeUnclaimedAclStats() {
   // Detach the unclaimed bcm acl stats
   flat_set<BcmAclStatHandle> statsUsed;
   for (auto aclStatItr = aclEntry2AclStat_.begin();
@@ -915,7 +1055,11 @@ void BcmWarmBootCache::clear() {
     if (!aclStatStatus.claimed) {
       XLOG(DBG1) << "Detaching unclaimed acl_stat=" << aclStatStatus.stat
                  << "from acl=" << aclStatItr->first;
-      BcmAclStat::detach(hw_, aclStatItr->first, aclStatStatus.stat);
+      BcmAclStat::detach(
+          hw_,
+          aclStatItr->first,
+          aclStatStatus.stat,
+          BcmAclStat::kDefaultAclActionIndex);
     } else {
       statsUsed.insert(aclStatStatus.stat);
     }
@@ -933,7 +1077,9 @@ void BcmWarmBootCache::clear() {
     }
   }
   aclEntry2AclStat_.clear();
+}
 
+void BcmWarmBootCache::removeUnclaimedAcls() {
   // Delete acls, since acl(field process) doesn't support
   // bcm, we call BcmAclTable to remove the unclaimed acls
   XLOG(DBG1) << "Unclaimed acl count=" << priority2BcmAclEntryHandle_.size();
@@ -943,7 +1089,59 @@ void BcmWarmBootCache::clear() {
     removeBcmAcl(aclItr.second);
   }
   priority2BcmAclEntryHandle_.clear();
+}
 
+void BcmWarmBootCache::removeUnclaimedTeFlowStats() {
+  // Detach the unclaimed bcm teflow stats
+  std::set<BcmTeFlowStatHandle> teFlowStatsUsed;
+  for (auto teFlowStatItr = teFlowEntry2TeFlowStat_.begin();
+       teFlowStatItr != teFlowEntry2TeFlowStat_.end();
+       ++teFlowStatItr) {
+    auto& teFlowStatStatus = teFlowStatItr->second;
+    if (!teFlowStatStatus.claimed) {
+      XLOG(DBG1) << "Detaching unclaimed teflow_stat=" << teFlowStatStatus.stat
+                 << "from teflow=" << teFlowStatItr->first;
+      BcmTeFlowStat::detach(
+          hw_,
+          teFlowStatItr->first,
+          teFlowStatStatus.stat,
+          teFlowStatStatus.actionIndex);
+    } else {
+      teFlowStatsUsed.insert(teFlowStatStatus.stat);
+    }
+  }
+
+  // Delete the unclaimed bcm teflow stats
+  for (auto statItr : teFlowEntry2TeFlowStat_) {
+    auto statHandle = statItr.second.stat;
+    if (teFlowStatsUsed.find(statHandle) == teFlowStatsUsed.end()) {
+      if (!hw_->getPlatform()->getAsic()->isSupported(
+              HwAsic::Feature::INGRESS_FIELD_PROCESSOR_FLEX_COUNTER)) {
+        XLOG(DBG1) << "Deleting unclaimed teflow_stat=" << statHandle;
+        BcmTeFlowStat::destroy(hw_, statHandle);
+        // add the stat to the set to prevent this loop from attempting to
+        // delete the same stat twice
+        teFlowStatsUsed.insert(statHandle);
+      }
+    }
+  }
+  teFlowEntry2TeFlowStat_.clear();
+}
+
+void BcmWarmBootCache::removeUnclaimedTeFlows() {
+  XLOG(DBG1) << "Unclaimed teflow count="
+             << teFlow2BcmTeFlowEntryHandle_.size();
+  for (auto teFlowItr : teFlow2BcmTeFlowEntryHandle_) {
+    XLOG(DBG1) << "Deleting unclaimed TeFlow: srcPort=" << teFlowItr.first.first
+               << " dstIp=" << teFlowItr.first.second
+               << ", handle=" << teFlowItr.second;
+    removeBcmTeFlow(teFlowItr.second);
+  }
+  teFlow2BcmTeFlowEntryHandle_.clear();
+}
+
+void BcmWarmBootCache::removeUnclaimedCosqMappings() {
+  int rv;
   bool useHSDK = (dynamic_cast<const BcmSwitch*>(hw_))->useHSDK();
   for (auto reasonToQueueEntry : index2ReasonToQueue_) {
     const auto index = reasonToQueueEntry.first;
@@ -964,12 +1162,159 @@ void BcmWarmBootCache::clear() {
     bcmCheckError(rv, "failed to delete CPU cosq mapping for index ", index);
   }
   index2ReasonToQueue_.clear();
+}
+
+void BcmWarmBootCache::detachUdfPacketMatcher(
+    const std::string& udfGroupName,
+    bcm_udf_id_t udfId) {
+  auto udfGroupPacketMatcherItr = findUdfGroupPacketMatcher(udfGroupName);
+  if (udfGroupPacketMatcherItr != UdfGroupNameToPacketMatcherMapEnd()) {
+    auto packetMatcherMap = udfGroupPacketMatcherItr->second;
+    for (auto udfPktMatcherItr = packetMatcherMap.begin();
+         udfPktMatcherItr != packetMatcherMap.end();
+         udfPktMatcherItr++) {
+      /* Detach packet matcher id from Udf Group */
+      auto packetMatcherName = udfPktMatcherItr->first;
+      auto packetMatcherId = udfPktMatcherItr->second;
+      auto rv =
+          bcm_udf_pkt_format_delete(hw_->getUnit(), udfId, packetMatcherId);
+      bcmCheckError(
+          rv,
+          "Unable to detach packetMatcher: ",
+          packetMatcherName,
+          " packetMatcherId: ",
+          packetMatcherId,
+          " from udfGroup: ",
+          udfGroupName,
+          " udfGroupId: ",
+          udfId);
+      XLOG(DBG2) << "udfGroup=" << udfGroupName << " udfGroupId= " << udfId
+                 << " packetMatcherName=" << packetMatcherName
+                 << " packetMatcherId=" << packetMatcherId;
+    }
+  }
+}
+
+void BcmWarmBootCache::removeUnclaimedUdfGroups() {
+  XLOG(DBG2) << "Unclaimed UdfGroups count=" << udfGroupNameToInfoMap_.size();
+  for (auto udfGroupInfoItr = UdfGroupNameToInfoMapBegin();
+       udfGroupInfoItr != UdfGroupNameToInfoMapEnd();
+       udfGroupInfoItr++) {
+    const auto& udfGroupName = udfGroupInfoItr->first;
+    auto udfGroupId = udfGroupInfoItr->second.first;
+    XLOG(DBG2) << "Deleting unclaimed UdfGroup: " << udfGroupName
+               << " UdfGroupId: " << udfGroupId;
+    detachUdfPacketMatcher(udfGroupName, udfGroupId);
+
+    /* Delete udf */
+    auto rv = bcm_udf_destroy(hw_->getUnit(), udfGroupId);
+    bcmCheckError(
+        rv,
+        "Unable to delete  udfGroup: ",
+        udfGroupName,
+        " UdfGroupId: ",
+        udfGroupId);
+  }
+  udfGroupNameToPacketMatcherMap_.clear();
+  udfGroupNameToInfoMap_.clear();
+}
+
+void BcmWarmBootCache::removeUnclaimedUdfPacketMatchers() {
+  XLOG(DBG2) << "Unclaimed UdfPacketMatchers count="
+             << udfPktMatcherNameToInfoMap_.size();
+  for (auto udfPktMatcherItr = UdfPktMatcherNameToInfoMapBegin();
+       udfPktMatcherItr != UdfPktMatcherNameToInfoMapEnd();
+       udfPktMatcherItr++) {
+    const auto& udfPktMatcherName = udfPktMatcherItr->first;
+    auto udfPktMatcherId = udfPktMatcherItr->second.first;
+    XLOG(DBG2) << "Deleting unclaimed udfPktMatcher: " << udfPktMatcherName
+               << " udfPktMatcherId:" << udfPktMatcherId;
+    /* Delete the packet format */
+    auto rv = bcm_udf_pkt_format_destroy(hw_->getUnit(), udfPktMatcherId);
+    bcmCheckError(
+        rv,
+        "Unable to delete  udfPktMatcher: ",
+        udfPktMatcherName,
+        " udfPktMatcherId:",
+        udfPktMatcherId);
+  }
+  udfPktMatcherNameToInfoMap_.clear();
+}
+
+void BcmWarmBootCache::clear() {
+  // Get rid of all unclaimed entries. The order is important here
+  // since we want to delete entries only after there are no more
+  // references to them.
+  XLOG(DBG1) << "Warm boot: removing unreferenced entries";
+  dumpedSwSwitchState_.reset();
+  hwSwitchEcmp2EgressIds_.clear();
+  // First delete routes (fully qualified and others).
+  //
+  // Nothing references routes, but routes reference ecmp egress and egress
+  // entries which are deleted later
+  removeUnclaimedRoutes();
+
+  // purge any lingering label FIB entries
+  removeUnclaimedLabelSwitchActions();
+
+  // Delete bcm host entries. Nobody references bcm hosts, but
+  // hosts reference egress objects
+  removeUnclaimedHostEntries();
+
+  // Both routes and host entries (which have been deleted earlier) can refer
+  // to ecmp egress objects.  Ecmp egress objects in turn refer to egress
+  // objects which we delete later
+  removeUnclaimedEcmpEgressObjects();
+
+  // Delete bcm egress entries. These are referenced by routes, ecmp egress
+  // and host objects all of which we deleted above. Egress objects in turn
+  // my point to a interface which we delete later
+  removeUnclaimedEgressObjects();
+
+  // delete any MPLS tunnels
+  removeUnclaimedLabeledTunnels();
+
+  // Delete interfaces
+  removeUnclaimedInterfaces();
+  // Delete stations
+  removeUnclaimedStations();
+  // Finally delete the vlans
+  removeUnclaimedVlans();
+
+  egressId2WeightInWarmBootFile_.clear();
+  vrfIp2EgressFromBcmHostInWarmBootFile_.clear();
+
+  // Delete the unclaimed bcm acl stats
+  removeUnclaimedAclStats();
+
+  // Delete acls
+  removeUnclaimedAcls();
+
+  // Delete the unclaimed bcm teflow stats
+  removeUnclaimedTeFlowStats();
+
+  // Delete TeFlows.
+  removeUnclaimedTeFlows();
+
+  // Delete CosQMappings
+  removeUnclaimedCosqMappings();
+
+  // Delete UdfGroups
+  removeUnclaimedUdfGroups();
+
+  // Delete UdfPacketMatchers
+  removeUnclaimedUdfPacketMatchers();
 
   /* remove unclaimed mirrors and mirrored ports/acls, if any */
   checkUnclaimedMirrors();
   checkUnclaimedQosMaps();
 
   ptpTcEnabled_ = std::nullopt;
+  // Clear TeFlow
+  teFlowDstIpPrefixLength_ = 0;
+  teFlowHintId_ = 0;
+  teFlowGroupId_ = 0;
+  teFlowFlexCounterId_ = 0;
 }
 
 void BcmWarmBootCache::populateRtag7State() {
@@ -1180,8 +1525,19 @@ void BcmWarmBootCache::programmed(TrunksItr itr) {
 }
 
 void BcmWarmBootCache::checkUnclaimedQosMaps() {
+  if (qosMapKey2QosMapId_.size()) {
+    XLOG(ERR) << "Unclaimed qosMapKey2QosMapId_ entries, count ="
+              << qosMapKey2QosMapId_.size() << " [ ";
+    for (const auto& qosMapKey2Qos : qosMapKey2QosMapId_) {
+      const auto& qosMapKey2QosPairKey = qosMapKey2Qos.first;
+      XLOG(ERR) << " Policy name: " << qosMapKey2QosPairKey.first
+                << ", type: " << (int)qosMapKey2QosPairKey.second;
+    }
+    XLOG(ERR) << "]";
+  }
   CHECK_EQ(qosMapKey2QosMapId_.size() + qosMapId2QosMap_.size(), 0)
-      << "unclaimed qos map entries found";
+      << "unclaimed qos map entries found. qosMapId2QosMap_ count ="
+      << qosMapId2QosMap_.size();
 }
 
 BcmWarmBootCache::QosMapId2QosMapItr BcmWarmBootCache::findQosMap(
@@ -1203,18 +1559,27 @@ BcmWarmBootCache::QosMapId2QosMapItr BcmWarmBootCache::findQosMap(
   std::set<std::pair<uint16_t, uint8_t>> mapEntries;
   switch (type) {
     case BcmQosMap::Type::MPLS_INGRESS:
-      for (const auto& entry : qosPolicy->getExpMap().from()) {
-        mapEntries.emplace(*entry.trafficClass(), *entry.attr());
+      for (const auto& entry : std::as_const(
+               *(qosPolicy->getExpMap()->cref<switch_state_tags::from>()))) {
+        auto tc = entry->get<switch_state_tags::trafficClass>()->toThrift();
+        auto attr = entry->get<switch_state_tags::attr>()->toThrift();
+        mapEntries.emplace(tc, attr);
       }
       break;
     case BcmQosMap::Type::MPLS_EGRESS:
-      for (const auto& entry : qosPolicy->getExpMap().to()) {
-        mapEntries.emplace(*entry.trafficClass(), *entry.attr());
+      for (const auto& entry : std::as_const(
+               *(qosPolicy->getExpMap()->cref<switch_state_tags::to>()))) {
+        auto tc = entry->get<switch_state_tags::trafficClass>()->toThrift();
+        auto attr = entry->get<switch_state_tags::attr>()->toThrift();
+        mapEntries.emplace(tc, attr);
       }
       break;
     case BcmQosMap::Type::IP_INGRESS:
-      for (const auto& entry : qosPolicy->getDscpMap().from()) {
-        mapEntries.emplace(*entry.trafficClass(), *entry.attr());
+      for (const auto& entry : std::as_const(
+               *(qosPolicy->getDscpMap()->cref<switch_state_tags::from>()))) {
+        auto tc = entry->get<switch_state_tags::trafficClass>()->toThrift();
+        auto attr = entry->get<switch_state_tags::attr>()->toThrift();
+        mapEntries.emplace(tc, attr);
       }
       break;
     case BcmQosMap::Type::IP_EGRESS:
@@ -1230,6 +1595,12 @@ BcmWarmBootCache::QosMapId2QosMapItr BcmWarmBootCache::findQosMap(
 
   if (qosMapId2QosMapItr->second->size() != mapEntries.size()) {
     /* sw switch qos policy rules are only subset of  rules in qos map */
+    XLOG(WARN) << " Mismatch in QosMap size of type: "
+               << qosMapId2QosMapItr->second->getType()
+               << " with id: " << qosMapId2QosMapItr->second->getHandle()
+               << " for policy: " << qosPolicy->getName()
+               << " Expected size: " << mapEntries.size()
+               << ", HW entry size: " << qosMapId2QosMapItr->second->size();
     return qosMapId2QosMap_.end();
   }
 
@@ -1355,13 +1726,93 @@ void BcmWarmBootCache::populateAclStats(
     return;
   }
   AclStatStatus statStatus;
-  statStatus.stat = *aclStatHandle;
+  statStatus.stat = (*aclStatHandle).first;
   stats.emplace(aclHandle, statStatus);
 }
 
 void BcmWarmBootCache::removeBcmAcl(BcmAclEntryHandle handle) {
   auto rv = bcm_field_entry_destroy(hw_->getUnit(), handle);
   bcmLogFatal(rv, hw_, "failed to destroy the acl entry");
+}
+
+void BcmWarmBootCache::populateTeFlows(
+    const int groupId,
+    TeFlowEntry2TeFlowStat& stats,
+    TeFlow2BcmTeFlowEntryHandle& teflows) {
+  int entryCount = 0;
+  // first get the count of EM entries of this group
+  auto rv = bcm_field_entry_multi_get(
+      hw_->getUnit(), getEMGroupID(groupId), 0, nullptr, &entryCount);
+  if (rv == BCM_E_NOT_FOUND) {
+    XLOG(DBG1) << "EM group does not exist";
+    return;
+  }
+  bcmCheckError(rv, "Unable to get count of EM entry for group: ", groupId);
+  XLOG(DBG1) << "Existing EM entry count=" << entryCount
+             << " for group=" << groupId;
+
+  if (!entryCount) {
+    return;
+  }
+  std::vector<bcm_field_entry_t> bcmEntries(entryCount);
+  rv = bcm_field_entry_multi_get(
+      hw_->getUnit(),
+      getEMGroupID(groupId),
+      entryCount,
+      bcmEntries.data(),
+      &entryCount);
+  bcmCheckError(rv, "Unable to get EM entry information for group=", groupId);
+  for (auto bcmEntry : bcmEntries) {
+    // Get teflow stat associated to each teflow entry
+    populateTeFlowStats(groupId, bcmEntry, stats);
+    // Get srcPort of teflow  entry
+    bcm_module_t data_modid;
+    bcm_module_t mask_modid;
+    bcm_port_t hwSrcPort;
+    bcm_port_t mask;
+    rv = bcm_field_qualify_SrcPort_get(
+        hw_->getUnit(), bcmEntry, &data_modid, &mask_modid, &hwSrcPort, &mask);
+    bcmCheckError(rv, "Unable to get src port for entry=", bcmEntry);
+
+    // Get destIp of teflow  entry
+    bcm_ip6_t hwAddr{};
+    bcm_ip6_t hwMask{};
+    rv = bcm_field_qualify_DstIp6_get(
+        hw_->getUnit(), bcmEntry, &hwAddr, &hwMask);
+    bcmCheckError(rv, "Unable to get Dst Ip6 for entry=", bcmEntry);
+
+    auto destIp = ipFromBcm(hwAddr);
+    XLOG(DBG2) << "Populate TeFlowEntry, recovered from h/w. "
+               << "Teflow: srcPort=" << hwSrcPort << " destIp= " << destIp
+               << " teflow entry=" << bcmEntry;
+    CHECK(teflows.find({hwSrcPort, destIp}) == teflows.end());
+    teflows.emplace(std::make_pair(hwSrcPort, destIp), bcmEntry);
+  }
+
+  XLOG(DBG1) << "Teflow map count=" << teflows.size()
+             << " for group=" << groupId;
+  CHECK_EQ(teflows.size(), entryCount);
+}
+
+void BcmWarmBootCache::populateTeFlowStats(
+    int groupId,
+    BcmTeFlowEntryHandle teFlowHandle,
+    TeFlowEntry2TeFlowStat& stats) {
+  auto teFlowStatHandle = BcmTeFlowStat::getAclStatHandleFromAttachedAcl(
+      hw_, getEMGroupID(groupId), teFlowHandle);
+  if (!teFlowStatHandle) {
+    // This teflow doesn't have any BcmTeFlowStat attached
+    return;
+  }
+  TeFlowStatStatus statStatus;
+  statStatus.stat = (*teFlowStatHandle).first;
+  statStatus.actionIndex = (*teFlowStatHandle).second;
+  stats.emplace(teFlowHandle, statStatus);
+}
+
+void BcmWarmBootCache::removeBcmTeFlow(BcmTeFlowEntryHandle handle) {
+  auto rv = bcm_field_entry_destroy(hw_->getUnit(), handle);
+  bcmLogFatal(rv, hw_, "failed to destroy the teflow entry");
 }
 
 void BcmWarmBootCache::populateRxReasonToQueue() {
@@ -1567,7 +2018,8 @@ void BcmWarmBootCache::populateLabelStack2TunnelId(bcm_l3_egress_t* egress) {
   }
 
   XLOG(DBG4) << "found "
-             << tunnelInitiatorString(intf.l3a_intf_id, intf.l3a_vid, labels);
+             << tunnelInitiatorString(
+                    intf.l3a_intf_id, intf.l3a_vid, key.second);
   labelStackKey2TunnelId_.emplace(std::move(key), intf.l3a_intf_id);
 }
 
@@ -1626,6 +2078,15 @@ void BcmWarmBootCache::populateSwitchSettings() {
   // This is warm boot, so there cannot be any L2 update callback registered.
   // Thus, BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_FWD should be enough to
   // ascertain HARDWARE as L2 learning mode.
+  // NOTE:
+  //   This logic to determine the configured L2 learning mode
+  //   in SDK/ASIC works only for TH as it's the only ASIC that
+  //   uses L2 learn pending bit.
+  //   So, this warmboot cache state shouldn't be used in making the
+  //   decision to whether call the L2 learning mode config API during
+  //   warmboot or not.
+  //   TODO: Check with Broadcom on how to correctly identify the SDK/HW
+  //   config for this that would work for all ASIC platforms.
   if (flags == (BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_FWD)) {
     l2LearningMode_ = cfg::L2LearningMode::HARDWARE;
   } else if (flags == (BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_PENDING)) {

@@ -13,7 +13,7 @@
 
 namespace facebook::fboss {
 
-class CredoF104Asic;
+class CredoPhyAsic;
 
 class SaiCloudRipperPhyPlatform : public SaiHwPlatform {
  public:
@@ -51,8 +51,8 @@ class SaiCloudRipperPhyPlatform : public SaiHwPlatform {
 
   SaiSwitchTraits::CreateAttributes getSwitchAttributes(
       bool /*mandatoryOnly*/,
-      cfg::SwitchType /*switchType*/,
-      std::optional<int64_t> /*switchId*/) override {
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId) override {
     CHECK(switchCreateAttrs_);
     return *switchCreateAttrs_;
   }
@@ -61,8 +61,12 @@ class SaiCloudRipperPhyPlatform : public SaiHwPlatform {
   }
 
  private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
   int phyId_{0};
-  std::unique_ptr<CredoF104Asic> asic_;
+  std::unique_ptr<CredoPhyAsic> asic_;
   std::optional<SaiSwitchTraits::CreateAttributes> switchCreateAttrs_;
 
   void initImpl(uint32_t hwFeaturesDesired) override;

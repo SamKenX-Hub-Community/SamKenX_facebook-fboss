@@ -86,11 +86,11 @@ std::ostream& operator<<(std::ostream& os, const FlagCommand& cmd);
 std::unique_ptr<facebook::fboss::QsfpServiceAsyncClient> getQsfpClient(
     folly::EventBase& evb);
 
-bool overrideLowPower(TransceiverI2CApi* bus, unsigned int port, bool lowPower);
+bool overrideLowPower(unsigned int port, bool lowPower);
 
 bool setCdr(TransceiverI2CApi* bus, unsigned int port, uint8_t value);
 
-bool rateSelect(TransceiverI2CApi* bus, unsigned int port, uint8_t value);
+bool rateSelect(unsigned int port, uint8_t value);
 
 bool appSel(TransceiverI2CApi* bus, unsigned int port, uint8_t value);
 
@@ -102,14 +102,15 @@ std::map<int32_t, TransceiverManagementInterface> getModuleTypeViaService(
     const std::vector<unsigned int>& ports,
     folly::EventBase& evb);
 
-std::vector<int32_t> zeroBasedPortIds(std::vector<unsigned int>& ports);
+std::vector<int32_t> zeroBasedPortIds(const std::vector<unsigned int>& ports);
 
-std::map<int32_t, ReadResponse> doReadRegViaService(
+void doReadRegViaService(
     const std::vector<int32_t>& ports,
     int offset,
     int length,
     int page,
-    folly::EventBase& evb);
+    folly::EventBase& evb,
+    std::map<int32_t, ReadResponse>& response);
 
 int doReadReg(
     TransceiverI2CApi* bus,
@@ -118,6 +119,13 @@ int doReadReg(
     int length,
     int page,
     folly::EventBase& evb);
+
+int readRegister(
+    unsigned int port,
+    int offset,
+    int length,
+    int page,
+    uint8_t* buf);
 
 bool doWriteRegViaService(
     const std::vector<int32_t>& ports,
@@ -133,6 +141,12 @@ int doWriteReg(
     int page,
     uint8_t data,
     folly::EventBase& evb);
+
+int writeRegister(
+    const std::vector<unsigned int>& ports,
+    int offset,
+    int page,
+    uint8_t data);
 
 int doBatchOps(
     TransceiverI2CApi* bus,

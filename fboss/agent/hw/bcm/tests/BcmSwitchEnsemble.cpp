@@ -13,6 +13,7 @@
 #include <memory>
 #include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/FbossError.h"
+#include "fboss/agent/Utils.h"
 #include "fboss/agent/hw/bcm/BcmAPI.h"
 #include "fboss/agent/hw/bcm/BcmConfig.h"
 #include "fboss/agent/hw/bcm/BcmError.h"
@@ -30,6 +31,7 @@
 DECLARE_bool(setup_thrift);
 
 using apache::thrift::can_throw;
+using namespace facebook::fboss;
 
 namespace {
 void addPort(
@@ -55,6 +57,73 @@ void addFlexPort(
   addPort(cfg, start + 3, speed / 4, false);
 }
 
+std::unique_ptr<AgentConfig> loadCfgFromLocalFile(
+    std::unique_ptr<Platform>& platform,
+    BcmTestPlatform* bcmTestPlatform,
+    std::string& yamlCfg,
+    BcmConfig::ConfigMap& cfg) {
+  std::unique_ptr<AgentConfig> agentConfig;
+  if (!FLAGS_bcm_config.empty()) {
+    XLOG(DBG2) << "Loading bcm config from " << FLAGS_bcm_config;
+    if (bcmTestPlatform->usesYamlConfig()) {
+      yamlCfg = BcmYamlConfig::loadFromFile(FLAGS_bcm_config);
+    } else {
+      cfg = BcmConfig::loadFromFile(FLAGS_bcm_config);
+    }
+    agentConfig = createEmptyAgentConfig();
+  } else if (!FLAGS_config.empty()) {
+    XLOG(DBG2) << "Loading config from " << FLAGS_config;
+    agentConfig = AgentConfig::fromFile(FLAGS_config);
+    if (bcmTestPlatform->usesYamlConfig()) {
+      yamlCfg = can_throw(*(platform->config()->thrift)
+                               .platform()
+                               ->chip()
+                               ->get_bcm()
+                               .yamlConfig());
+    } else {
+      cfg =
+          *(platform->config()->thrift).platform()->chip()->get_bcm().config();
+    }
+  } else {
+    throw FbossError("No config file to load!");
+  }
+  return agentConfig;
+}
+
+void modifyCfgForPfcTests(
+    BcmTestPlatform* bcmTestPlatform,
+    std::string& yamlCfg,
+    BcmConfig::ConfigMap& cfg,
+    bool skipBufferReservation) {
+  if (bcmTestPlatform->usesYamlConfig()) {
+    std::string toReplace("LOSSY");
+    std::size_t pos = yamlCfg.find(toReplace);
+    if (pos != std::string::npos) {
+      // for TH4 we skip buffer reservation in prod
+      // but it doesn't seem to work for pfc tests which
+      // play around with other variables. For unblocking
+      // skip it for now
+      if (skipBufferReservation) {
+        yamlCfg.replace(
+            pos,
+            toReplace.length(),
+            "LOSSY_AND_LOSSLESS\n      SKIP_BUFFER_RESERVATION: 1");
+      } else {
+        yamlCfg.replace(pos, toReplace.length(), "LOSSY_AND_LOSSLESS");
+      }
+    }
+  } else {
+    cfg["mmu_lossless"] = "0x2";
+    cfg["buf.mqueue.guarantee.0"] = "0C";
+    cfg["mmu_config_override"] = "0";
+    cfg["buf.prigroup7.guarantee"] = "0C";
+    if (FLAGS_qgroup_guarantee_enable) {
+      cfg["buf.qgroup.guarantee_mc"] = "0";
+      cfg["buf.qgroup.guarantee"] = "0";
+    }
+  }
+}
+
 void modifyCfgForQcmTests(facebook::fboss::BcmConfig::ConfigMap& cfg) {
   if (cfg.find("l2_mem_entries") != cfg.end()) {
     // remove
@@ -72,6 +141,10 @@ void modifyCfgForQcmTests(facebook::fboss::BcmConfig::ConfigMap& cfg) {
   cfg["ctr_evict_enable"] = "0";
 }
 
+void modifyCfgForEMTests(std::string& yamlCfg) {
+  facebook::fboss::enableExactMatch(yamlCfg);
+}
+
 } // namespace
 
 namespace facebook::fboss {
@@ -80,8 +153,9 @@ BcmSwitchEnsemble::BcmSwitchEnsemble(
     const HwSwitchEnsemble::Features& featuresDesired)
     : HwSwitchEnsemble(featuresDesired) {}
 
-std::vector<PortID> BcmSwitchEnsemble::masterLogicalPortIds() const {
-  return getPlatform()->masterLogicalPortIds();
+std::vector<PortID> BcmSwitchEnsemble::masterLogicalPortIds(
+    const std::set<cfg::PortType>& filter) const {
+  return filterByPortTypes(filter, getPlatform()->masterLogicalPortIds());
 }
 
 std::vector<PortID> BcmSwitchEnsemble::getAllPortsInGroup(PortID portID) const {
@@ -99,7 +173,7 @@ void BcmSwitchEnsemble::dumpHwCounters() const {
 std::map<PortID, HwPortStats> BcmSwitchEnsemble::getLatestPortStats(
     const std::vector<PortID>& ports) {
   // sync the stats
-  auto rv = bcm_stat_sync(getSwitchId());
+  auto rv = bcm_stat_sync(getSdkSwitchId());
   bcmCheckError(rv, "Unable to sync stats ");
   return HwSwitchEnsemble::getLatestPortStats(ports);
 }
@@ -127,7 +201,7 @@ std::unique_ptr<HwLinkStateToggler> BcmSwitchEnsemble::createLinkToggler(
   return std::make_unique<BcmLinkStateToggler>(this, desiredLoopbackMode);
 }
 
-uint64_t BcmSwitchEnsemble::getSwitchId() const {
+uint64_t BcmSwitchEnsemble::getSdkSwitchId() const {
   return getHwSwitch()->getUnit();
 }
 
@@ -139,12 +213,15 @@ void BcmSwitchEnsemble::runDiagCommand(
 
 void BcmSwitchEnsemble::init(
     const HwSwitchEnsemble::HwSwitchEnsembleInitInfo& info) {
+  CHECK(!info.overrideDsfNodes.has_value())
+      << " Dsf nodes not supported in BCM tests";
   auto platform = createTestPlatform();
   auto bcmTestPlatform = static_cast<BcmTestPlatform*>(platform.get());
   std::unique_ptr<AgentConfig> agentConfig;
   BcmConfig::ConfigMap cfg;
   std::string yamlCfg;
-  if (getPlatformMode() == PlatformMode::FAKE_WEDGE) {
+  auto platformMode = getPlatformMode();
+  if (platformMode == PlatformMode::FAKE_WEDGE) {
     FLAGS_flexports = true;
     for (int n = 1; n <= 125; n += 4) {
       addFlexPort(cfg, n, 40);
@@ -156,71 +233,64 @@ void BcmSwitchEnsemble::init(
     agentConfig = createEmptyAgentConfig();
   } else {
     // Load from a local file
-    if (!FLAGS_bcm_config.empty()) {
-      XLOG(INFO) << "Loading bcm config from " << FLAGS_bcm_config;
-      if (bcmTestPlatform->usesYamlConfig()) {
-        yamlCfg = BcmYamlConfig::loadFromFile(FLAGS_bcm_config);
-      } else {
-        cfg = BcmConfig::loadFromFile(FLAGS_bcm_config);
-      }
-      agentConfig = createEmptyAgentConfig();
-    } else if (!FLAGS_config.empty()) {
-      XLOG(INFO) << "Loading config from " << FLAGS_config;
-      agentConfig = AgentConfig::fromFile(FLAGS_config);
-      if (bcmTestPlatform->usesYamlConfig()) {
-        yamlCfg = can_throw(*(platform->config()->thrift)
-                                 .platform()
-                                 ->chip()
-                                 ->get_bcm()
-                                 .yamlConfig());
-      } else {
-        cfg = *(platform->config()->thrift)
-                   .platform()
-                   ->chip()
-                   ->get_bcm()
-                   .config();
-      }
-    } else {
-      throw FbossError("No config file to load!");
-    }
+    agentConfig = loadCfgFromLocalFile(platform, bcmTestPlatform, yamlCfg, cfg);
     for (auto item : *agentConfig->thrift.defaultCommandLineArgs()) {
       gflags::SetCommandLineOptionWithMode(
           item.first.c_str(), item.second.c_str(), gflags::SET_FLAG_IF_DEFAULT);
     }
   }
+  // Augment bcm configs based on capabilities.
+  // We should really move this functionality to generated bcm_test configs for
+  // features we deploy widely (say EM).
+  // Unfortunately we can't use ASIC for querying this capabilities, since
+  // ASIC construction requires inputs from AgentConfig (switchType) during
+  // construction.
+  std::unordered_set<PlatformMode> th3BcmPlatforms = {
+      PlatformMode::MINIPACK,
+      PlatformMode::YAMP,
+      PlatformMode::WEDGE400,
+      PlatformMode::DARWIN};
+  std::unordered_set<PlatformMode> th4BcmPlatforms = {
+      PlatformMode::FUJI, PlatformMode::ELBERT};
+  bool th3Platform = false;
+  bool th4Platform = false;
+  if (th3BcmPlatforms.find(platformMode) != th3BcmPlatforms.end()) {
+    th3Platform = true;
+  } else if (th4BcmPlatforms.find(platformMode) != th4BcmPlatforms.end()) {
+    th4Platform = true;
+  }
+
   // when in lossless mode on support platforms, use a different BCM knob
-  if (FLAGS_mmu_lossless_mode &&
-      platform->getAsic()->isSupported(HwAsic::Feature::PFC)) {
-    XLOG(INFO) << "Modify the bcm cfg as mmu_lossless mode is enabled";
+  if (FLAGS_mmu_lossless_mode && (th3Platform || th4Platform)) {
+    bool skipBufferReservation = false;
+    if (FLAGS_skip_buffer_reservation && th4Platform) {
+      // onlt skip for TH4 for now
+      skipBufferReservation = true;
+    }
+    XLOG(DBG2)
+        << "Modify the bcm cfg as mmu_lossless mode is enabled and skip buffer reservation is: "
+        << skipBufferReservation;
+    modifyCfgForPfcTests(bcmTestPlatform, yamlCfg, cfg, skipBufferReservation);
+  }
+  if (FLAGS_enable_exact_match) {
+    XLOG(DBG2) << "Modify bcm cfg as enable_exact_match is enabled";
     if (bcmTestPlatform->usesYamlConfig()) {
-      std::string toReplace("LOSSY");
-      std::size_t pos = yamlCfg.find(toReplace);
-      if (pos != std::string::npos) {
-        yamlCfg.replace(pos, toReplace.length(), "LOSSY_AND_LOSSLESS");
-      }
+      modifyCfgForEMTests(yamlCfg);
     } else {
-      cfg["mmu_lossless"] = "0x2";
-      cfg["buf.mqueue.guarantee.0"] = "0C";
-      cfg["mmu_config_override"] = "0";
-      cfg["buf.prigroup7.guarantee"] = "0C";
-      if (FLAGS_qgroup_guarantee_enable) {
-        cfg["buf.qgroup.guarantee_mc"] = "0";
-        cfg["buf.qgroup.guarantee"] = "0";
-      }
+      cfg["fpem_mem_entries"] = "0x10000";
     }
   }
+  std::unordered_set<PlatformMode> thBcmPlatforms = {
+      PlatformMode::WEDGE100, PlatformMode::GALAXY_LC, PlatformMode::GALAXY_FC};
   if (FLAGS_load_qcm_fw &&
-      platform->getAsic()->isSupported(HwAsic::Feature::QCM)) {
-    XLOG(INFO) << "Modify bcm cfg as load_qcm_fw is enabled";
+      thBcmPlatforms.find(platformMode) != thBcmPlatforms.end()) {
+    XLOG(DBG2) << "Modify bcm cfg as load_qcm_fw is enabled";
     modifyCfgForQcmTests(cfg);
   }
   if (bcmTestPlatform->usesYamlConfig()) {
     BcmAPI::initHSDK(yamlCfg);
   } else {
     BcmAPI::init(cfg);
-  }
-  if (info.switchType != cfg::SwitchType::NPU) {
-    throw FbossError("Only NPU switch type supported in BCM tests");
   }
   // TODO pass agent config to platform init
   platform->init(std::move(agentConfig), getHwSwitchFeatures());

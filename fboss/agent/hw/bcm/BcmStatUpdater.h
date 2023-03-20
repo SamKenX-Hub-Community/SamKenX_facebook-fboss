@@ -10,6 +10,7 @@
 #pragma once
 
 #include "common/stats/MonotonicCounter.h"
+#include "fboss/agent/hw/bcm/BcmAclStat.h"
 #include "fboss/agent/hw/bcm/BcmRouteCounter.h"
 #include "fboss/agent/hw/bcm/BcmTableStats.h"
 #include "fboss/agent/hw/bcm/types.h"
@@ -61,18 +62,36 @@ class BcmStatUpdater {
 
   MonotonicCounter* getAclStatCounterIf(
       BcmAclStatHandle handle,
-      cfg::CounterType counterType);
+      cfg::CounterType counterType,
+      BcmAclStatActionIndex actionIndex);
   size_t getAclStatCounterCount() const;
 
   std::vector<cfg::CounterType> getAclStatCounterType(
-      BcmAclStatHandle handle) const;
+      BcmAclStatHandle handle,
+      BcmAclStatActionIndex actionIndex) const;
 
   /* Functions to be called during state update */
   void toBeAddedAclStat(
       BcmAclStatHandle handle,
       const std::string& aclStatName,
-      const std::vector<cfg::CounterType>& counterTypes);
-  void toBeRemovedAclStat(BcmAclStatHandle handle);
+      const std::vector<cfg::CounterType>& counterTypes,
+      BcmAclStatActionIndex actionIndex = BcmAclStat::kDefaultAclActionIndex);
+  void toBeRemovedAclStat(
+      BcmAclStatHandle handle,
+      BcmAclStatActionIndex actionIndex = BcmAclStat::kDefaultAclActionIndex);
+
+  void toBeAddedTeFlowStat(
+      BcmAclStatHandle handle,
+      const std::string& aclStatName,
+      const std::vector<cfg::CounterType>& counterTypes,
+      BcmAclStatActionIndex actionIndex) {
+    return toBeAddedAclStat(handle, aclStatName, counterTypes, actionIndex);
+  }
+  void toBeRemovedTeFlowStat(
+      BcmAclStatHandle handle,
+      BcmAclStatActionIndex actionIndex) {
+    return toBeRemovedAclStat(handle, actionIndex);
+  }
 
   void refreshPostBcmStateChange(const StateDelta& delta);
 
@@ -97,6 +116,7 @@ class BcmStatUpdater {
   void updateAclStats();
   BcmTrafficCounterStats getAclTrafficStats(
       BcmAclStatHandle handle,
+      int actionIndex,
       const std::vector<cfg::CounterType>& counters);
 
   void updateHwTableStats();
@@ -117,24 +137,33 @@ class BcmStatUpdater {
 
   /* ACL stats */
   struct BcmAclStatDescriptor {
-    BcmAclStatDescriptor(BcmAclStatHandle hdl, const std::string& aclStatName)
-        : handle(hdl), aclStatName(aclStatName) {}
+    BcmAclStatDescriptor(
+        BcmAclStatHandle hdl,
+        const std::string& aclStatName,
+        facebook::fboss::BcmAclStatActionIndex index,
+        bool add)
+        : handle(hdl),
+          aclStatName(aclStatName),
+          actionIndex(index),
+          addStat(add) {}
     bool operator<(const BcmAclStatDescriptor& d) const {
-      return std::tie(handle, aclStatName) < std::tie(d.handle, d.aclStatName);
+      return std::tie(handle, aclStatName, addStat) <
+          std::tie(d.handle, d.aclStatName, d.addStat);
     }
     BcmAclStatHandle handle;
     std::string aclStatName;
+    facebook::fboss::BcmAclStatActionIndex actionIndex;
+    bool addStat;
   };
 
-  std::queue<BcmAclStatHandle> toBeRemovedAclStats_;
   std::queue<std::pair<BcmAclStatDescriptor, cfg::CounterType>>
-      toBeAddedAclStats_;
-  // Outer-map key: BcmAclStatHandle
+      toBeUpdatedAclStats_;
+  // Outer-map key: BcmAclStatHandle, BcmAclStatActionIndex
   // Inner-map key: counter type, value: MonotonicCounter
   // Usually one BcmAclStatHandle can get both packets and bytes counters back
   // at one function call.
   folly::Synchronized<std::unordered_map<
-      BcmAclStatHandle,
+      std::pair<BcmAclStatHandle, BcmAclStatActionIndex>,
       std::unordered_map<cfg::CounterType, std::unique_ptr<MonotonicCounter>>>>
       aclStats_;
 

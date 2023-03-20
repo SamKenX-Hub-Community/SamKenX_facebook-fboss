@@ -130,7 +130,8 @@ void checkSwHwIntfMatch(
     int unit,
     std::shared_ptr<SwitchState> state,
     bool verifyIngress) {
-  for (const auto& swIntf : *state->getInterfaces()) {
+  for (auto iter : std::as_const(*state->getInterfaces())) {
+    const auto& swIntf = iter.second;
     bcm_l3_info_t l3HwStatus;
     auto rv = bcm_l3_info(unit, &l3HwStatus);
     bcmCheckError(rv, "failed get L3 hw info");
@@ -190,7 +191,7 @@ TEST_F(BcmInterfaceTest, InterfaceApplyConfig) {
     // FakeAsic not supported (not all APIs are defined in FakeSDK) T92705046
     bool verifyIngress = getHwSwitch()->getPlatform()->getAsic()->isSupported(
                              HwAsic::Feature::INGRESS_L3_INTERFACE) &&
-        getAsic()->getAsicType() != HwAsic::AsicType::ASIC_TYPE_FAKE;
+        getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_FAKE;
     checkSwHwIntfMatch(getUnit(), getProgrammedState(), verifyIngress);
     if (getHwSwitch()->getPlatform()->getAsic()->isSupported(
             HwAsic::Feature::HOSTTABLE)) {
@@ -225,7 +226,7 @@ TEST_F(BcmInterfaceTest, fromJumboToNonJumboInterface) {
     // FakeAsic not supported (not all APIs are defined in FakeSDK) T92705046
     bool verifyIngress = getHwSwitch()->getPlatform()->getAsic()->isSupported(
                              HwAsic::Feature::INGRESS_L3_INTERFACE) &&
-        getAsic()->getAsicType() != HwAsic::AsicType::ASIC_TYPE_FAKE;
+        getAsic()->getAsicType() != cfg::AsicType::ASIC_TYPE_FAKE;
     checkSwHwIntfMatch(getUnit(), getProgrammedState(), verifyIngress);
   };
   verifyAcrossWarmBoots(setup, verify);

@@ -36,12 +36,14 @@ class SystemPortApiTest : public ::testing::Test {
         10, // attached_core_index
         0, // attached_core_port_index
         speed, // speed - 100G in mbps
+        8, // num_voq
     };
     SaiSystemPortTraits::Attributes::ConfigInfo confInfo{config};
     SaiSystemPortTraits::Attributes::AdminState admin{enabled};
     SaiSystemPortTraits::CreateAttributes sysPort{
         confInfo, admin, std::nullopt};
-    return systemPortApi->create<SaiSystemPortTraits>(sysPort, 0);
+    auto saiId = systemPortApi->create<SaiSystemPortTraits>(sysPort, 0);
+    return saiId;
   }
 };
 

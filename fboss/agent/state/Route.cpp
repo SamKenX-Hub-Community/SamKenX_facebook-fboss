@@ -37,38 +37,6 @@ bool RouteFields<AddrT>::operator==(const RouteFields& rf) const {
 }
 
 template <typename AddrT>
-folly::dynamic RouteFields<AddrT>::toFollyDynamicLegacy() const {
-  folly::dynamic routeFields = folly::dynamic::object;
-  routeFields[kPrefix] = prefix().toFollyDynamicLegacy();
-  routeFields[kNextHopsMulti] = nexthopsmulti().toFollyDynamicLegacy();
-  routeFields[kFwdInfo] = fwd().toFollyDynamicLegacy();
-  routeFields[kFlags] = flags();
-  if (auto _classID = classID()) {
-    routeFields[kClassID] = static_cast<int>(_classID.value());
-  }
-
-  return routeFields;
-}
-
-template <typename AddrT>
-RouteFields<AddrT> RouteFields<AddrT>::fromFollyDynamicLegacy(
-    const folly::dynamic& routeJson) {
-  Prefix prefix = Prefix::fromFollyDynamicLegacy(routeJson[kPrefix]);
-  RouteFields<AddrT> rt(prefix);
-  auto nexthopsmulti =
-      RouteNextHopsMulti::fromFollyDynamicLegacy(routeJson[kNextHopsMulti]);
-  auto fwd = RouteNextHopEntry::fromFollyDynamicLegacy(routeJson[kFwdInfo]);
-  uint32_t flags = routeJson[kFlags].asInt();
-  std::optional<cfg::AclLookupClass> classID{};
-  if (routeJson.find(kClassID) != routeJson.items().end()) {
-    classID = cfg::AclLookupClass(routeJson[kClassID].asInt());
-  }
-  rt.writableData() =
-      getRouteFields(prefix, nexthopsmulti, fwd, flags, classID);
-  return rt;
-}
-
-template <typename AddrT>
 RouteDetails RouteFields<AddrT>::toRouteDetails(
     bool normalizedNhopWeights) const {
   RouteDetails rd;
@@ -107,7 +75,9 @@ RouteDetails RouteFields<AddrT>::toRouteDetails(
 }
 
 template <typename AddrT>
-void RouteFields<AddrT>::update(ClientID clientId, RouteNextHopEntry entry) {
+void RouteFields<AddrT>::update(
+    ClientID clientId,
+    const RouteNextHopEntry& entry) {
   this->writableData().fwd() = state::RouteNextHopEntry{};
   RouteNextHopsMulti::update(
       clientId, *(this->writableData().nexthopsmulti()), entry.toThrift());
@@ -118,7 +88,7 @@ bool RouteFields<AddrT>::has(ClientID clientId, const RouteNextHopEntry& entry)
     const {
   auto found = RouteNextHopsMulti::getEntryForClient(
       clientId, *(this->data().nexthopsmulti()));
-  return found and RouteNextHopEntry::fromThrift((*found)) == entry;
+  return found and *found == entry;
 }
 
 template <typename AddrT>
@@ -159,42 +129,6 @@ void RouteFields<AddrT>::delEntryForClient(ClientID clientId) {
 }
 
 template <typename AddrT>
-folly::dynamic RouteFields<AddrT>::migrateToThrifty(folly::dynamic const& dyn) {
-  folly::dynamic newDyn = folly::dynamic::object;
-  if constexpr (std::is_same_v<AddrT, LabelID>) {
-    newDyn["label"] =
-        RouteFields<AddrT>::Prefix::migrateToThrifty(dyn[kPrefix]);
-  } else {
-    newDyn["prefix"] =
-        RouteFields<AddrT>::Prefix::migrateToThrifty(dyn[kPrefix]);
-  }
-  newDyn["nexthopsmulti"] =
-      RouteNextHopsMulti::migrateToThrifty(dyn[kNextHopsMulti]);
-  newDyn["fwd"] = RouteNextHopEntry::migrateToThrifty(dyn[kFwdInfo]);
-  newDyn["flags"] = dyn[kFlags].asInt();
-  if (dyn.find(kClassID) != dyn.items().end()) {
-    newDyn["classID"] = dyn[kClassID].asInt();
-  }
-  return newDyn;
-}
-
-template <typename AddrT>
-void RouteFields<AddrT>::migrateFromThrifty(folly::dynamic& dyn) {
-  if constexpr (std::is_same_v<AddrT, LabelID>) {
-    ThriftyUtils::renameField(dyn, "label", std::string(kPrefix));
-  }
-  RouteFields<AddrT>::Prefix::migrateFromThrifty(dyn[kPrefix]);
-  ThriftyUtils::renameField(dyn, "nexthopsmulti", std::string(kNextHopsMulti));
-  ThriftyUtils::renameField(dyn, "fwd", std::string(kFwdInfo));
-  RouteNextHopsMulti::migrateFromThrifty(dyn[kNextHopsMulti]);
-  RouteNextHopEntry::migrateFromThrifty(dyn[kFwdInfo]);
-  dyn[kFlags] = dyn["flags"].asInt();
-  if (dyn.find("classID") != dyn.items().end()) {
-    dyn[kClassID] = dyn["classID"].asInt();
-  }
-}
-
-template <typename AddrT>
 ThriftFieldsT<AddrT> RouteFields<AddrT>::getRouteFields(
     const PrefixT<AddrT>& prefix,
     const RouteNextHopsMulti& multi,
@@ -222,20 +156,27 @@ template struct RouteFields<LabelID>;
 
 template <typename AddrT>
 bool Route<AddrT>::isSame(const Route<AddrT>* rt) const {
-  return *this->getFields() == *rt->getFields();
+  return *this == *rt;
 }
 
 template <typename AddrT>
-std::shared_ptr<Route<AddrT>> Route<AddrT>::fromFollyDynamicLegacy(
-    const folly::dynamic& routeJson) {
-  return std::make_shared<Route<AddrT>>(
-      RouteFields<AddrT>::fromFollyDynamicLegacy(routeJson));
+std::shared_ptr<Route<AddrT>> Route<AddrT>::fromFollyDynamic(
+    const folly::dynamic& json) {
+  auto fields = RouteFields<AddrT>::fromFollyDynamic(json);
+  return std::make_shared<Route<AddrT>>(fields.toThrift());
+}
+
+template <typename AddrT>
+folly::dynamic Route<AddrT>::toFollyDynamic() const {
+  auto fields = RouteFields<AddrT>::fromThrift(this->toThrift());
+  return fields.toFollyDynamic();
 }
 
 template <typename AddrT>
 std::shared_ptr<Route<AddrT>> Route<AddrT>::cloneForReresolve() const {
   auto unresolvedRoute = this->clone();
-  unresolvedRoute->writableFields()->clearFlags();
+
+  unresolvedRoute->clearFlags();
   unresolvedRoute->clearForward();
   return unresolvedRoute;
 }

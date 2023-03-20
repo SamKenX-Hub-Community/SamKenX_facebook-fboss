@@ -156,6 +156,27 @@ class BcmInterface {
       bcm_switch_control_t type,
       int arg) = 0;
 
+  virtual int bcm_l3_egress_ecmp_ethertype_set(
+      int unit,
+      uint32 flags,
+      int ethertype_count,
+      int* ethertype_array) = 0;
+
+  virtual int bcm_l3_egress_ecmp_ethertype_get(
+      int unit,
+      uint32* flags,
+      int ethertype_max,
+      int* ethertype_array,
+      int* ethertype_count) = 0;
+
+  virtual int
+  bcm_l3_egress_ecmp_member_status_set(int unit, bcm_if_t intf, int status) = 0;
+
+  virtual int bcm_l3_egress_ecmp_member_status_get(
+      int unit,
+      bcm_if_t intf,
+      int* status) = 0;
+
   virtual int
   bcm_vlan_list_destroy(int unit, bcm_vlan_data_t* list, int count) = 0;
 
@@ -313,6 +334,83 @@ class BcmInterface {
       uint32 options,
       uint64* value) = 0;
 
+  virtual int bcm_cosq_bst_stat_extended_get(
+      int unit,
+      bcm_cosq_object_id_t* id,
+      bcm_bst_stat_id_t bid,
+      uint32 options,
+      uint64* value) = 0;
+
+  virtual int bcm_udf_hash_config_add(
+      int unit,
+      uint32 options,
+      bcm_udf_hash_config_t* config) = 0;
+
+  virtual int bcm_udf_hash_config_delete(
+      int unit,
+      bcm_udf_hash_config_t* config) = 0;
+
+  virtual int bcm_udf_create(
+      int unit,
+      bcm_udf_alloc_hints_t* hints,
+      bcm_udf_t* udf_info,
+      bcm_udf_id_t* udf_id) = 0;
+
+  virtual int bcm_udf_destroy(int unit, bcm_udf_id_t udf_id) = 0;
+
+  virtual int bcm_udf_pkt_format_create(
+      int unit,
+      bcm_udf_pkt_format_options_t options,
+      bcm_udf_pkt_format_info_t* pkt_format,
+      bcm_udf_pkt_format_id_t* pkt_format_id) = 0;
+
+  virtual int bcm_udf_pkt_format_destroy(
+      int unit,
+      bcm_udf_pkt_format_id_t pkt_format_id) = 0;
+
+  virtual int bcm_udf_pkt_format_add(
+      int unit,
+      bcm_udf_id_t udf_id,
+      bcm_udf_pkt_format_id_t pkt_format_id) = 0;
+
+  virtual int
+  bcm_port_pause_addr_set(int unit, bcm_port_t port, bcm_mac_t mac) = 0;
+
+  virtual int bcm_udf_pkt_format_delete(
+      int unit,
+      bcm_udf_id_t udf_id,
+      bcm_udf_pkt_format_id_t pkt_format_id) = 0;
+
+  virtual int bcm_udf_pkt_format_get(
+      int unit,
+      bcm_udf_pkt_format_id_t pkt_format_id,
+      int max,
+      bcm_udf_id_t* udf_id_list,
+      int* actual) = 0;
+
+  virtual int bcm_udf_hash_config_get(
+      int unit,
+      bcm_udf_hash_config_t* config) = 0;
+
+  virtual int bcm_udf_pkt_format_info_get(
+      int unit,
+      bcm_udf_pkt_format_id_t pkt_format_id,
+      bcm_udf_pkt_format_info_t* pkt_format) = 0;
+
+  virtual void bcm_udf_pkt_format_info_t_init(
+      bcm_udf_pkt_format_info_t* pkt_format) = 0;
+
+  virtual void bcm_udf_alloc_hints_t_init(bcm_udf_alloc_hints_t* udf_hints) = 0;
+
+  virtual void bcm_udf_t_init(bcm_udf_t* udf_info) = 0;
+
+  virtual void bcm_udf_hash_config_t_init(bcm_udf_hash_config_t* config) = 0;
+
+  virtual int bcm_udf_init(int unit) = 0;
+
+  virtual int
+  bcm_udf_get(int unit, bcm_udf_id_t udf_id, bcm_udf_t* udf_info) = 0;
+
   virtual int bcm_stat_clear(int unit, bcm_port_t port) = 0;
 
   virtual int bcm_l3_route_max_ecmp_set(int unit, int max) = 0;
@@ -424,6 +522,13 @@ class BcmInterface {
       bcm_port_t port,
       bcm_stat_val_t type,
       uint64* value) = 0;
+
+  virtual int bcm_stat_sync_multi_get(
+      int unit,
+      bcm_port_t port,
+      int nstat,
+      bcm_stat_val_t* stat_arr,
+      uint64* value_arr) = 0;
 
   virtual int
   bcm_stg_stp_set(int unit, bcm_stg_t stg, bcm_port_t port, int stp_state) = 0;

@@ -21,7 +21,9 @@ class HwSflowTest : public HwLinkStateDependentTest {
  protected:
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::oneL3IntfConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], cfg::PortLoopbackMode::MAC);
+        getHwSwitch(),
+        masterLogicalPortIds()[0],
+        getAsic()->desiredLoopbackMode());
     utility::setDefaultCpuTrafficPolicyConfig(cfg, getAsic());
     utility::addCpuQueueConfig(cfg, this->getAsic());
     return cfg;
@@ -29,7 +31,7 @@ class HwSflowTest : public HwLinkStateDependentTest {
 
   void sendUdpPkts(int numPktsToSend) {
     auto vlanId = utility::firstVlanID(initialConfig());
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto intfMac = utility::getFirstInterfaceMac(getProgrammedState());
     for (int i = 0; i < numPktsToSend; i++) {
       auto txPacket = utility::makeUDPTxPacket(
           getHwSwitch(),
@@ -88,7 +90,7 @@ class HwSflowTest : public HwLinkStateDependentTest {
         if (sampledPackets == expectedSampledPackets) {
           break;
         }
-        XLOG(INFO) << " Desired number of packets not sampled, retrying";
+        XLOG(DBG2) << " Desired number of packets not sampled, retrying";
         sleep(1);
       }
       EXPECT_EQ(expectedSampledPackets, sampledPackets);

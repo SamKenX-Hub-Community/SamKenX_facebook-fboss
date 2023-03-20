@@ -77,16 +77,18 @@ class HwDataPlaneMirrorTest : public HwLinkStateDependentTest {
 
  protected:
   cfg::SwitchConfig initialConfig() const override {
-    return utility::onePortPerVlanConfig(
+    return utility::onePortPerInterfaceConfig(
         getHwSwitch(),
         masterLogicalPortIds(),
-        cfg::PortLoopbackMode::MAC,
+        getAsic()->desiredLoopbackMode(),
         true);
   }
 
   std::shared_ptr<Mirror> getSpanMirror() {
     return std::make_shared<Mirror>(
-        kSpan, std::make_optional(mirrorToPort_), std::nullopt);
+        kSpan,
+        std::make_optional<PortID>(mirrorToPort_),
+        std::optional<folly::IPAddress>());
   }
 
   std::shared_ptr<Mirror> getErSpanMirror() {
@@ -172,7 +174,7 @@ class HwDataPlaneMirrorTest : public HwLinkStateDependentTest {
   }
 
   void mirrorAcl(const std::string& mirrorName) {
-    auto acl = std::make_shared<AclEntry>(201, "acl0");
+    auto acl = std::make_shared<AclEntry>(201, std::string("acl0"));
     acl->setL4SrcPort(srcL4Port_);
     acl->setL4DstPort(dstL4Port_);
     acl->setDstPort(trafficPort_);

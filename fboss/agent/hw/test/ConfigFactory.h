@@ -46,6 +46,10 @@ auto constexpr kUplinkBaseVlanId = 4000;
 
 folly::MacAddress kLocalCpuMac();
 
+std::vector<std::string> getLoopbackIps(SwitchID switchId);
+
+cfg::DsfNode dsfNodeConfig(const HwAsic& myAsic, int64_t otherSwitchId = 4);
+
 cfg::SwitchConfig oneL3IntfConfig(
     const HwSwitch* hwSwitch,
     PortID port,
@@ -68,21 +72,23 @@ cfg::SwitchConfig oneL3IntfNPortConfig(
     int baseVlanId = kBaseVlanId,
     bool optimizePortProfile = true,
     bool setInterfaceMac = true);
-cfg::SwitchConfig onePortPerVlanConfig(
+cfg::SwitchConfig onePortPerInterfaceConfig(
     const HwSwitch* hwSwitch,
     const std::vector<PortID>& ports,
     cfg::PortLoopbackMode lbMode = cfg::PortLoopbackMode::NONE,
     bool interfaceHasSubnet = true,
     bool setInterfaceMac = true,
-    int baseVlanId = kBaseVlanId);
-cfg::SwitchConfig multiplePortsPerVlanConfig(
+    int baseVlanId = kBaseVlanId,
+    bool enableFabricPorts = false);
+cfg::SwitchConfig multiplePortsPerIntfConfig(
     const HwSwitch* hwSwitch,
     const std::vector<PortID>& ports,
     cfg::PortLoopbackMode lbMode = cfg::PortLoopbackMode::NONE,
     bool interfaceHasSubnet = true,
     bool setInterfaceMac = true,
     const int baseVlanId = kBaseVlanId,
-    const int portsPerVlan = 1);
+    const int portsPerVlan = 1,
+    bool enableFabricPorts = false);
 
 cfg::SwitchConfig twoL3IntfConfig(
     const HwSwitch* hwSwitch,
@@ -117,6 +123,7 @@ void addMatcher(
     cfg::SwitchConfig* config,
     const std::string& matcherName,
     const cfg::MatchAction& matchAction);
+void delMatcher(cfg::SwitchConfig* config, const std::string& matcherName);
 std::vector<PortID> getAllPortsInGroup(const HwSwitch* hwSwitch, PortID portID);
 
 std::vector<PortDescriptor> getUplinksForEcmp(

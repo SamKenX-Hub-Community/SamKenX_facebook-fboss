@@ -8,6 +8,7 @@
  *
  */
 
+#include "fboss/agent/hw/sai/tracer/BufferApiTracer.h"
 #include <typeindex>
 #include <utility>
 
@@ -21,7 +22,10 @@ namespace {
 std::map<int32_t, std::pair<std::string, std::size_t>> _BufferPoolMap {
   SAI_ATTR_MAP(BufferPool, Type), SAI_ATTR_MAP(BufferPool, Size),
       SAI_ATTR_MAP(BufferPool, ThresholdMode),
-#if defined(TAJO_SDK)
+#if defined(TAJO_SDK) || defined(SAI_VERSION_8_2_0_0_ODP) ||                   \
+    defined(SAI_VERSION_8_2_0_0_DNX_ODP) || defined(SAI_VERSION_9_0_EA_ODP) || \
+    defined(SAI_VERSION_8_2_0_0_SIM_ODP) ||                                    \
+    defined(SAI_VERSION_9_0_EA_SIM_ODP) || defined(SAI_VERSION_9_0_EA_DNX_ODP)
       SAI_ATTR_MAP(BufferPool, XoffSize),
 #endif
 };
@@ -34,6 +38,12 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _BufferProfileMap{
     SAI_ATTR_MAP(BufferProfile, XoffTh),
     SAI_ATTR_MAP(BufferProfile, XonTh),
     SAI_ATTR_MAP(BufferProfile, XonOffsetTh),
+};
+
+std::map<int32_t, std::pair<std::string, std::size_t>> _IngressPriorityGroupMap{
+    SAI_ATTR_MAP(IngressPriorityGroup, Port),
+    SAI_ATTR_MAP(IngressPriorityGroup, Index),
+    SAI_ATTR_MAP(IngressPriorityGroup, BufferProfile),
 };
 } // namespace
 
@@ -52,6 +62,35 @@ WRAP_REMOVE_FUNC(buffer_profile, SAI_OBJECT_TYPE_BUFFER_PROFILE, buffer);
 WRAP_SET_ATTR_FUNC(buffer_profile, SAI_OBJECT_TYPE_BUFFER_PROFILE, buffer);
 WRAP_GET_ATTR_FUNC(buffer_profile, SAI_OBJECT_TYPE_BUFFER_PROFILE, buffer);
 
+WRAP_CREATE_FUNC(
+    ingress_priority_group,
+    SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP,
+    buffer);
+WRAP_REMOVE_FUNC(
+    ingress_priority_group,
+    SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP,
+    buffer);
+WRAP_SET_ATTR_FUNC(
+    ingress_priority_group,
+    SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP,
+    buffer);
+WRAP_GET_ATTR_FUNC(
+    ingress_priority_group,
+    SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP,
+    buffer);
+WRAP_GET_STATS_FUNC(
+    ingress_priority_group,
+    SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP,
+    buffer);
+WRAP_GET_STATS_EXT_FUNC(
+    ingress_priority_group,
+    SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP,
+    buffer);
+WRAP_CLEAR_STATS_FUNC(
+    ingress_priority_group,
+    SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP,
+    buffer);
+
 sai_buffer_api_t* wrappedBufferApi() {
   static sai_buffer_api_t bufferWrappers;
 
@@ -68,11 +107,26 @@ sai_buffer_api_t* wrappedBufferApi() {
       &wrap_set_buffer_profile_attribute;
   bufferWrappers.get_buffer_profile_attribute =
       &wrap_get_buffer_profile_attribute;
+  bufferWrappers.create_ingress_priority_group =
+      &wrap_create_ingress_priority_group;
+  bufferWrappers.remove_ingress_priority_group =
+      &wrap_remove_ingress_priority_group;
+  bufferWrappers.set_ingress_priority_group_attribute =
+      &wrap_set_ingress_priority_group_attribute;
+  bufferWrappers.get_ingress_priority_group_attribute =
+      &wrap_get_ingress_priority_group_attribute;
+  bufferWrappers.get_ingress_priority_group_stats =
+      &wrap_get_ingress_priority_group_stats;
+  bufferWrappers.get_ingress_priority_group_stats_ext =
+      &wrap_get_ingress_priority_group_stats_ext;
+  bufferWrappers.clear_ingress_priority_group_stats =
+      &wrap_clear_ingress_priority_group_stats;
 
   return &bufferWrappers;
 }
 
 SET_SAI_ATTRIBUTES(BufferPool)
 SET_SAI_ATTRIBUTES(BufferProfile)
+SET_SAI_ATTRIBUTES(IngressPriorityGroup)
 
 } // namespace facebook::fboss

@@ -17,6 +17,8 @@ facebook::fboss::PlatformInitFn initPlatform{nullptr};
 DEFINE_bool(setup_for_warmboot, false, "Set up test for warmboot");
 DEFINE_bool(run_forever, false, "run the test forever");
 
+DECLARE_string(config);
+
 namespace facebook::fboss {
 
 void AgentTest::setupAgent() {
@@ -34,7 +36,7 @@ void AgentTest::setupAgent() {
   // thread and that runs for lifetime of the application.
   asyncInitThread_->detach();
   initializer()->waitForInitDone();
-  XLOG(INFO) << "Agent has been setup and ready for the test";
+  XLOG(DBG2) << "Agent has been setup and ready for the test";
 }
 
 void AgentTest::TearDown() {
@@ -81,7 +83,8 @@ void AgentTest::resolveNeighbor(
     auto nbrTable = vlan->template getNeighborEntryTable<AddrT>()->modify(
         vlanId, &outputState);
     if (nbrTable->getEntryIf(ip)) {
-      nbrTable->updateEntry(ip, mac, port, vlan->getInterfaceID());
+      nbrTable->updateEntry(
+          ip, mac, port, vlan->getInterfaceID(), NeighborState::REACHABLE);
     } else {
       nbrTable->addEntry(ip, mac, port, vlan->getInterfaceID());
     }
@@ -157,7 +160,7 @@ void AgentTest::waitForLinkStatus(
     bool up,
     uint32_t retries,
     std::chrono::duration<uint32_t, std::milli> msBetweenRetry) const {
-  XLOG(INFO) << "Checking link status on "
+  XLOG(DBG2) << "Checking link status on "
              << folly::join(",", getPortNames(portsToCheck));
   auto portStatus = sw()->getPortStatus();
   std::vector<PortID> badPorts;
@@ -179,6 +182,7 @@ void AgentTest::waitForLinkStatus(
       "Unexpected Link status {:d} for {:s}",
       !up,
       folly::join(",", getPortNames(badPorts)));
+  logLinkDbgMessage(badPorts);
   throw FbossError(msg);
 }
 
@@ -196,7 +200,7 @@ void AgentTest::assertNoInDiscards(int maxNumDiscards) {
     auto portStats = sw()->getHw()->getPortStats();
     for (auto [port, stats] : portStats) {
       auto inDiscards = *stats.inDiscards_();
-      XLOG(INFO) << "Port: " << port << " in discards: " << inDiscards
+      XLOG(DBG2) << "Port: " << port << " in discards: " << inDiscards
                  << " in bytes: " << *stats.inBytes_()
                  << " out bytes: " << *stats.outBytes_() << " at timestamp "
                  << *stats.timestamp_();
@@ -222,6 +226,30 @@ void AgentTest::dumpRunningConfig(const std::string& targetDir) {
       testConfig,
       apache::thrift::SimpleJSONSerializer::serialize<std::string>(testConfig));
   newcfg.dumpConfig(targetDir);
+}
+
+void AgentTest::setupConfigFile(
+    const cfg::SwitchConfig& cfg,
+    const std::string& testConfigDir,
+    const std::string& configFile) const {
+  cfg::AgentConfig testConfig;
+  *testConfig.sw() = cfg;
+
+  const auto& baseConfig = platform()->config();
+  *testConfig.platform() = *baseConfig->thrift.platform();
+  auto newcfg = AgentConfig(
+      testConfig,
+      apache::thrift::SimpleJSONSerializer::serialize<std::string>(testConfig));
+  auto newCfgFile = testConfigDir + "/" + configFile;
+  // TODO check if file exists and don't write if it does
+  utilCreateDir(testConfigDir);
+  newcfg.dumpConfig(newCfgFile);
+  FLAGS_config = newCfgFile;
+}
+
+void AgentTest::reloadConfig(std::string reason) const {
+  // reload config so that test config is loaded
+  sw()->applyConfig(reason, true);
 }
 
 AgentTest::~AgentTest() {}

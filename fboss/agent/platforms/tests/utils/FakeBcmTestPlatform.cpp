@@ -31,8 +31,13 @@ namespace facebook::fboss {
 FakeBcmTestPlatform::FakeBcmTestPlatform()
     : BcmTestPlatform(
           fakeProductInfo(),
-          std::make_unique<FakeTestPlatformMapping>(getControllingPortIDs())) {
-  asic_ = std::make_unique<FakeAsic>();
+          std::make_unique<FakeTestPlatformMapping>(getControllingPortIDs())) {}
+
+void FakeBcmTestPlatform::setupAsic(
+    cfg::SwitchType switchType,
+    std::optional<int64_t> switchId,
+    std::optional<cfg::Range64> systemPortRange) {
+  asic_ = std::make_unique<FakeAsic>(switchType, switchId, systemPortRange);
 }
 
 FakeBcmTestPlatform::~FakeBcmTestPlatform() {}

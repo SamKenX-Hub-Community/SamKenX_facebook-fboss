@@ -1,5 +1,7 @@
 // (c) Facebook, Inc. and its affiliates. Confidential and proprietary.
 #include "fboss/util/CredoMacsecUtil.h"
+#include <folly/FileUtil.h>
+#include <thrift/lib/cpp2/protocol/Serializer.h>
 #include "fboss/agent/hw/gen-cpp2/hardware_stats_types.h"
 
 using namespace facebook::fboss;
@@ -27,10 +29,12 @@ void printSaStatsHelper(
     printf("  InNotValidPacktes: %ld\n", *saStats.inNotValidPkts());
     printf("  InNoSaPacktes: %ld\n", *saStats.inNoSaPkts());
     printf("  InUnusedSaPacktes: %ld\n", *saStats.inUnusedSaPkts());
+    printf("  InCurrentXpn: %ld\n", *saStats.inCurrentXpn());
     printf("  InOkPacktes: %ld\n", *saStats.inOkPkts());
   } else {
     printf("  OutEncryptedPacktes: %ld\n", *saStats.outEncryptedPkts());
     printf("  OutProtectedPacktes: %ld\n", *saStats.outProtectedPkts());
+    printf("  OutCurrentXpn: %ld\n", *saStats.outCurrentXpn());
   }
 }
 
@@ -58,10 +62,12 @@ void printPortStatsHelper(
     printf("  inInvalidPkts: %ld\n", *portStats.inInvalidPkts());
     printf("  inNoSaDroppedPkts: %ld\n", *portStats.inNoSaDroppedPkts());
     printf("  inUnusedSaPkts: %ld\n", *portStats.inUnusedSaPkts());
+    printf("  inCurrentXpn: %ld\n", *portStats.inCurrentXpn());
   } else {
     printf("  EncryptedOctets: %ld\n", *portStats.octetsEncrypted());
     printf(
         "  outTooLongDroppedPkts: %ld\n", *portStats.outTooLongDroppedPkts());
+    printf("  outCurrentXpn: %ld\n", *portStats.outCurrentXpn());
   }
 }
 

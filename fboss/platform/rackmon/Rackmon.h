@@ -1,6 +1,8 @@
 // Copyright 2021-present Facebook. All Rights Reserved.
 #pragma once
 #include <atomic>
+#include <optional>
+#include <set>
 #include <shared_mutex>
 #include <thread>
 #include "Modbus.h"
@@ -8,6 +10,20 @@
 #include "PollThread.h"
 
 namespace rackmon {
+
+struct ModbusDeviceFilter {
+  std::optional<std::set<uint8_t>> addrFilter{};
+  std::optional<std::set<std::string>> typeFilter{};
+  operator bool() const {
+    return addrFilter || typeFilter;
+  }
+  bool contains(uint8_t addr) const {
+    return addrFilter && addrFilter->find(addr) != addrFilter->end();
+  }
+  bool contains(const std::string& type) const {
+    return typeFilter && typeFilter->find(type) != typeFilter->end();
+  }
+};
 
 class Rackmon {
   static constexpr int kScanNumRetry = 3;
@@ -42,8 +58,6 @@ class Rackmon {
 
   // Probe an interface for the presence of the address.
   bool probe(Modbus& interface, uint8_t addr);
-  // Probe all interfaces for the presence of the address.
-  bool probe(uint8_t addr);
 
   // --------- Private Methods --------
 
@@ -57,6 +71,8 @@ class Rackmon {
   }
 
   bool isDeviceKnown(uint8_t);
+
+  ModbusDevice& getModbusDevice(uint8_t addr);
 
   // Monitor loop. Blocks forever as long as req_stop is true.
   void monitor();
@@ -156,7 +172,11 @@ class Rackmon {
   void getRawData(std::vector<ModbusDeviceRawData>& data) const;
 
   // Get value data
-  void getValueData(std::vector<ModbusDeviceValueData>& data) const;
+  void getValueData(
+      std::vector<ModbusDeviceValueData>& data,
+      const ModbusDeviceFilter& devFilter = {},
+      const ModbusRegisterFilter& regFilter = {},
+      bool latestValueOnly = false) const;
 };
 
 } // namespace rackmon

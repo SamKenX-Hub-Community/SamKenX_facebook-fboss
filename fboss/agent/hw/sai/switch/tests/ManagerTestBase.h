@@ -51,6 +51,7 @@ class ManagerTestBase : public ::testing::Test {
     NEIGHBOR = 8,
     QUEUE = 16,
     LAG = 32,
+    SYSTEM_PORT = 64,
   };
   ~ManagerTestBase() override;
   void setupSaiPlatform();
@@ -130,29 +131,66 @@ class ManagerTestBase : public ::testing::Test {
 
   std::shared_ptr<ArpEntry> makePendingArpEntry(
       int id,
-      const TestRemoteHost& testRemoteHost) const;
+      const TestRemoteHost& testRemoteHost,
+      cfg::InterfaceType type = cfg::InterfaceType::VLAN) const;
 
   std::shared_ptr<ArpEntry> makeArpEntry(
       int id,
       folly::IPAddressV4 ip,
       folly::MacAddress mac,
-      std::optional<sai_uint32_t> metadata = std::nullopt) const;
+      std::optional<sai_uint32_t> metadata = std::nullopt,
+      cfg::InterfaceType type = cfg::InterfaceType::VLAN) const;
   std::shared_ptr<ArpEntry> makeArpEntry(
       int id,
       const TestRemoteHost& testRemoteHost,
       std::optional<sai_uint32_t> metadata = std::nullopt,
       std::optional<sai_uint32_t> encapIndex = std::nullopt,
-      bool isLocal = true) const;
+      bool isLocal = true,
+      cfg::InterfaceType type = cfg::InterfaceType::VLAN) const;
 
   std::shared_ptr<ArpEntry> resolveArp(
       int id,
       const TestRemoteHost& testRemoteHost,
+      cfg::InterfaceType type = cfg::InterfaceType::VLAN,
       std::optional<sai_uint32_t> metadata = std::nullopt,
       std::optional<sai_uint32_t> encapIndex = std::nullopt,
       bool isLocal = true);
 
+  std::shared_ptr<ArpEntry> makeArpEntry(
+      const SystemPort& sysPort,
+      folly::IPAddressV4 ip,
+      folly::MacAddress mac,
+      std::optional<sai_uint32_t> encapIndex) const;
+
+  std::shared_ptr<ArpEntry> resolveArp(
+      const SystemPort& sysPort,
+      folly::IPAddressV4 ip,
+      folly::MacAddress mac,
+      std::optional<sai_uint32_t> encapIndex) const;
+
+  InterfaceID getIntfID(
+      const TestInterface& testInterface,
+      cfg::InterfaceType type) const {
+    return getIntfID(testInterface.id, type);
+  }
+  InterfaceID getIntfID(int id, cfg::InterfaceType type) const;
+  int64_t getSysPortId(const TestInterface& testInterface) const {
+    return getSysPortId(testInterface.id);
+  }
+  int64_t getSysPortId(int id) const;
+
   std::shared_ptr<Interface> makeInterface(
-      const TestInterface& testInterface) const;
+      const TestInterface& testInterface,
+      cfg::InterfaceType type = cfg::InterfaceType::VLAN) const;
+
+  std::shared_ptr<SystemPort> makeSystemPort(
+      const std::optional<std::string>& qosPolicy = std::nullopt,
+      int64_t sysPortId = 1,
+      int64_t switchId = 1) const;
+
+  std::shared_ptr<Interface> makeInterface(
+      const SystemPort& sysPort,
+      const std::vector<folly::CIDRNetwork>& addresses) const;
 
   ResolvedNextHop makeNextHop(const TestInterface& testInterface) const;
 
@@ -200,7 +238,7 @@ class ManagerTestBase : public ::testing::Test {
       uint64_t maxPps = 60000);
 
   std::shared_ptr<QosPolicy> makeQosPolicy(
-      std::string name,
+      const std::string& name,
       const TestQosPolicy& qosPolicy);
 
   std::shared_ptr<FakeSai> fs;
@@ -216,6 +254,8 @@ class ManagerTestBase : public ::testing::Test {
   void applyNewState(const std::shared_ptr<SwitchState>& newState);
 
   std::shared_ptr<SwitchState> programmedState;
+
+  static constexpr int kSysPortOffset = 100;
 
  private:
   static constexpr uint8_t kPortQueueMax = 8;

@@ -21,6 +21,10 @@
 namespace rackmonsvc {
 
 class ThriftHandler : virtual public RackmonCtrlSvIf {
+  // Modbus limits the total 2-byte words to 127
+  // since the internal size field is just a byte,
+  // anything larger than 127 will roll-over.
+  static const size_t kMaxNumRegisters = 127;
   rackmon::Rackmon rackmond_{};
   RackmonPlsManager plsManager_{};
 
@@ -32,6 +36,7 @@ class ThriftHandler : virtual public RackmonCtrlSvIf {
       const rackmon::ModbusDeviceValueData& source);
   ModbusRegisterValue transformRegisterValue(
       const rackmon::RegisterValue& value);
+  RackmonStatusCode exceptionToStatusCode(std::exception& baseException);
 
  public:
   ThriftHandler();
@@ -41,6 +46,10 @@ class ThriftHandler : virtual public RackmonCtrlSvIf {
 
   void getMonitorData(
       std::vector<rackmonsvc::RackmonMonitorData>& data) override;
+
+  void getMonitorDataEx(
+      std::vector<rackmonsvc::RackmonMonitorData>& data,
+      std::unique_ptr<rackmonsvc::MonitorDataFilter> filter) override;
 
   void readHoldingRegisters(
       rackmonsvc::ReadWordRegistersResponse& response,

@@ -89,7 +89,6 @@ add_library(agent_test_lib
 
 target_link_libraries(agent_test_lib
   main
-  fboss_agent
   qsfp_cpp2
   qsfp_service_client
   fboss_config_utils
@@ -126,4 +125,17 @@ target_link_libraries(multinode_tests
   fboss_config_utils
   ${GTEST}
   ${LIBGMOCK_LIBRARIES}
+)
+
+add_library(agent_ensemble
+  fboss/agent/test/AgentEnsemble.cpp
+)
+
+target_link_libraries(agent_ensemble
+  route_distribution_gen
+  main
+  fboss_agent
+  config_factory
+  config_factory
+  fboss_config_utils
 )

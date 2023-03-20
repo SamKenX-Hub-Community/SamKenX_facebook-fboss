@@ -31,8 +31,16 @@ class HwSwitchEnsemble;
 
 namespace facebook::fboss::utility {
 
+inline const std::string kUdfGroupName("dstQueuePair");
+inline const std::string kUdfPktMatcherName("l4UdpRoce");
+inline const int kUdfStartOffsetInBytes(13);
+inline const int kUdfFieldSizeInBytes(3);
+inline const int kUdfL4DstPort(4791);
+inline const int kRandomUdfL4SrcPort(62946);
+
 cfg::LoadBalancer getEcmpHalfHashConfig(const Platform* platform);
 cfg::LoadBalancer getEcmpFullHashConfig(const Platform* platform);
+cfg::LoadBalancer getEcmpFullUdfHashConfig(const Platform* platform);
 std::vector<cfg::LoadBalancer> getEcmpFullTrunkHalfHashConfig(
     const Platform* platform);
 std::vector<cfg::LoadBalancer> getEcmpHalfTrunkFullHashConfig(
@@ -54,10 +62,33 @@ void pumpTraffic(
     bool isV6,
     HwSwitch* hw,
     folly::MacAddress dstMac,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     std::optional<PortID> frontPanelPortToLoopTraffic = std::nullopt,
     int hopLimit = 255,
     std::optional<folly::MacAddress> srcMac = std::nullopt);
+
+void pumpRoCETraffic(
+    bool isV6,
+    HwSwitch* hw,
+    folly::MacAddress dstMac,
+    std::optional<VlanID> vlan,
+    std::optional<PortID> frontPanelPortToLoopTraffic,
+    int hopLimit = 255,
+    std::optional<folly::MacAddress> srcMacAddr = std::nullopt);
+
+void pumpTraffic(
+    HwSwitch* hw,
+    folly::MacAddress dstMac,
+    std::vector<folly::IPAddress> srcIp,
+    std::vector<folly::IPAddress> dstIp,
+    uint16_t srcPort,
+    uint16_t dstPort,
+    uint8_t streams,
+    std::optional<VlanID> vlan,
+    std::optional<PortID> frontPanelPortToLoopTraffic = std::nullopt,
+    int hopLimit = 255,
+    std::optional<folly::MacAddress> srcMac = std::nullopt,
+    int numPkts = 1000);
 
 void pumpDeterministicRandomTraffic(
     bool isV6,
@@ -123,5 +154,7 @@ bool pumpTrafficAndVerifyLoadBalanced(
     std::function<void()> clearPortStats,
     std::function<bool()> isLoadBalanced,
     int retries = 3);
+
+cfg::UdfConfig addUdfConfig();
 
 } // namespace facebook::fboss::utility

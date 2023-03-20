@@ -27,6 +27,14 @@ class CowStorageMgr {
       : storage_(std::make_unique<CowStorage<Root>>(std::move(storage))),
         stateUpdateCb_(cb) {}
 
+  // Create blank published state
+  explicit CowStorageMgr(
+      CowStateUpdateCb cb = [](const auto& /*oldState*/,
+                               const auto& /*newState*/) {})
+      : CowStorageMgr(CowStorage<Root>(Root()), std::move(cb)) {
+    (*storage_.wlock())->publish();
+  }
+
   /**
    * Schedule an update to the CowState.
    *
@@ -109,6 +117,10 @@ class CowStorageMgr {
   }
   const std::shared_ptr<CowState> getState() const {
     return (*storage_.rlock())->root();
+  }
+
+  folly::EventBase* getEventBase() {
+    return updateEvbThread_.getEventBase();
   }
 
  private:
@@ -194,7 +206,7 @@ class CowStorageMgr {
    * A list of pending state updates to be applied.
    */
   folly::Synchronized<CowStateUpdateList> pendingUpdates_;
-  folly::ScopedEventBaseThread updateEvbThread_;
+  folly::ScopedEventBaseThread updateEvbThread_{"CowStorageMgrUpdateThread"};
 };
 
 } // namespace facebook::fboss::fsdb

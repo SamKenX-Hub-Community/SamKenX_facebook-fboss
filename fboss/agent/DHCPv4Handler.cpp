@@ -14,6 +14,8 @@
 #include <folly/io/IOBuf.h>
 #include <folly/logging/xlog.h>
 #include <string>
+
+#include "fboss/agent/DHCPv4OptionsOfInterest.h"
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/Platform.h"
 #include "fboss/agent/RxPacket.h"
@@ -71,10 +73,14 @@ IPv4Hdr makeIpv4Header(
   return ipHdr;
 }
 
-EthHdr makeEthHdr(MacAddress srcMac, MacAddress dstMac, VlanID vlan) {
+EthHdr
+makeEthHdr(MacAddress srcMac, MacAddress dstMac, std::optional<VlanID> vlan) {
   VlanTags_t vlanTags;
-  vlanTags.push_back(
-      VlanTag(vlan, static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_VLAN)));
+  if (vlan.has_value()) {
+    vlanTags.push_back(VlanTag(
+        vlan.value(), static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_VLAN)));
+  }
+
   return EthHdr(
       dstMac,
       srcMac,
@@ -234,9 +240,10 @@ void DHCPv4Handler::processRequest(
   if (switchIp.isZero()) {
     auto vlanInterface =
         state->getInterfaces()->getInterfaceInVlanIf(pkt->getSrcVlan());
-    for (const auto& address : vlanInterface->getAddresses()) {
-      if (address.first.isV4()) {
-        switchIp = address.first.asV4();
+    for (auto iter : std::as_const(*vlanInterface->getAddresses())) {
+      auto address = folly::IPAddress(iter.first);
+      if (address.isV4()) {
+        switchIp = address.asV4();
         break;
       }
     }

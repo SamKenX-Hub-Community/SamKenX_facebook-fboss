@@ -4,6 +4,7 @@
 #include <folly/experimental/TestUtil.h>
 #include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
+#include "fboss/lib/i2c/I2cDevImpl.h"
 #include "fboss/lib/i2c/I2cDevIo.h"
 
 namespace facebook::fboss {
@@ -24,7 +25,8 @@ class I2cDevIoTests : public ::testing::Test {
    * cannot read from a regular non-i2cDev file
    */
   void testInvalidRead() {
-    std::unique_ptr<I2cDevIo> i2cDev = std::make_unique<I2cDevIo>(filePath_);
+    std::unique_ptr<I2cDevIo> i2cDev =
+        std::make_unique<I2cDevIo>(filePath_, I2cIoType::I2cIoTypeForTest);
     uint8_t addr = 0x50;
     uint8_t offset = 127;
     uint8_t buf;
@@ -35,7 +37,8 @@ class I2cDevIoTests : public ::testing::Test {
    * cannot write to a regular non-i2cDev file
    */
   void testInvalidWrite() {
-    std::unique_ptr<I2cDevIo> i2cDev = std::make_unique<I2cDevIo>(filePath_);
+    std::unique_ptr<I2cDevIo> i2cDev =
+        std::make_unique<I2cDevIo>(filePath_, I2cIoType::I2cIoTypeForTest);
     uint8_t addr = 0x50;
     uint8_t offset = 127;
     const uint8_t buf = 1;

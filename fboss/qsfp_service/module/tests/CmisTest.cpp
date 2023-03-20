@@ -29,9 +29,12 @@ class MockCmisModule : public CmisModule {
       // on read register
       return (++moduleStateChangedReadTimes_) == 1;
     });
+    ON_CALL(*this, ensureTransceiverReadyLocked())
+        .WillByDefault(testing::Return(true));
   }
 
   MOCK_METHOD0(getModuleStateChanged, bool());
+  MOCK_METHOD0(ensureTransceiverReadyLocked, bool());
 
  private:
   uint8_t moduleStateChangedReadTimes_{0};
@@ -129,7 +132,8 @@ TEST_F(CmisTest, cmis200GTransceiverInfoTest) {
       {"Tx_Fault", {0, 1, 0, 1}},
       {"Tx_AdaptFault", {1, 0, 1, 1}},
   };
-  tests.verifyMediaLaneSignals(expectedMediaSignals, xcvr->numMediaLanes());
+  tests.verifyLaneSignals(
+      expectedMediaSignals, xcvr->numHostLanes(), xcvr->numMediaLanes());
 
   std::array<bool, 4> expectedDatapathDeinit = {0, 1, 1, 0};
   std::array<CmisLaneState, 4> expectedLaneState = {
@@ -246,6 +250,29 @@ TEST_F(CmisTest, cmis400GLr4TransceiverInfoTest) {
     EXPECT_EQ(cmisData.page24()->data()[0], 0x15);
     EXPECT_TRUE(cmisData.page25());
     EXPECT_EQ(cmisData.page25()->data()[0], 0x00);
+    EXPECT_EQ(
+        int(info.vdmDiagsStats().value().errFrameMediaMin().value() * 10e9),
+        736);
+    EXPECT_EQ(
+        int(info.vdmDiagsStats().value().errFrameMediaMax().value() * 10e9),
+        743);
+    EXPECT_EQ(
+        int(info.vdmDiagsStats().value().errFrameMediaAvg().value() * 10e9),
+        738);
+    EXPECT_EQ(
+        int(info.vdmDiagsStats().value().errFrameMediaCur().value() * 10e9),
+        741);
+    EXPECT_EQ(
+        int(info.vdmDiagsStats().value().errFrameHostMin().value() * 10e10),
+        597);
+    EXPECT_EQ(
+        int(info.vdmDiagsStats().value().errFrameHostMax().value() * 10e10),
+        598);
+    EXPECT_EQ(
+        int(info.vdmDiagsStats().value().errFrameHostAvg().value() * 10e8), 6);
+    EXPECT_EQ(
+        int(info.vdmDiagsStats().value().errFrameHostCur().value() * 10e10),
+        601);
   } else {
     throw FbossError("Missing CMIS Module state");
   }
@@ -309,5 +336,41 @@ TEST_F(CmisTest, moduleEepromChecksumTest) {
   // Verify EEPROM checksum Invalid for CMIS 200G FR4 Bad module
   csumValid = xcvrCmis200GFr4Bad->verifyEepromChecksums();
   EXPECT_FALSE(csumValid);
+}
+
+TEST_F(CmisTest, cmis400GCr8TransceiverInfoTest) {
+  auto xcvrID = TransceiverID(1);
+  auto xcvr = overrideCmisModule<Cmis400GCr8Transceiver>(xcvrID);
+  const auto& info = xcvr->getTransceiverInfo();
+  EXPECT_TRUE(info.transceiverManagementInterface());
+  EXPECT_EQ(
+      info.transceiverManagementInterface(),
+      TransceiverManagementInterface::CMIS);
+  EXPECT_EQ(xcvr->numHostLanes(), 8);
+  EXPECT_EQ(xcvr->numMediaLanes(), 8);
+  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::CR8_400G);
+  for (auto& media : *info.settings()->mediaInterface()) {
+    EXPECT_EQ(
+        media.media()->get_passiveCuCode(),
+        PassiveCuMediaInterfaceCode::COPPER);
+    EXPECT_EQ(media.code(), MediaInterfaceCode::CR8_400G);
+  }
+  // Check cmisStateChanged
+  EXPECT_TRUE(
+      info.status() && info.status()->cmisStateChanged() &&
+      *info.status()->cmisStateChanged());
+
+  // Verify update qsfp data logic
+  if (auto status = info.status(); status && status->cmisModuleState()) {
+    EXPECT_EQ(*status->cmisModuleState(), CmisModuleState::READY);
+  } else {
+    throw FbossError("Missing CMIS Module state");
+  }
+
+  TransceiverTestsHelper tests(info);
+  tests.verifyVendorName("FACETEST");
+
+  auto diagsCap = transceiverManager_->getDiagsCapability(xcvrID);
+  EXPECT_FALSE(diagsCap.has_value());
 }
 } // namespace facebook::fboss

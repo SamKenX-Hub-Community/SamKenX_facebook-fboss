@@ -11,6 +11,7 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 #include <memory>
+#include <thread>
 #include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/ApplyThriftConfig.h"
 #include "fboss/agent/LacpMachines.h"
@@ -56,7 +57,7 @@ class MultiNodeLacpTest : public MultiNodeTest {
     }
   }
 
- private:
+ protected:
   cfg::SwitchConfig initialConfig() const override {
     return getConfigWithAggPort();
   }
@@ -66,10 +67,9 @@ class MultiNodeLacpTest : public MultiNodeTest {
     MultiNodeTest::setCmdLineFlagOverrides();
   }
 
- protected:
   cfg::SwitchConfig getConfigWithAggPort(
       cfg::LacpPortRate rate = cfg::LacpPortRate::SLOW) const {
-    auto config = utility::multiplePortsPerVlanConfig(
+    auto config = utility::multiplePortsPerIntfConfig(
         platform()->getHwSwitch(),
         testPorts(),
         cfg::PortLoopbackMode::NONE,
@@ -84,16 +84,46 @@ class MultiNodeLacpTest : public MultiNodeTest {
     }
     config.loadBalancers() =
         utility::getEcmpFullTrunkHalfHashConfig(platform());
-    config.staticRoutesWithNhops()->resize(2);
-    config.staticRoutesWithNhops()[0].prefix() = "::/0";
-    for (const auto& entry : getNeighborIpAddrs<folly::IPAddressV6>()) {
-      config.staticRoutesWithNhops()[0].nexthops()->push_back(entry.str());
-    }
-    config.staticRoutesWithNhops()[1].prefix() = "0.0.0.0/0";
-    for (const auto& entry : getNeighborIpAddrs<folly::IPAddressV4>()) {
-      config.staticRoutesWithNhops()[1].nexthops()->push_back(entry.str());
-    }
+
+    config.staticRoutesWithNhops()->clear();
+    setupDefaultRoutes(&config, 2);
     return config;
+  }
+
+  void setupDefaultRoutes(cfg::SwitchConfig* config, int numNextHops) const {
+    setupRoute(
+        config,
+        RoutePrefix<folly::IPAddressV4>(folly::IPAddressV4("0.0.0.0"), 0),
+        numNextHops);
+    setupRoute(
+        config,
+        RoutePrefix<folly::IPAddressV6>(folly::IPAddressV6("::"), 0),
+        numNextHops);
+  }
+
+  template <typename AddrT>
+  void setupRoute(
+      cfg::SwitchConfig* config,
+      const RoutePrefix<AddrT>& prefix,
+      int numNextHops) const {
+    cfg::StaticRouteWithNextHops route{};
+    auto prefixStr = prefix.str();
+    route.prefix() = prefixStr;
+    auto addrs = getNeighborIpAddrs<AddrT>();
+    addrs.resize(numNextHops);
+    for (auto addr : addrs) {
+      route.nexthops()->push_back(addr.str());
+    }
+    auto iter = config->staticRoutesWithNhops()->begin();
+    while (iter != config->staticRoutesWithNhops()->end()) {
+      // remove any route with existing prefix
+      if (*iter->prefix() == prefixStr) {
+        config->staticRoutesWithNhops()->erase(iter);
+        break;
+      }
+      iter++;
+    }
+    config->staticRoutesWithNhops()->push_back(route);
   }
 
   template <typename AddrT>
@@ -115,9 +145,11 @@ class MultiNodeLacpTest : public MultiNodeTest {
   void waitForAggPortStatus(AggregatePortID aggId, bool portStatus) const {
     auto aggPortUp = [&](const std::shared_ptr<SwitchState>& state) {
       const auto& aggPorts = state->getAggregatePorts();
-      if (aggPorts && aggPorts->getAggregatePort(aggId) &&
-          aggPorts->getAggregatePort(aggId)->isUp() == portStatus) {
-        return true;
+      if (aggPorts) {
+        const auto aggPort = aggPorts->getAggregatePort(aggId);
+        if (aggPort && aggPort->isUp() == portStatus) {
+          return true;
+        }
       }
       return false;
     };
@@ -142,45 +174,78 @@ class MultiNodeLacpTest : public MultiNodeTest {
       }
     }
   }
-  void verifyReachability() const {
-    const auto dstIpV4s = getNeighborIpAddrs<folly::IPAddressV4>();
-    const auto dstIpV6s = getNeighborIpAddrs<folly::IPAddressV6>();
 
-    auto verifyNeighborEntries = [=](const auto& aggId,
-                                     const auto& vlanId,
-                                     const auto& dstIpV4,
-                                     const auto& dstIpV6) {
-      checkNeighborResolved(
-          folly::IPAddress(dstIpV4), vlanId, PortDescriptor(aggId));
-      checkNeighborResolved(
-          folly::IPAddress(dstIpV6), vlanId, PortDescriptor(aggId));
-    };
-    auto verify = [=](const auto& aggId,
-                      const auto& dstIpV4,
-                      const auto& dstIpV6,
-                      const auto& vlanId) {
-      std::string pingCmd = "ping -c 5 ";
-      std::string resultStr;
-      std::string errStr;
-      EXPECT_TRUE(facebook::process::Process::execShellCmd(
-          pingCmd + dstIpV4.str(), &resultStr, &errStr));
-      EXPECT_TRUE(facebook::process::Process::execShellCmd(
-          pingCmd + dstIpV6.str(), &resultStr, &errStr));
-      // Verify neighbor entries
-      verifyNeighborEntries(aggId, vlanId, dstIpV4, dstIpV6);
-    };
-    auto idx = 0;
-    for (const auto& aggId : getAggPorts()) {
-      verify(
-          aggId,
-          dstIpV4s[idx],
-          dstIpV6s[idx],
-          VlanID(*getConfigWithAggPort().interfaces()[idx].vlanID()));
-      idx++;
+  void verifyReachability(
+      folly::IPAddress& dstIp,
+      VlanID vlan,
+      AggregatePortID aggPort) const {
+    std::string pingCmd = dstIp.isV4() ? "ping -c 5 " : "ping6 -c 5 ";
+    std::string resultStr;
+    std::string errStr;
+    EXPECT_TRUE(facebook::process::Process::execShellCmd(
+        pingCmd + dstIp.str(), &resultStr, &errStr));
+    checkNeighborResolved(dstIp, vlan, PortDescriptor(aggPort));
+  }
+
+  template <typename AddrT>
+  void verifyReachability(const RoutePrefix<AddrT>& prefix) const {
+    std::vector<folly::IPAddress> nexthops{};
+    auto config = getConfigWithAggPort();
+    for (auto route : *config.staticRoutesWithNhops()) {
+      if (*route.prefix() == prefix.str()) {
+        for (auto nexthop : *route.nexthops()) {
+          nexthops.push_back(folly::IPAddress(nexthop));
+        }
+        break;
+      }
+    }
+    auto vlans = getVlanIDs();
+    auto aggPorts = getAggPorts();
+    for (auto i = 0; i < nexthops.size(); i++) {
+      verifyReachability(nexthops[i], vlans[i], aggPorts[i]);
     }
   }
 
+  std::vector<VlanID> getVlanIDs() const {
+    std::vector<VlanID> vlans{};
+    for (auto aggPort : getAggPorts()) {
+      vlans.push_back(getVlanID(aggPort));
+    }
+    return vlans;
+  }
+
+  VlanID getVlanID(AggregatePortID aggPortID) const {
+    auto config = initialConfig();
+    PortID memberPort{};
+    for (auto aggPort : *config.aggregatePorts()) {
+      if (AggregatePortID(*aggPort.key()) != aggPortID) {
+        continue;
+      }
+      for (auto memberPort : *aggPort.memberPorts()) {
+        for (auto vlanPort : *config.vlanPorts()) {
+          if (*vlanPort.logicalPort() == *memberPort.memberPortID()) {
+            return VlanID(*vlanPort.vlanID());
+          }
+        }
+      }
+    }
+    throw FbossError("VLAN not found for aggPort:", aggPortID);
+  }
+
+  void verifyReachability() {
+    verifyReachability(
+        RoutePrefix<folly::IPAddressV4>({folly::IPAddressV4("0.0.0.0"), 0}));
+    verifyReachability(
+        RoutePrefix<folly::IPAddressV6>({folly::IPAddressV6("::"), 0}));
+  }
+
   void verifyInitialState() {
+    // In a cold boot ports can flap initially. Wait for ports to
+    // stabilize state
+    if (platform()->getHwSwitch()->getBootType() != BootType::WARM_BOOT) {
+      sleep(60);
+    }
+
     // Wait for AggPort
     for (const auto& aggId : getAggPorts()) {
       waitForAggPortStatus(aggId, true);
@@ -191,7 +256,8 @@ class MultiNodeLacpTest : public MultiNodeTest {
     verifyReachability();
   }
 
-  std::vector<AggregatePortFields::Subport> getSubPorts(AggregatePortID aggId) {
+  std::vector<LegacyAggregatePortFields::Subport> getSubPorts(
+      AggregatePortID aggId) {
     const auto& aggPort =
         sw()->getState()->getAggregatePorts()->getAggregatePort(aggId);
     EXPECT_NE(aggPort, nullptr);
@@ -210,7 +276,7 @@ class MultiNodeLacpTest : public MultiNodeTest {
     disableTTLDecrementsForRoute<folly::IPAddressV4>({folly::IPAddressV4(), 0});
     if (isDUT()) {
       auto state = sw()->getState();
-      auto vlan = (*state->getVlans()->begin())->getID();
+      auto vlan = state->getVlans()->cbegin()->second->getID();
       auto srcMac = state->getInterfaces()->getInterfaceInVlan(vlan)->getMac();
       auto destMac =
           getNeighborEntry(
@@ -219,13 +285,7 @@ class MultiNodeLacpTest : public MultiNodeTest {
               .first;
       for (const auto& sendV6 : {true, false}) {
         utility::pumpTraffic(
-            sendV6,
-            sw()->getHw(),
-            destMac,
-            (*sw()->getState()->getVlans()->begin())->getID(),
-            std::nullopt,
-            255,
-            srcMac);
+            sendV6, sw()->getHw(), destMac, vlan, std::nullopt, 255, srcMac);
       }
     }
   }
@@ -372,4 +432,69 @@ TEST_F(MultiNodeDisruptiveTest, LacpTimeout) {
     }
   };
   verifyAcrossWarmBoots(verify);
+}
+
+class MultiNodeRoutingLoop : public MultiNodeLacpTest {
+ public:
+  void SetUp() override {
+    MultiNodeLacpTest::SetUp();
+  }
+
+  cfg::SwitchConfig initialConfig() const override {
+    auto config = getConfigWithAggPort();
+
+    for (auto& lb : *config.loadBalancers()) {
+      if (*lb.id() != cfg::LoadBalancerID::AGGREGATE_PORT) {
+        continue;
+      }
+      // setting up as per prod, DUT is uu and REMOTE is DU
+      lb.seed() = isDUT() ? 0x35f25a4a : 0xd277bc20;
+    }
+    setupRoute(&config, prefix_, 1);
+    return config;
+  }
+
+  void createL3DataplaneFlood() {
+    XLOG(INFO) << "creating data plane flood";
+    disableTTLDecrementsForRoute<folly::IPAddressV6>(prefix_);
+    auto state = sw()->getState();
+    auto vlan = state->getVlans()->cbegin()->second->getID();
+    auto srcMac = state->getInterfaces()->getInterfaceInVlan(vlan)->getMac();
+    auto destMac =
+        getNeighborEntry(
+            getNeighborIpAddrs<folly::IPAddressV6>()[0],
+            state->getInterfaces()->getInterfaceInVlan(vlan)->getID())
+            .first;
+    utility::pumpTraffic(
+        sw()->getHw(),
+        destMac,
+        {folly::IPAddress("200::10")},
+        {folly::IPAddress("100::10")},
+        1024,
+        1024,
+        1,
+        vlan,
+        std::nullopt,
+        255,
+        srcMac);
+  }
+
+  const RoutePrefix<folly::IPAddressV6> prefix_{
+      folly::IPAddressV6("100::10"),
+      126};
+};
+
+TEST_F(MultiNodeRoutingLoop, LoopTraffic) {
+  auto setup = [=]() {
+    verifyInitialState();
+    verifyReachability(prefix_);
+    if (!isDUT()) {
+      createL3DataplaneFlood();
+    }
+  };
+  auto verify = [=]() {
+    std::this_thread::sleep_for(3s);
+    assertNoInDiscards(0);
+  };
+  verifyAcrossWarmBoots(setup, verify, setup, verify);
 }

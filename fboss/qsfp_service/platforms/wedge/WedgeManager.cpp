@@ -3,6 +3,7 @@
 #include "fboss/qsfp_service/platforms/wedge/WedgeManager.h"
 
 #include "fboss/agent/FbossError.h"
+#include "fboss/fsdb/common/Flags.h"
 #include "fboss/lib/config/PlatformConfigUtils.h"
 #include "fboss/lib/fpga/MultiPimPlatformSystemContainer.h"
 #include "fboss/qsfp_service/QsfpConfig.h"
@@ -56,6 +57,15 @@ WedgeManager::WedgeManager(
    * on FPGA managed platforms and the wedgeI2cBus_ will be used to control
    * the QSFP devices on I2C/CPLD managed platforms
    */
+  if (FLAGS_publish_state_to_fsdb || FLAGS_publish_stats_to_fsdb) {
+    fsdbSyncManager_ = std::make_unique<QsfpFsdbSyncManager>();
+  }
+}
+
+WedgeManager::~WedgeManager() {
+  if (fsdbSyncManager_) {
+    fsdbSyncManager_->stop();
+  }
 }
 
 void WedgeManager::loadConfig() {
@@ -88,6 +98,10 @@ void WedgeManager::loadConfig() {
 
   // Process QSFP config here
   qsfpConfig_ = QsfpConfig::fromDefaultFile();
+  if (FLAGS_publish_state_to_fsdb) {
+    fsdbSyncManager_->updateConfig(qsfpConfig_->thrift);
+    fsdbSyncManager_->start();
+  }
 }
 
 void WedgeManager::initTransceiverMap() {
@@ -145,7 +159,9 @@ void WedgeManager::getTransceiversInfo(
     try {
       auto tcvrID = TransceiverID(i);
       info.insert({i, getTransceiverInfo(tcvrID)});
-      info[i].stateMachineState() = getCurrentState(tcvrID);
+      auto currentState = getCurrentState(tcvrID);
+      info[i].stateMachineState() = currentState;
+      info[i].tcvrState()->stateMachineState() = currentState;
     } catch (const std::exception& ex) {
       XLOG(ERR) << "Transceiver " << i
                 << ": Error calling getTransceiverInfo(): " << ex.what();
@@ -354,6 +370,36 @@ std::vector<TransceiverID> WedgeManager::refreshTransceivers() {
 
   // Finally refresh all transceivers without specifying any ids
   return TransceiverManager::refreshTransceivers(kEmptryTransceiverIDs);
+}
+
+void WedgeManager::publishTransceiversToFsdb(
+    const std::vector<TransceiverID>& ids) {
+  if (!FLAGS_publish_stats_to_fsdb) {
+    return;
+  }
+
+  TcvrInfoMap tcvrInfos;
+  getTransceiversInfo(tcvrInfos, std::make_unique<std::vector<int32_t>>());
+
+  // Publish states on refreshed transceivers
+  for (int32_t id : ids.empty() ? folly::gen::range(0, getNumQsfpModules()) |
+               folly::gen::eachAs<TransceiverID>() |
+               folly::gen::as<std::vector<TransceiverID>>()
+                                : ids) {
+    auto iter = tcvrInfos.find(id);
+    if (iter == tcvrInfos.end()) {
+      continue;
+    }
+    fsdbSyncManager_->updateTcvrState(id, std::move(*iter->second.tcvrState()));
+  }
+
+  // Publish all stats (No deltas. Just publish the best we have for all
+  // transceivers.)
+  QsfpFsdbSyncManager::TcvrStatsMap stats;
+  for (const auto& [id, info] : tcvrInfos) {
+    stats[id] = *info.tcvrStats();
+  }
+  fsdbSyncManager_->updateTcvrStats(std::move(stats));
 }
 
 int WedgeManager::scanTransceiverPresence(
@@ -666,77 +712,6 @@ void WedgeManager::getAndClearTransceiversModuleStatus(
   }
 }
 
-/*
- * getPhyPortConfigValues
- *
- * This function takes the portId and port profile id. Based on these it looks
- * into the platform mapping for the given platform and extracts information
- * to fill in the phy port config. The output of this function is phy port
- * config structure which can be used later to send to External Phy functions
- */
-std::optional<phy::PhyPortConfig> WedgeManager::getPhyPortConfigValues(
-    int32_t portId,
-    cfg::PortProfileID portProfileId) {
-  phy::PhyPortConfig phyPortConfig;
-
-  // First verify if the platform mapping exist for this platform
-  if (platformMapping_.get() == nullptr) {
-    XLOG(INFO) << "Platform mapping is not present for this platform, exiting";
-    return std::nullopt;
-  }
-
-  // String value of profile id for printing in log
-  std::string portProfileIdStr =
-      apache::thrift::util::enumNameSafe(portProfileId);
-
-  // Get port profile config for the given port profile id
-  auto portProfileConfig = platformMapping_->getPortProfileConfig(
-      PlatformPortProfileConfigMatcher(portProfileId, PortID(portId)));
-  if (!portProfileConfig.has_value()) {
-    XLOG(INFO) << "For port profile id " << portProfileIdStr
-               << ", the supported profile not found in platform mapping";
-    return std::nullopt;
-  }
-
-  // Get the platform port entry for the given port id
-  auto platformPortEntry = platformMapping_->getPlatformPorts().find(portId);
-  if (platformPortEntry == platformMapping_->getPlatformPorts().end()) {
-    XLOG(INFO) << "For port " << portId
-               << ", the platform port not found in platform mapping";
-    return std::nullopt;
-  }
-
-  // From the above platform port entry, get the port config for the given port
-  // profile id
-  auto platformPortConfig =
-      platformPortEntry->second.supportedProfiles()->find(portProfileId);
-  if (platformPortConfig ==
-      platformPortEntry->second.supportedProfiles()->end()) {
-    XLOG(INFO) << "For port id " << portId << " port profile id "
-               << portProfileIdStr
-               << ", the supported profile not found in platform mapping";
-    return std::nullopt;
-  }
-
-  // Get the line polarity swap map
-  auto linePolaritySwapMap = utility::getXphyLinePolaritySwapMap(
-      platformPortEntry->second,
-      portProfileId,
-      platformMapping_->getChips(),
-      *portProfileConfig);
-
-  // Build the PhyPortConfig using platform port config pins list, polrity swap
-  // map, port profile config
-  phyPortConfig.config = phy::ExternalPhyConfig::fromConfigeratorTypes(
-      *platformPortConfig->second.pins(), linePolaritySwapMap);
-
-  phyPortConfig.profile =
-      phy::ExternalPhyProfileConfig::fromPortProfileConfig(*portProfileConfig);
-
-  // Return true
-  return phyPortConfig;
-}
-
 phy::PhyInfo WedgeManager::getXphyInfo(PortID portID) {
   if (phyManager_ == nullptr) {
     throw FbossError("Unable to get xphy info when PhyManager is not set");
@@ -749,6 +724,8 @@ phy::PhyInfo WedgeManager::getXphyInfo(PortID portID) {
   }
 }
 
+// This function is used to handle thrift requests from clients to test
+// programming a xphy port on demand and used in the hw tests
 void WedgeManager::programXphyPort(
     PortID portId,
     cfg::PortProfileID portProfileId) {
@@ -770,7 +747,8 @@ void WedgeManager::programXphyPort(
     }
   }
 
-  phyManager_->programOnePort(portId, portProfileId, itTcvr);
+  phyManager_->programOnePort(
+      portId, portProfileId, itTcvr, false /* needResetDataPath */);
 }
 
 bool WedgeManager::initExternalPhyMap(bool forceWarmboot) {
@@ -794,8 +772,7 @@ bool WedgeManager::initExternalPhyMap(bool forceWarmboot) {
   std::chrono::steady_clock::time_point begin =
       std::chrono::steady_clock::now();
   for (int pimIndex = 0; pimIndex < phyManager_->getNumOfSlot(); ++pimIndex) {
-    auto pimID =
-        PimID(pimIndex + phyManager_->getSystemContainer()->getPimStartNum());
+    auto pimID = PimID(pimIndex + phyManager_->getPimStartNum());
     if (!phyManager_->shouldInitializePimXphy(pimID)) {
       XLOG(WARN) << "Skip intializing pim xphy for pim="
                  << static_cast<int>(pimID);
@@ -907,5 +884,22 @@ bool WedgeManager::getSdkState(std::string filename) const {
   }
   return phyManager_->getSdkState(filename);
 }
+
+void WedgeManager::publishPhyStateToFsdb(
+    std::string&& portName,
+    std::optional<phy::PhyState>&& newState) const {
+  if (FLAGS_publish_state_to_fsdb) {
+    fsdbSyncManager_->updatePhyState(std::move(portName), std::move(newState));
+  }
+}
+
+void WedgeManager::publishPhyStatToFsdb(
+    std::string&& portName,
+    phy::PhyStats&& stat) const {
+  if (FLAGS_publish_stats_to_fsdb) {
+    fsdbSyncManager_->updatePhyStat(std::move(portName), std::move(stat));
+  }
+}
+
 } // namespace fboss
 } // namespace facebook

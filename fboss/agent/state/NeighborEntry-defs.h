@@ -29,76 +29,45 @@ constexpr auto kIsLocal = "isLocal";
 
 namespace facebook::fboss {
 
-template <typename IPADDR>
-folly::dynamic NeighborEntryFields<IPADDR>::toFollyDynamicLegacy() const {
-  folly::dynamic entry = folly::dynamic::object;
-  entry[kIpAddr] = ip.str();
-  entry[kMac] = mac.toString();
-  entry[kNeighborPort] = port.toFollyDynamic();
-  entry[kInterface] = static_cast<uint32_t>(interfaceID);
-  entry[kNeighborEntryState] = static_cast<int>(state);
-  if (classID.has_value()) {
-    entry[kClassID] = static_cast<int>(classID.value());
-  }
-
-  if (encapIndex.has_value()) {
-    entry[kEncapIndex] = static_cast<int>(encapIndex.value());
-  }
-  entry[kIsLocal] = isLocal;
-  return entry;
-}
-
-template <typename IPADDR>
-NeighborEntryFields<IPADDR> NeighborEntryFields<IPADDR>::fromFollyDynamicLegacy(
-    const folly::dynamic& entryJson) {
-  IPADDR ip(entryJson[kIpAddr].stringPiece());
-  folly::MacAddress mac(entryJson[kMac].stringPiece());
-  auto port = PortDescriptor::fromFollyDynamic(entryJson[kNeighborPort]);
-  InterfaceID intf(entryJson[kInterface].asInt());
-  auto state = NeighborState(entryJson[kNeighborEntryState].asInt());
-  std::optional<int64_t> encapIndex;
-  bool isLocal{true};
-  if (entryJson.find(kEncapIndex) != entryJson.items().end()) {
-    encapIndex = entryJson[kEncapIndex].asInt();
-  }
-  if (entryJson.find(kIsLocal) != entryJson.items().end()) {
-    isLocal = entryJson[kIsLocal].asBool();
-  }
-
-  // Recent bug fixes in vendor SDK implementation means that assigning classID
-  // to a link local neighbor is not supported. However, prior to D30800608,
-  // LookupClassUpdater could assign classID to a link local neighbor.
-  // Warmbooting from a version prior to vendor bug fix to a version that has
-  // vendor bug fix + D30800608, can still crash as the SwitchState (which has
-  // classID for link local) gets replayed.
-  // Prevent it by explicitly ignoring classID associated with link local
-  // neighbor during deserialization.
-  if (entryJson.find(kClassID) != entryJson.items().end() &&
-      !ip.isLinkLocal()) {
-    auto classID = cfg::AclLookupClass(entryJson[kClassID].asInt());
-    return NeighborEntryFields(
-        ip, mac, port, intf, state, classID, encapIndex, isLocal);
-  } else {
-    return NeighborEntryFields(
-        ip, mac, port, intf, state, std::nullopt, encapIndex, isLocal);
-  }
-}
-
 template <typename IPADDR, typename SUBCLASS>
 NeighborEntry<IPADDR, SUBCLASS>::NeighborEntry(
     AddressType ip,
     folly::MacAddress mac,
     PortDescriptor port,
-    InterfaceID interfaceID,
-    NeighborState state)
-    : Parent(ip, mac, port, interfaceID, state) {}
+    InterfaceID intfID,
+    NeighborState state,
+    std::optional<cfg::AclLookupClass> classID,
+    std::optional<int64_t> encapIndex,
+    bool isLocal) {
+  this->setIP(ip);
+  this->setMAC(mac);
+  this->setPort(port);
+  this->setIntfID(intfID);
+  this->setState(state);
+  this->setClassID(classID);
+  this->setEncapIndex(encapIndex);
+  this->setIsLocal(isLocal);
+}
 
 template <typename IPADDR, typename SUBCLASS>
 NeighborEntry<IPADDR, SUBCLASS>::NeighborEntry(
     AddressType ip,
-    InterfaceID intfID,
-    NeighborState ignored)
-    : Parent(ip, intfID, ignored) {}
+    InterfaceID interfaceID,
+    NeighborState pending,
+    std::optional<int64_t> encapIndex,
+    bool isLocal) {
+  CHECK(pending == NeighborState::PENDING);
+
+  this->setIP(ip);
+  this->setIntfID(interfaceID);
+  this->setState(pending);
+  this->setEncapIndex(encapIndex);
+  this->setIsLocal(isLocal);
+
+  /* default */
+  this->setMAC(MacAddress::BROADCAST);
+  this->setPort(PortDescriptor(PortID(0)));
+}
 
 template <typename IPADDR, typename SUBCLASS>
 std::string NeighborEntry<IPADDR, SUBCLASS>::str() const {

@@ -86,8 +86,8 @@ std::string PlatformProductInfo::getProductName() {
 void PlatformProductInfo::initMode() {
   if (FLAGS_mode.empty()) {
     auto modelName = getProductName();
-    if (auto platformMode = getDevPlatformMode()) {
-      mode_ = *platformMode;
+    if (modelName.find("MINIPACK2") == 0) {
+      mode_ = PlatformMode::FUJI;
     } else if (
         modelName.find("Wedge100") == 0 || modelName.find("WEDGE100") == 0) {
       // Wedge100 comes from fruid.json, WEDGE100 comes from fbwhoami
@@ -128,12 +128,23 @@ void PlatformProductInfo::initMode() {
       mode_ = PlatformMode::CLOUDRIPPER;
     } else if (modelName.find("Lassen") == 0 || modelName.find("LASSEN") == 0) {
       mode_ = PlatformMode::LASSEN;
-    } else if (modelName.find("Sandia") == 0 || modelName.find("SANDIA") == 0) {
+    } else if (
+        modelName.find("Sandia") == 0 || modelName.find("SANDIA") == 0 ||
+        modelName.find("8508-F-SYS-HV") == 0) {
       mode_ = PlatformMode::SANDIA;
-    } else if (modelName.find("Makalu") == 0) {
-      mode_ = PlatformMode::MAKALU;
-    } else if (modelName.find("Kamet") == 0) {
-      mode_ = PlatformMode::KAMET;
+    } else if (
+        modelName.find("Meru400biu") == 0 ||
+        modelName.find("S9710-76D-BB12") == 0) {
+      mode_ = PlatformMode::MERU400BIU;
+    } else if (modelName.find("Meru400bia") == 0) {
+      mode_ = PlatformMode::MERU400BIA;
+    } else if (
+        modelName.find("Meru400bfu") == 0 ||
+        modelName.find("S9705-48D-4B4") == 0) {
+      mode_ = PlatformMode::MERU400BFU;
+    } else if (
+        modelName.find("Montblanc") == 0 || modelName.find("MONTBLANC") == 0) {
+      mode_ = PlatformMode::MONTBLANC;
     } else {
       throw std::runtime_error("invalid model name " + modelName);
     }
@@ -164,10 +175,24 @@ void PlatformProductInfo::initMode() {
       mode_ = PlatformMode::LASSEN;
     } else if (FLAGS_mode == "sandia") {
       mode_ = PlatformMode::SANDIA;
-    } else if (FLAGS_mode == "makalu") {
-      mode_ = PlatformMode::MAKALU;
-    } else if (FLAGS_mode == "kamet") {
-      mode_ = PlatformMode::KAMET;
+    } else if (FLAGS_mode == "meru400biu") {
+      mode_ = PlatformMode::MERU400BIU;
+    } else if (FLAGS_mode == "meru400bia") {
+      mode_ = PlatformMode::MERU400BIA;
+    } else if (FLAGS_mode == "meru400bfu") {
+      mode_ = PlatformMode::MERU400BFU;
+    } else if (FLAGS_mode == "wedge400c") {
+      mode_ = PlatformMode::WEDGE400C;
+    } else if (FLAGS_mode == "wedge400c_voq") {
+      mode_ = PlatformMode::WEDGE400C_VOQ;
+    } else if (FLAGS_mode == "wedge400c_fabric") {
+      mode_ = PlatformMode::WEDGE400C_FABRIC;
+    } else if (FLAGS_mode == "cloudripper_voq") {
+      mode_ = PlatformMode::CLOUDRIPPER_VOQ;
+    } else if (FLAGS_mode == "cloudripper_fabric") {
+      mode_ = PlatformMode::CLOUDRIPPER_FABRIC;
+    } else if (FLAGS_mode == "montblanc") {
+      mode_ = PlatformMode::MONTBLANC;
     } else {
       throw std::runtime_error("invalid mode " + FLAGS_mode);
     }

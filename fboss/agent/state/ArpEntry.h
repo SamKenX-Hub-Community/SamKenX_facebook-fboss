@@ -21,9 +21,13 @@ namespace facebook::fboss {
  * typedef purely to make it easier for other classes to forward declare
  * ArpEntry.
  */
+
+USE_THRIFT_COW(ArpEntry);
+
 class ArpEntry : public NeighborEntry<folly::IPAddressV4, ArpEntry> {
  public:
-  using NeighborEntry::NeighborEntry;
+  using Base = NeighborEntry<folly::IPAddressV4, ArpEntry>;
+  using Base::Base;
 };
 
 } // namespace facebook::fboss

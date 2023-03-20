@@ -62,8 +62,8 @@ class HwLabelEdgeRouteTest : public HwLinkStateDependentTest {
     for (auto i = 0; i < kWidth; i++) {
       ports.push_back(masterLogicalPortIds()[i]);
     }
-    return utility::onePortPerVlanConfig(
-        getHwSwitch(), ports, cfg::PortLoopbackMode::MAC);
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), ports, getAsic()->desiredLoopbackMode());
   }
 
   TestParameters<AddrT> testParams(int i) {
@@ -90,7 +90,8 @@ class HwLabelEdgeRouteTest : public HwLinkStateDependentTest {
         mask,
         client,
         RouteNextHopEntry(
-            UnresolvedNextHop(nexthop, ECMP_WEIGHT, labelAction),
+            static_cast<NextHop>(
+                UnresolvedNextHop(nexthop, ECMP_WEIGHT, labelAction)),
             AdminDistance::MAX_ADMIN_DISTANCE));
     updater.program();
   }
@@ -234,7 +235,7 @@ class HwLabelEdgeRouteTest : public HwLinkStateDependentTest {
       long refCount) {
     PrefixT prefix{nexthopAddr, mask};
     auto* ecmpHelper = ecmpHelpers_[prefix].get();
-    auto vlanID = ecmpHelper->getVlan(port);
+    auto vlanID = ecmpHelper->getVlan(port, getProgrammedState());
     EXPECT_TRUE(vlanID.has_value());
     auto intfID = getProgrammedState()
                       ->getVlans()

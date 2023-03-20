@@ -6,13 +6,14 @@
 #include <folly/Range.h>
 #include <string>
 
-namespace facebook::fboss {
+namespace facebook {
+namespace fboss {
 
 /*
  * Remove the given file. Return true if file exists and
  * we were able to remove it, false otherwise
  */
-bool removeFile(const std::string& filename);
+bool removeFile(const std::string& filename, bool log = false);
 
 /*
  * Create given file. Throw if file could not be created else
@@ -45,4 +46,5 @@ bool writeSysfs(const std::string& path, const std::string& val);
 
 boost::filesystem::recursive_directory_iterator recursive_directory_iterator(
     const std::string& path);
-} // namespace facebook::fboss
+} // namespace fboss
+} // namespace facebook

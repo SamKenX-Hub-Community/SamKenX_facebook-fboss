@@ -21,7 +21,7 @@ constexpr auto kDefaultDropProbability = 100;
 
 std::shared_ptr<SaiWred> SaiWredManager::getOrCreateProfile(
     const PortQueue& queue) {
-  if (!queue.getAqms().size()) {
+  if (!queue.getAqms() || queue.getAqms()->empty()) {
     return nullptr;
   }
   auto attributes = profileCreateAttrs(queue);
@@ -48,14 +48,24 @@ SaiWredTraits::CreateAttributes SaiWredManager::profileCreateAttrs(
       std::get<std::optional<Attributes::EcnGreenMinThreshold>>(attrs);
   auto& ecnGreenMax =
       std::get<std::optional<Attributes::EcnGreenMaxThreshold>>(attrs);
+#if !defined(SAI_VERSION_8_2_0_0_ODP) &&     \
+    !defined(SAI_VERSION_8_2_0_0_DNX_ODP) && \
+    !defined(SAI_VERSION_8_2_0_0_SIM_ODP) && \
+    !defined(SAI_VERSION_9_0_EA_ODP) &&      \
+    !defined(SAI_VERSION_9_0_EA_DNX_ODP) &&  \
+    !defined(SAI_VERSION_9_0_EA_SIM_ODP)
   std::tie(greenMin, greenMax, greenDropProbability, ecnGreenMin, ecnGreenMax) =
       std::make_tuple(0, 0, kDefaultDropProbability, 0, 0);
-  for (const auto& [type, aqm] : queue.getAqms()) {
-    auto thresholds = (*aqm.detection()).get_linear();
+#endif
+  for (const auto& aqm : std::as_const(*queue.getAqms())) {
+    // THRIFT_COPY
+    auto thresholds = aqm->cref<switch_config_tags::detection>()
+                          ->cref<switch_config_tags::linear>()
+                          ->toThrift();
     auto [minLen, maxLen] = std::make_pair(
         *thresholds.minimumLength(), *thresholds.maximumLength());
     auto probability = *thresholds.probability();
-    switch (type) {
+    switch (aqm->cref<switch_config_tags::behavior>()->cref()) {
       case cfg::QueueCongestionBehavior::EARLY_DROP:
         std::get<Attributes::GreenEnable>(attrs) = true;
         greenMin = minLen;
@@ -70,6 +80,14 @@ SaiWredTraits::CreateAttributes SaiWredManager::profileCreateAttrs(
     }
   }
   return attrs;
+}
+
+void SaiWredManager::removeUnclaimedWredProfile() {
+  saiStore_->get<SaiWredTraits>().removeUnclaimedWarmbootHandlesIf(
+      [](const auto& wred) {
+        wred->release();
+        return true;
+      });
 }
 
 } // namespace facebook::fboss

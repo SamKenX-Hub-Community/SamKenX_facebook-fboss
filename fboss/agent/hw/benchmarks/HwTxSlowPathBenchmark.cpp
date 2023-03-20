@@ -16,45 +16,53 @@
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
 
+#include "fboss/agent/SwSwitchRouteUpdateWrapper.h"
+#include "fboss/agent/benchmarks/AgentBenchmarks.h"
+
 #include <folly/IPAddressV6.h>
 #include <folly/dynamic.h>
 #include <folly/init/Init.h>
 #include <folly/json.h>
 
+#include <folly/Benchmark.h>
+#include <folly/logging/xlog.h>
 #include <chrono>
 #include <iostream>
 #include <thread>
 
-DEFINE_bool(json, true, "Output in json form");
-DEFINE_bool(
-    setup_for_warmboot,
-    false,
-    "Set to true will prepare the device for warmboot");
-
 namespace facebook::fboss {
 
 std::pair<uint64_t, uint64_t> getOutPktsAndBytes(
-    HwSwitchEnsemble* ensemble,
+    AgentEnsemble* ensemble,
     PortID port) {
   auto stats = ensemble->getLatestPortStats(port);
   return {*stats.outUnicastPkts_(), *stats.outBytes_()};
 }
 
-void runTxSlowPathBenchmark() {
+BENCHMARK(runTxSlowPathBenchmark) {
   constexpr int kEcmpWidth = 1;
-  auto ensemble = createHwEnsemble(HwSwitchEnsemble::getAllFeatures());
-  auto hwSwitch = ensemble->getHwSwitch();
-  auto portUsed = ensemble->masterLogicalPortIds()[0];
-  auto config = utility::oneL3IntfConfig(hwSwitch, portUsed);
-  ensemble->applyInitialConfig(config);
-  auto ecmpHelper =
-      utility::EcmpSetupAnyNPorts6(ensemble->getProgrammedState());
 
-  ensemble->applyNewState(
-      ecmpHelper.resolveNextHops(ensemble->getProgrammedState(), kEcmpWidth));
+  std::unique_ptr<AgentEnsemble> ensemble{};
+
+  AgentEnsembleSwitchConfigFn initialConfigFn =
+      [](HwSwitch* hwSwitch, const std::vector<PortID>& ports) {
+        CHECK_GT(ports.size(), 0);
+        return utility::onePortPerInterfaceConfig(hwSwitch, {ports[0]});
+      };
+  ensemble = createAgentEnsemble(initialConfigFn);
+  auto config =
+      initialConfigFn(ensemble->getHw(), ensemble->masterLogicalPortIds());
+
+  auto hwSwitch = ensemble->getHw();
+  auto portUsed = ensemble->masterLogicalPortIds()[0];
+  auto state = ensemble->getSw()->getState();
+  auto ecmpHelper = utility::EcmpSetupAnyNPorts6(state);
+
+  state =
+      ensemble->applyNewState(ecmpHelper.resolveNextHops(state, kEcmpWidth));
   ecmpHelper.programRoutes(
-      std::make_unique<HwSwitchEnsembleRouteUpdateWrapper>(
-          ensemble->getRouteUpdater()),
+      std::make_unique<SwSwitchRouteUpdateWrapper>(
+          ensemble->getSw(), ensemble->getSw()->getRib()),
       kEcmpWidth);
   auto cpuMac = ensemble->getPlatform()->getLocalMac();
   std::atomic<bool> packetTxDone{false};
@@ -102,15 +110,9 @@ void runTxSlowPathBenchmark() {
     cpuTxRateJson["cpu_tx_bytes_per_sec"] = bytesPerSec;
     std::cout << toPrettyJson(cpuTxRateJson) << std::endl;
   } else {
-    XLOG(INFO) << " Pkts before: " << pktsBefore << " Pkts after: " << pktsAfter
+    XLOG(DBG2) << " Pkts before: " << pktsBefore << " Pkts after: " << pktsAfter
                << " interval ms: " << durationMillseconds.count()
                << " pps: " << pps << " bytes per sec: " << bytesPerSec;
   }
 }
 } // namespace facebook::fboss
-
-int main(int argc, char* argv[]) {
-  folly::init(&argc, &argv, true);
-  facebook::fboss::runTxSlowPathBenchmark();
-  return 0;
-}

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <thrift/lib/cpp/util/EnumUtils.h>
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 
@@ -11,6 +12,17 @@ namespace facebook::fboss {
 
 class FakeAsic : public HwAsic {
  public:
+  FakeAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange)
+      : HwAsic(
+            switchType,
+            switchId,
+            systemPortRange,
+            {cfg::SwitchType::NPU,
+             cfg::SwitchType::VOQ,
+             cfg::SwitchType::FABRIC}) {}
   bool isSupported(Feature feature) const override {
     switch (feature) {
       case Feature::HSDK:
@@ -29,14 +41,16 @@ class FakeAsic : public HwAsic {
       case Feature::SAI_PORT_SPEED_CHANGE:
       case Feature::SAI_MPLS_LABEL_LOOKUP_FAIL_COUNTER: // TODO(pshaikh):
                                                         // support in fake
+      case HwAsic::Feature::LINK_TRAINING:
+      case HwAsic::Feature::SAI_PORT_VCO_CHANGE:
         return false;
 
       default:
         return true;
     }
   }
-  AsicType getAsicType() const override {
-    return AsicType::ASIC_TYPE_FAKE;
+  cfg::AsicType getAsicType() const override {
+    return cfg::AsicType::ASIC_TYPE_FAKE;
   }
   std::string getVendor() const override {
     return "fake";
@@ -47,12 +61,20 @@ class FakeAsic : public HwAsic {
   cfg::PortSpeed getMaxPortSpeed() const override {
     return cfg::PortSpeed::HUNDREDG;
   }
-  std::set<cfg::StreamType> getQueueStreamTypes(bool cpu) const override {
-    if (cpu) {
-      return {cfg::StreamType::MULTICAST};
-    } else {
-      return {cfg::StreamType::UNICAST};
+  std::set<cfg::StreamType> getQueueStreamTypes(
+      cfg::PortType portType) const override {
+    switch (portType) {
+      case cfg::PortType::CPU_PORT:
+        return {cfg::StreamType::MULTICAST};
+      case cfg::PortType::INTERFACE_PORT:
+      case cfg::PortType::RECYCLE_PORT:
+        return {cfg::StreamType::UNICAST};
+      case cfg::PortType::FABRIC_PORT:
+        return {cfg::StreamType::FABRIC_TX};
     }
+    throw FbossError(
+        "Fake ASIC does not support:",
+        apache::thrift::util::enumNameSafe(portType));
   }
   int getDefaultNumPortQueues(cfg::StreamType streamType, bool /*cpu*/)
       const override {
@@ -145,6 +167,11 @@ class FakeAsic : public HwAsic {
         return 1;
       case cfg::MMUScalingFactor::FOUR:
         return 2;
+      case cfg::MMUScalingFactor::ONE_32768:
+        // Unsupported
+        throw FbossError(
+            "Unsupported scaling factor : ",
+            apache::thrift::util::enumNameSafe(scalingFactor));
     }
     CHECK(0) << "Should never get here";
     return -1;
@@ -152,6 +179,18 @@ class FakeAsic : public HwAsic {
   uint32_t getStaticQueueLimitBytes() const override {
     return 0;
   }
+  cfg::Range64 getReservedEncapIndexRange() const override {
+    return makeRange(1000, 2000);
+  }
+  HwAsic::RecyclePortInfo getRecyclePortInfo() const override {
+    return {
+        .coreId = 0,
+        .corePortIndex = 1,
+        .speedMbps = 10000 // 10G
+    };
+  }
+  uint32_t getNumMemoryBuffers() const override {
+    return 0;
+  }
 };
-
 } // namespace facebook::fboss

@@ -18,42 +18,31 @@
 
 namespace facebook::fboss {
 
-using SflowCollectorMapTraits = NodeMapTraits<std::string, SflowCollector>;
+using SflowCollectorMapTypeClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::string,
+    apache::thrift::type_class::structure>;
+using SflowCollectorMapThriftType =
+    std::map<std::string, state::SflowCollectorFields>;
 
-struct SflowCollectorMapThriftTraits
-    : public ThriftyNodeMapTraits<std::string, state::SflowCollectorFields> {
-  static const KeyType parseKey(const folly::dynamic& key) {
-    return key.asString();
-  }
-
-  // unfortunately the primary key "id" of this node was never explicitly
-  // written in the legacy serialization and instead just built from the other
-  // members. Need to override how we fetch this key
-  template <typename NodeKeyT>
-  static inline const std::string getKeyFromLegacyNode(
-      const folly::dynamic& dyn,
-      const std::string& /* keyName */) {
-    // folly::to<std::string>(
-    // address.getFullyQualified(), ':', address.getPort());
-    return folly::to<std::string>(
-        dyn["ip"].asString(), ":", dyn["port"].asString());
-  }
-};
-
+class SflowCollectorMap;
+using SflowCollectorMapTraits = ThriftMapNodeTraits<
+    SflowCollectorMap,
+    SflowCollectorMapTypeClass,
+    SflowCollectorMapThriftType,
+    SflowCollector>;
 /*
  * A container for the set of collectors.
  */
-class SflowCollectorMap : public ThriftyNodeMapT<
-                              SflowCollectorMap,
-                              SflowCollectorMapTraits,
-                              SflowCollectorMapThriftTraits> {
+class SflowCollectorMap
+    : public ThriftMapNode<SflowCollectorMap, SflowCollectorMapTraits> {
  public:
+  using Base = ThriftMapNode<SflowCollectorMap, SflowCollectorMapTraits>;
   SflowCollectorMap() = default;
   ~SflowCollectorMap() override = default;
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyNodeMapT::ThriftyNodeMapT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 

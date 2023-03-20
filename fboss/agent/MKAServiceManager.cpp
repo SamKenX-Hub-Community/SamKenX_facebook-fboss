@@ -71,9 +71,16 @@ void MKAServiceManager::handlePacket(std::unique_ptr<RxPacket> packet) {
   if (!packet) {
     return;
   }
+  if (pausePduForTest_) {
+    XLOG(DBG5)
+        << "MKAServiceManager not handling this packet for testing purpose";
+    return;
+  }
   PortID port = packet->getSrcPort();
   auto l2Port = getPortName(port);
   PortStats* stats = swSwitch_->portStats(port);
+
+  stats->MkPduInterval();
 
   if (!stream_->isPortRegistered(l2Port)) {
     l2Port = folly::to<std::string>(packet->getSrcPort());

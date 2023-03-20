@@ -62,10 +62,12 @@ HwPortStats getInitedStats() {
       {{0, 2}, {7, 2}}, // inPfcXon_
       {{0, 3}, {7, 3}}, // outPfc_
       {{1, 0}, {2, 0}}, // queueWredDroppedPackets
+      {{1, 0}, {2, 0}}, // queueEcnMarkedPackets
       0, // timestamp
       "test", // portName
       {}, // macsec stats,
-      0 // inLabelMissDiscards_
+      0, // inLabelMissDiscards_
+      {} // queueWatermarkLevel
   };
 }
 

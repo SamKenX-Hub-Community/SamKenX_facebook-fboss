@@ -12,6 +12,8 @@
 #include <thrift/lib/cpp2/util/ScopedServerInterfaceThread.h>
 #include "folly/synchronization/Baton.h"
 
+#include "fboss/lib/CommonUtils.h"
+
 using namespace testing;
 using namespace facebook::fboss;
 
@@ -91,11 +93,19 @@ class BidirectionalPacketStreamTest : public Test {
     fbossAgentStream_->connectClient(mkaServer_->getPort());
 
     EXPECT_FALSE(baton_->try_wait_for(std::chrono::milliseconds(500)));
-    EXPECT_TRUE(mkaServerStream_->isConnectedToServer());
-    EXPECT_TRUE(mkaServerStream_->isClientConnected("fboss_agent"));
+    WITH_RETRIES(
+        { ASSERT_EVENTUALLY_TRUE(mkaServerStream_->isConnectedToServer()); });
+    WITH_RETRIES({
+      ASSERT_EVENTUALLY_TRUE(
+          mkaServerStream_->isClientConnected("fboss_agent"));
+    });
 
-    EXPECT_TRUE(fbossAgentStream_->isConnectedToServer());
-    EXPECT_TRUE(fbossAgentStream_->isClientConnected("mka_server"));
+    WITH_RETRIES(
+        { ASSERT_EVENTUALLY_TRUE(fbossAgentStream_->isConnectedToServer()); });
+    WITH_RETRIES({
+      ASSERT_EVENTUALLY_TRUE(
+          fbossAgentStream_->isClientConnected("mka_server"));
+    });
   }
 
   void sendFbossToMka(
@@ -103,14 +113,19 @@ class BidirectionalPacketStreamTest : public Test {
       const std::string& port,
       std::shared_ptr<AsyncPacketTransport> transport,
       std::shared_ptr<folly::Baton<>> baton = {}) {
-    XLOG(INFO) << "Send FbossToMka: port: " << port << " numPkts:" << numPkts;
+    XLOG(DBG2) << "Send FbossToMka: port: " << port << " numPkts:" << numPkts;
     if (!baton) {
       baton = std::make_shared<folly::Baton<>>();
     }
     PacketAcceptor acceptor(baton);
     acceptor.setExpectedPackets(numPkts);
     transport->setReadCallback(&acceptor);
+    SCOPE_EXIT {
+      transport->setReadCallback(nullptr);
+    };
     baton->reset();
+    WITH_RETRIES(
+        { ASSERT_EVENTUALLY_TRUE(fbossAgentStream_->isPortRegistered(port)); });
     std::string pktString = "FromFbossToMka";
     for (auto i = 0; i < numPkts; i++) {
       TPacket packet;
@@ -128,7 +143,7 @@ class BidirectionalPacketStreamTest : public Test {
       EXPECT_EQ(bufStr, pktString);
     }
 
-    XLOG(INFO) << "Completed SendFbossToMKA for port:" << port;
+    XLOG(DBG2) << "Completed SendFbossToMKA for port:" << port;
   }
 
   void sendMkaToFboss(
@@ -137,7 +152,7 @@ class BidirectionalPacketStreamTest : public Test {
       std::shared_ptr<AsyncPacketTransport> transport,
       std::shared_ptr<folly::Baton<>> baton = {},
       bool validatePackets = true) {
-    XLOG(INFO) << "Send MKAToFboss: port: " << port << " numPkts:" << numPkts;
+    XLOG(DBG2) << "Send MKAToFboss: port: " << port << " numPkts:" << numPkts;
     if (!baton) {
       baton = std::make_shared<folly::Baton<>>();
     }
@@ -148,6 +163,8 @@ class BidirectionalPacketStreamTest : public Test {
       baton->reset();
     }
     CHECK_EQ(transport->iface(), port);
+    WITH_RETRIES(
+        { ASSERT_EVENTUALLY_TRUE(fbossAgentStream_->isPortRegistered(port)); });
     for (auto i = 0; i < numPkts; i++) {
       auto mkpdu = folly::IOBuf::copyBuffer(g_mkaTofboss);
       // send from mka -> fboss.
@@ -162,7 +179,7 @@ class BidirectionalPacketStreamTest : public Test {
         EXPECT_EQ(g_mkaTofboss, *pkt.buf());
       }
     }
-    XLOG(INFO) << "Completed SendMKAToFboss for port:" << port;
+    XLOG(DBG2) << "Completed SendMKAToFboss for port:" << port;
   }
 
   void sendParallelMultiplePkts(size_t numPkts = 100) {
@@ -309,8 +326,10 @@ class BidirectionalPacketStreamTest : public Test {
   }
 
   void SetUp() override {
-    mkaClientThread_ = std::make_unique<folly::ScopedEventBaseThread>();
-    fbossClientThread_ = std::make_unique<folly::ScopedEventBaseThread>();
+    mkaClientThread_ =
+        std::make_unique<folly::ScopedEventBaseThread>("mkaClient");
+    fbossClientThread_ =
+        std::make_unique<folly::ScopedEventBaseThread>("fbossClient");
 
     timeThread_ =
         std::make_unique<std::thread>([this]() { evb_.loopForever(); });

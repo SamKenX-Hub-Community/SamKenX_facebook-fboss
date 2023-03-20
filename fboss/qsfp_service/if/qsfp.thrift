@@ -118,7 +118,7 @@ service QsfpService extends phy.FbossCommonPhyCtrl {
    */
   void setPortPrbs(
     1: i32 portId,
-    2: phy.PrbsComponent component,
+    2: phy.PortComponent component,
     3: phy.PortPrbsState state,
   ) throws (1: fboss.FbossBaseError error);
 
@@ -128,7 +128,7 @@ service QsfpService extends phy.FbossCommonPhyCtrl {
    */
   phy.PrbsStats getPortPrbsStats(
     1: i32 portId,
-    2: phy.PrbsComponent component,
+    2: phy.PortComponent component,
   ) throws (1: fboss.FbossBaseError error);
 
   /*
@@ -145,7 +145,7 @@ service QsfpService extends phy.FbossCommonPhyCtrl {
    */
   void clearPortPrbsStats(
     1: i32 portId,
-    2: phy.PrbsComponent component,
+    2: phy.PortComponent component,
   ) throws (1: fboss.FbossBaseError error);
 
   string listHwObjects(
@@ -155,7 +155,40 @@ service QsfpService extends phy.FbossCommonPhyCtrl {
 
   bool getSdkState(1: string fileName) throws (1: fboss.FbossBaseError error);
 
-  string getSaiPortInfo(1: string portName) throws (
+  string getPortInfo(1: string portName) throws (1: fboss.FbossBaseError error);
+
+  void setPortLoopbackState(
+    1: string portName,
+    2: phy.PortComponent component,
+    3: bool setLoopback = false,
+  ) throws (1: fboss.FbossBaseError error);
+
+  void setPortAdminState(
+    1: string portName,
+    2: phy.PortComponent component,
+    3: bool setAdminUp = true,
+  ) throws (1: fboss.FbossBaseError error);
+
+  string saiPhyRegisterAccess(
+    1: string portName,
+    2: bool opRead = true,
+    3: i32 phyAddr,
+    4: i32 devId,
+    5: i32 regOffset,
+    6: i32 data,
+  ) throws (1: fboss.FbossBaseError error);
+
+  string saiPhySerdesRegisterAccess(
+    1: string portName,
+    2: bool opRead = true,
+    3: i16 mdioAddr,
+    4: bool lineSide,
+    5: i32 serdesLane,
+    6: i64 regOffset,
+    7: i64 data,
+  ) throws (1: fboss.FbossBaseError error);
+
+  string phyConfigCheckHw(1: string portName) throws (
     1: fboss.FbossBaseError error,
   );
 

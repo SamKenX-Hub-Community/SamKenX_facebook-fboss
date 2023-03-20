@@ -220,6 +220,27 @@ struct formatter<sai_port_lane_eye_values_t> {
   }
 };
 
+#if SAI_API_VERSION >= SAI_VERSION(1, 8, 1)
+// Formatting for sai_prbs_rx_state_t
+template <>
+struct formatter<sai_prbs_rx_state_t> {
+  template <typename ParseContext>
+  constexpr auto parse(ParseContext& ctx) {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(const sai_prbs_rx_state_t& prbsStats, FormatContext& ctx) {
+    return format_to(
+        ctx.out(),
+        "(PRBS Rx stats:{}, "
+        "PRBS error count: {})",
+        prbsStats.rx_status,
+        prbsStats.error_count);
+  }
+};
+#endif
+
 // Formatting for sai_port_err_status_list_t
 template <>
 struct formatter<sai_port_err_status_t> {
@@ -233,6 +254,48 @@ struct formatter<sai_port_err_status_t> {
     return format_to(ctx.out(), "{}", static_cast<int>(errStatus));
   }
 };
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+// Formatting for sai_port_lane_latch_status_list_t
+template <>
+struct formatter<sai_port_lane_latch_status_t> {
+  template <typename ParseContext>
+  constexpr auto parse(ParseContext& ctx) {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(
+      const sai_port_lane_latch_status_t& latchStatus,
+      FormatContext& ctx) {
+    return format_to(
+        ctx.out(),
+        "(lane_latch_status: lane_latch_status.lane: {}, "
+        "lane_latch_status.value.current_status: {}, lane_latch_status.value.changed: {}",
+        latchStatus.lane,
+        latchStatus.value.current_status,
+        latchStatus.value.changed);
+  }
+};
+
+// Formatting for sai_latch_status_t
+template <>
+struct formatter<sai_latch_status_t> {
+  template <typename ParseContext>
+  constexpr auto parse(ParseContext& ctx) {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(const sai_latch_status_t& latchStatus, FormatContext& ctx) {
+    return format_to(
+        ctx.out(),
+        "latch_status.current_status: {}, latch_status.changed: {}",
+        latchStatus.current_status,
+        latchStatus.changed);
+  }
+};
+#endif
 
 // Formatting for AclEntryField<T>
 template <typename T>
@@ -364,7 +427,7 @@ struct formatter<sai_system_port_config_t> {
   auto format(const sai_system_port_config_t& sysPortConf, FormatContext& ctx) {
     return format_to(
         ctx.out(),
-        "(port_id: port_id: {}, switch_id: {}, "
+        "(port_id: {}, switch_id: {}, "
         " attached_core_index: {}, attached_core_port_index: {}, "
         " speed: {}, num_voqs: {})",
         sysPortConf.port_id,
@@ -373,6 +436,24 @@ struct formatter<sai_system_port_config_t> {
         sysPortConf.attached_core_port_index,
         sysPortConf.speed,
         sysPortConf.num_voq);
+  }
+};
+
+template <>
+struct formatter<sai_fabric_port_reachability_t> {
+  template <typename ParseContext>
+  constexpr auto parse(ParseContext& ctx) {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(const sai_fabric_port_reachability_t& reach, FormatContext& ctx) {
+    return format_to(
+        ctx.out(),
+        "(SwitchId: {}, "
+        " Reachable: {})",
+        reach.switch_id,
+        reach.reachable);
   }
 };
 } // namespace fmt

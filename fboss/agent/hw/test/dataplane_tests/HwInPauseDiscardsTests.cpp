@@ -28,8 +28,10 @@ namespace facebook::fboss {
 class HwInPauseDiscardsCounterTest : public HwLinkStateDependentTest {
  private:
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::onePortPerVlanConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC);
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode());
     return cfg;
   }
   void pumpTraffic() {
@@ -38,13 +40,13 @@ class HwInPauseDiscardsCounterTest : public HwLinkStateDependentTest {
     payload.insert(payload.end(), padding.begin(), padding.end());
     auto pkt = utility::makeEthTxPacket(
         getHwSwitch(),
-        VlanID(1),
+        utility::firstVlanID(getProgrammedState()),
         getPlatform()->getLocalMac(),
         folly::MacAddress("01:80:C2:00:00:01"),
         ETHERTYPE::ETHERTYPE_EPON,
         payload);
     getHwSwitchEnsemble()->ensureSendPacketOutOfPort(
-        std::move(pkt), PortID(masterLogicalPortIds()[0]));
+        std::move(pkt), PortID(masterLogicalInterfacePortIds()[0]));
   }
 
  protected:
@@ -53,8 +55,8 @@ class HwInPauseDiscardsCounterTest : public HwLinkStateDependentTest {
       if (enableRxPause) {
         auto newState = getProgrammedState()->clone();
         auto portMap = newState->getPorts()->modify(&newState);
-        auto port =
-            portMap->getPort(PortID(masterLogicalPortIds()[0]))->clone();
+        auto port = portMap->getPort(PortID(masterLogicalInterfacePortIds()[0]))
+                        ->clone();
         cfg::PortPause pauseCfg;
         *pauseCfg.rx() = true;
         port->setPause(pauseCfg);
@@ -63,9 +65,11 @@ class HwInPauseDiscardsCounterTest : public HwLinkStateDependentTest {
       }
     };
     auto verify = [=]() {
-      auto portStatsBefore = getLatestPortStats(masterLogicalPortIds()[0]);
+      auto portStatsBefore =
+          getLatestPortStats(masterLogicalInterfacePortIds()[0]);
       pumpTraffic();
-      auto portStatsAfter = getLatestPortStats(masterLogicalPortIds()[0]);
+      auto portStatsAfter =
+          getLatestPortStats(masterLogicalInterfacePortIds()[0]);
 
       /*
        * Certain asics count the pause packets when pause is disabled while
@@ -81,11 +85,15 @@ class HwInPauseDiscardsCounterTest : public HwLinkStateDependentTest {
        */
       auto expectedPktCount = !enableRxPause &&
               getHwSwitch()->getPlatform()->getAsic()->getAsicType() ==
-                  HwAsic::AsicType::ASIC_TYPE_EBRO
+                  cfg::AsicType::ASIC_TYPE_EBRO
           ? 0
           : 1;
+      auto expectedDiscardsIncrement =
+          isSupported(HwAsic::Feature::IN_PAUSE_INCREMENTS_DISCARDS)
+          ? expectedPktCount
+          : 0;
       EXPECT_EQ(
-          expectedPktCount,
+          expectedDiscardsIncrement,
           *portStatsAfter.inDiscardsRaw_() - *portStatsBefore.inDiscardsRaw_());
       EXPECT_EQ(
           expectedPktCount,

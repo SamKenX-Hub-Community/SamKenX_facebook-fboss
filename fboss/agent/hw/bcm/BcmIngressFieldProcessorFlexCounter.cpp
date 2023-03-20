@@ -9,6 +9,7 @@
  */
 #include "fboss/agent/hw/bcm/BcmIngressFieldProcessorFlexCounter.h"
 
+#include <fboss/agent/hw/bcm/BcmAclStat.h>
 #include "fboss/agent/hw/bcm/BcmError.h"
 #include "fboss/agent/hw/bcm/BcmSdkVer.h"
 
@@ -36,21 +37,35 @@ constexpr auto kIFPActionPacketOperationObj0Mask = 16;
 constexpr auto kIFPActionPacketOperationObj1Mask = 1;
 constexpr auto kNumDefaultIFPFlexCounterPerAcl = 1;
 
-void setIFPActionConfig(bcm_flexctr_action_t* action, int groupID) {
+void setIFPActionConfig(
+    bcm_flexctr_action_t* action,
+    int groupID,
+    facebook::fboss::BcmAclStatType type) {
   action->flags = 0;
   /* Group ID passed as hint and IFP as source */
   action->hint = groupID;
   action->hint_type = bcmFlexctrHintFieldGroupId;
-  action->source = bcmFlexctrSourceIfp;
   action->mode = bcmFlexctrCounterModeNormal;
-  action->index_num = kIFPActionIndexNum;
   action->drop_count_mode = bcmFlexctrDropCountModeAll;
+  if (type == facebook::fboss::BcmAclStatType::IFP) {
+    action->index_num = kIFPActionIndexNum;
+    action->source = bcmFlexctrSourceIfp;
+  } else {
+    action->index_num = facebook::fboss::BcmAclStat::kMaxExactMatchStatEntries;
+    action->source = bcmFlexctrSourceExactMatch;
+  }
 }
 
-void setIFPActionIndex(bcm_flexctr_action_t* action) {
+void setIFPActionIndex(
+    bcm_flexctr_action_t* action,
+    facebook::fboss::BcmAclStatType type) {
   bcm_flexctr_index_operation_t* index = &(action->index_operation);
   /* Counter index is PKT_ATTR_OBJ0. */
-  index->object[0] = bcmFlexctrObjectStaticIngFieldStageIngress;
+  if (type == facebook::fboss::BcmAclStatType::IFP) {
+    index->object[0] = bcmFlexctrObjectStaticIngFieldStageIngress;
+  } else {
+    index->object[0] = bcmFlexctrObjectStaticIngExactMatch;
+  }
   index->object_id[0] = 0;
   index->mask_size[0] = kIFPActionIndexObj0Mask;
   index->shift[0] = 0;
@@ -90,7 +105,8 @@ int getNumAclStatsCounterCallback(
     void* user_data) {
   auto* cbUserData = static_cast<BcmGetNumAclStatsCountUserData*>(user_data);
   // Check action config has the same group id
-  if (action->source != bcmFlexctrSourceIfp ||
+  if ((action->source != bcmFlexctrSourceIfp &&
+       action->source != bcmFlexctrSourceExactMatch) ||
       action->hint_type != bcmFlexctrHintFieldGroupId ||
       action->hint != cbUserData->groupID) {
     return 0;
@@ -107,8 +123,9 @@ namespace facebook::fboss {
 BcmIngressFieldProcessorFlexCounter::BcmIngressFieldProcessorFlexCounter(
     int unit,
     std::optional<int> groupID,
-    std::optional<BcmAclStatHandle> statHandle)
-    : BcmFlexCounter(unit) {
+    std::optional<BcmAclStatHandle> statHandle,
+    BcmAclStatType type)
+    : BcmFlexCounter(unit), statType_(type) {
   if (!groupID.has_value() && !statHandle.has_value()) {
     throw FbossError(
         "Failed to create BcmIngressFieldProcessorFlexCounter ",
@@ -131,10 +148,10 @@ BcmIngressFieldProcessorFlexCounter::BcmIngressFieldProcessorFlexCounter(
     bcm_flexctr_action_t_init(&action);
 
     // set counter action config
-    setIFPActionConfig(&action, *groupID);
+    setIFPActionConfig(&action, *groupID, statType_);
 
     // set counter action index
-    setIFPActionIndex(&action);
+    setIFPActionIndex(&action, statType_);
 
     // set counter action value
     setActionValue(&action);
@@ -154,11 +171,13 @@ BcmIngressFieldProcessorFlexCounter::BcmIngressFieldProcessorFlexCounter(
   }
 }
 
-void BcmIngressFieldProcessorFlexCounter::attach(BcmAclEntryHandle acl) {
+void BcmIngressFieldProcessorFlexCounter::attach(
+    BcmAclEntryHandle acl,
+    BcmAclStatActionIndex actionIndex) {
 #if defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_20)
   bcm_field_flexctr_config_t flexCounter;
   flexCounter.flexctr_action_id = counterID_;
-  flexCounter.counter_index = 1;
+  flexCounter.counter_index = actionIndex;
   flexCounter.color = BCM_FIELD_COUNT_ALL;
   auto rv = bcm_field_entry_flexctr_attach(unit_, acl, &flexCounter);
   bcmCheckError(
@@ -172,11 +191,12 @@ void BcmIngressFieldProcessorFlexCounter::attach(BcmAclEntryHandle acl) {
 void BcmIngressFieldProcessorFlexCounter::detach(
     int unit,
     BcmAclEntryHandle acl,
-    BcmAclStatHandle aclStatHandle) {
+    BcmAclStatHandle aclStatHandle,
+    BcmAclStatActionIndex actionIndex) {
 #if defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_20)
   bcm_field_flexctr_config_t flexCounter;
   flexCounter.flexctr_action_id = aclStatHandle;
-  flexCounter.counter_index = 1;
+  flexCounter.counter_index = actionIndex;
   flexCounter.color = BCM_FIELD_COUNT_ALL;
   auto rv = bcm_field_entry_flexctr_detach(unit, acl, &flexCounter);
   bcmCheckError(
@@ -199,8 +219,9 @@ BcmIngressFieldProcessorFlexCounter::getCounterTypeList(
   bcmCheckError(rv, "Failed to get FlexCounter action for id:", counterID);
   // Check the index object needs to be IFP
   if (action.index_operation.object[0] !=
-      bcmFlexctrObjectStaticIngFieldStageIngress) {
-    throw FbossError("FlexCounter id:", counterID, " is not a IFP counter");
+          bcmFlexctrObjectStaticIngFieldStageIngress &&
+      action.index_operation.object[0] != bcmFlexctrObjectStaticIngExactMatch) {
+    throw FbossError("FlexCounter id:", counterID, " is not a IFP/EM counter");
   }
   // Flex counter always have two operations
   for (auto* operation : {&action.operation_a, &action.operation_b}) {
@@ -253,7 +274,10 @@ void BcmIngressFieldProcessorFlexCounter::removeAllCountersInFpGroup(
               getFlexCounterIDFromAttachedAcl(unit, gid, bcmEntry)) {
         // detach the counter from acl
         BcmIngressFieldProcessorFlexCounter::detach(
-            unit, bcmEntry, BcmAclStatHandle(*counterID));
+            unit,
+            bcmEntry,
+            BcmAclStatHandle((*counterID).first),
+            (*counterID).second);
       }
     }
   } else if (rv == BCM_E_NOT_FOUND || entryCount == 0) {
@@ -274,7 +298,7 @@ void BcmIngressFieldProcessorFlexCounter::removeAllCountersInFpGroup(
 #endif
 }
 
-std::optional<uint32_t>
+std::optional<std::pair<uint32_t, uint32_t>>
 BcmIngressFieldProcessorFlexCounter::getFlexCounterIDFromAttachedAcl(
     int unit,
     int groupID,
@@ -294,7 +318,8 @@ BcmIngressFieldProcessorFlexCounter::getFlexCounterIDFromAttachedAcl(
 
   return aclEntry.flex_counter_action_id <= 0
       ? std::nullopt
-      : std::optional<uint32_t>{aclEntry.flex_counter_action_id};
+      : std::optional<std::pair<uint32_t, uint32_t>>{
+            {aclEntry.flex_counter_action_id, aclEntry.counter_id}};
 #else
   throw FbossError(
       "Current SDK version doesn't support bcm_field_entry_config_get");
@@ -305,13 +330,14 @@ BcmTrafficCounterStats
 BcmIngressFieldProcessorFlexCounter::getAclTrafficFlexCounterStats(
     [[maybe_unused]] int unit,
     [[maybe_unused]] BcmAclStatHandle handle,
+    [[maybe_unused]] BcmAclStatActionIndex actionIndex,
     [[maybe_unused]] const std::vector<cfg::CounterType>& counters) {
   BcmTrafficCounterStats stats;
 #if defined(IS_OPENNSA) || defined(BCM_SDK_VERSION_GTE_6_5_20)
   bcm_flexctr_counter_value_t values;
   memset(&values, 0, sizeof(values));
   // bcm_flexctr_stat_get needs to pass in a pointer for index
-  uint32_t index = 1;
+  uint32_t index = actionIndex;
   // Each acl has one flex counter entry and index is 1
   auto rv = bcm_flexctr_stat_get(
       unit, handle, kNumDefaultIFPFlexCounterPerAcl, &index, &values);

@@ -42,6 +42,8 @@ class TransceiverManager {
   using PortNameIdMap = boost::bimap<std::string, PortID>;
 
  public:
+  using TcvrInfoMap = std::map<int32_t, TransceiverInfo>;
+
   explicit TransceiverManager(
       std::unique_ptr<TransceiverPlatformApi> api,
       std::unique_ptr<PlatformMapping> platformMapping);
@@ -89,6 +91,10 @@ class TransceiverManager {
   // Return: The refreshed transceiver ids
   std::vector<TransceiverID> refreshTransceivers(
       const std::unordered_set<TransceiverID>& transceivers);
+
+  /// Called to publish transceivers after a refresh
+  virtual void publishTransceiversToFsdb(
+      const std::vector<TransceiverID>& ids) = 0;
 
   virtual int scanTransceiverPresence(
       std::unique_ptr<std::vector<int32_t>> ids) = 0;
@@ -193,9 +199,43 @@ class TransceiverManager {
 
   virtual bool getSdkState(std::string filename) const = 0;
 
-  virtual std::string getSaiPortInfo(std::string portName) {
+  std::string getPortInfo(std::string portName);
+
+  void setPortLoopbackState(
+      std::string /* portName */,
+      phy::PortComponent /* component */,
+      bool /* setLoopback */);
+
+  void setPortAdminState(
+      std::string /* portName */,
+      phy::PortComponent /* component */,
+      bool /* setAdminUp */);
+
+  virtual std::string saiPhyRegisterAccess(
+      std::string /* portName */,
+      bool /* opRead */,
+      int /* phyAddr */,
+      int /* devId */,
+      int /* regOffset */,
+      int /* data */) {
     return "";
   }
+
+  virtual std::string saiPhySerdesRegisterAccess(
+      std::string /* portName */,
+      bool /* opRead */,
+      int /* mdioAddr */,
+      bool /* lineSide */,
+      int /* serdesLane */,
+      uint32_t /* regOffset */,
+      uint32_t /* data */) {
+    return "Function not implemented for this platform";
+  }
+
+  virtual std::string phyConfigCheckHw(std::string /* portName */) {
+    return "The function phyConfigCheckHw not implemented for this platform";
+  }
+
   // Returns the interface names for a given transceiverId
   // Returns empty list when there is no corresponding name for a given
   // transceiver ID
@@ -230,9 +270,13 @@ class TransceiverManager {
 
   void programInternalPhyPorts(TransceiverID id);
 
-  virtual void programExternalPhyPorts(TransceiverID id);
+  virtual void programExternalPhyPorts(
+      TransceiverID id,
+      bool needResetDataPath);
 
   void programTransceiver(TransceiverID id, bool needResetDataPath);
+
+  bool readyTransceiver(TransceiverID id);
 
   bool areAllPortsDown(TransceiverID id) const noexcept;
 
@@ -247,6 +291,10 @@ class TransceiverManager {
   void setDiagsCapability(TransceiverID id);
 
   void resetProgrammedIphyPortToPortInfo(TransceiverID id);
+
+  std::map<uint32_t, phy::PhyIDInfo> getAllPortPhyInfo();
+
+  phy::PhyInfo getPhyInfo(const std::string& portName);
   // ========== Public functions fo TransceiverStateMachine ==========
 
   // A struct to keep track of the software port profile and status
@@ -315,12 +363,12 @@ class TransceiverManager {
 
   void setPortPrbs(
       PortID portId,
-      phy::PrbsComponent component,
+      phy::PortComponent component,
       const phy::PortPrbsState& state);
 
-  phy::PrbsStats getPortPrbsStats(PortID portId, phy::PrbsComponent component);
+  phy::PrbsStats getPortPrbsStats(PortID portId, phy::PortComponent component);
 
-  void clearPortPrbsStats(PortID portId, phy::PrbsComponent component);
+  void clearPortPrbsStats(PortID portId, phy::PortComponent component);
 
   std::vector<prbs::PrbsPolynomial> getTransceiverPrbsCapabilities(
       TransceiverID tcvrID,
@@ -329,31 +377,38 @@ class TransceiverManager {
   void getSupportedPrbsPolynomials(
       std::vector<prbs::PrbsPolynomial>& prbsCapabilities,
       std::string portName,
-      phy::PrbsComponent component);
+      phy::PortComponent component);
 
   void setInterfacePrbs(
       std::string portName,
-      phy::PrbsComponent component,
+      phy::PortComponent component,
       const prbs::InterfacePrbsState& state);
 
   void getInterfacePrbsState(
       prbs::InterfacePrbsState& prbsState,
       std::string portName,
-      phy::PrbsComponent component);
+      phy::PortComponent component);
 
   phy::PrbsStats getInterfacePrbsStats(
       std::string portName,
-      phy::PrbsComponent component);
+      phy::PortComponent component);
 
   void clearInterfacePrbsStats(
       std::string portName,
-      phy::PrbsComponent component);
+      phy::PortComponent component);
 
   std::optional<DiagsCapability> getDiagsCapability(TransceiverID id) const;
 
   long getStateMachineThreadHeartbeatMissedCount() const {
     return stateMachineThreadHeartbeatMissedCount_;
   }
+
+  virtual void publishPhyStateToFsdb(
+      std::string&& /* portName */,
+      std::optional<phy::PhyState>&& /* newState */) const {}
+  virtual void publishPhyStatToFsdb(
+      std::string&& /* portName */,
+      phy::PhyStats&& /* stat */) const {}
 
  protected:
   /*
@@ -376,6 +431,15 @@ class TransceiverManager {
 
   void setPhyManager(std::unique_ptr<PhyManager> phyManager) {
     phyManager_ = std::move(phyManager);
+    phyManager_->setPublishPhyCb([this](auto&& portName, auto&& newInfo) {
+      if (newInfo.has_value()) {
+        publishPhyStateToFsdb(
+            std::string(portName), std::move(*newInfo->state()));
+        publishPhyStatToFsdb(std::move(portName), std::move(*newInfo->stats()));
+      } else {
+        publishPhyStateToFsdb(std::string(portName), std::nullopt);
+      }
+    });
   }
 
   // Update the cached PortStatus of TransceiverToPortInfo based on the input

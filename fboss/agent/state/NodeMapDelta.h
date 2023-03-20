@@ -15,11 +15,9 @@
 #include <type_traits>
 
 #include <folly/functional/ApplyTuple.h>
+#include <glog/logging.h>
 
 namespace facebook::fboss {
-
-template <typename NODE>
-class DeltaValue;
 
 template <typename MAP>
 class MapPointerTraits {
@@ -49,76 +47,23 @@ class MapUniquePointerTraits {
     return map.get();
   }
 };
-/*
- * NodeMapDelta contains code for examining the differences between two NodeMap
- * objects.
- *
- * The main function of this class is the Iterator that it provides.  This
- * allows caller to walk over the changed, added, and removed nodes.
- */
-template <
-    typename MAP,
-    typename VALUE = DeltaValue<typename MAP::Node>,
-    typename MAPPOINTERTRAITS = MapPointerTraits<MAP>>
-class NodeMapDelta {
- public:
-  using MapPointerType = typename MAPPOINTERTRAITS::MapPointerType;
-  using RawConstPointerType = typename MAPPOINTERTRAITS::RawConstPointerType;
-  using MapType = MAP;
-  using Node = typename MAP::Node;
-  class Iterator;
 
-  NodeMapDelta(MapPointerType&& oldMap, MapPointerType&& newMap)
-      : old_(std::move(oldMap)), new_(std::move(newMap)) {}
-
-  RawConstPointerType getOld() const {
-    return MAPPOINTERTRAITS::getRawPointer(old_);
-  }
-  RawConstPointerType getNew() const {
-    return MAPPOINTERTRAITS::getRawPointer(new_);
-  }
-
-  /*
-   * Return an iterator pointing to the first change.
-   */
-  Iterator begin() const;
-
-  /*
-   * Return an iterator pointing just past the last change.
-   */
-  Iterator end() const;
-
- private:
-  /*
-   * NodeMapDelta is used by StateDelta.  StateDelta holds a shared_ptr to
-   * the old and new SwitchState objects, which in turn holds
-   * shared_ptrs to NodeMaps, hence in the common case use raw pointers here
-   * and don't bother with ownership. However there are cases where collections
-   * are not easily mapped to a NodeMap structure, but we still want to box
-   * them into a NodeMap while computing delta. In this case NodeMap is created
-   * on the fly and we pass ownership to NodeMapDelta object via a unique_ptr.
-   * See MapPointerTraits and MapUniquePointerTraits classes for details.
-   */
-  MapPointerType old_;
-  MapPointerType new_;
-};
-
-template <typename NODE>
+template <typename NODE, typename NODE_WRAPPER = std::shared_ptr<NODE>>
 class DeltaValue {
  public:
   using Node = NODE;
-  DeltaValue(const std::shared_ptr<Node>& o, const std::shared_ptr<Node>& n)
-      : old_(o), new_(n) {}
+  using NodeWrapper = NODE_WRAPPER;
+  DeltaValue(const NodeWrapper& o, const NodeWrapper& n) : old_(o), new_(n) {}
 
-  void reset(const std::shared_ptr<Node>& o, const std::shared_ptr<Node>& n) {
+  void reset(const NodeWrapper& o, const NodeWrapper& n) {
     old_ = o;
     new_ = n;
   }
 
-  const std::shared_ptr<Node>& getOld() const {
+  const NodeWrapper& getOld() const {
     return old_;
   }
-  const std::shared_ptr<Node>& getNew() const {
+  const NodeWrapper& getNew() const {
     return new_;
   }
 
@@ -131,19 +76,24 @@ class DeltaValue {
   // shared_ptrs.  Callers should always maintain a shared_ptr to the top-level
   // SwitchState object, so they should never need the shared_ptr reference
   // count on individual nodes.
-  std::shared_ptr<Node> old_;
-  std::shared_ptr<Node> new_;
+  NodeWrapper old_;
+  NodeWrapper new_;
 };
 
-/*
- * An iterator for walking over the Nodes that changed between the two
- * NodeMaps.
- */
-template <typename MAP, typename VALUE, typename MAPPOINTERTRAITS>
-class NodeMapDelta<MAP, VALUE, MAPPOINTERTRAITS>::Iterator {
+template <typename MAP, typename VALUE, typename MAP_EXTRACTOR>
+class DeltaValueIterator {
+ private:
+  using InnerIter = typename MAP::const_iterator;
+  auto getKey(InnerIter it) {
+    return MAP_EXTRACTOR::getKey(it);
+  }
+  auto getValue(InnerIter it) {
+    return MAP_EXTRACTOR::getValue(it);
+  }
+
  public:
   using MapType = MAP;
-  using Node = typename MAP::Node;
+  using Node = typename MAP::mapped_type;
 
   // Iterator properties
   using iterator_category = std::forward_iterator_tag;
@@ -152,12 +102,24 @@ class NodeMapDelta<MAP, VALUE, MAPPOINTERTRAITS>::Iterator {
   using pointer = VALUE*;
   using reference = VALUE&;
 
-  Iterator(
+  DeltaValueIterator(
       const MapType* oldMap,
-      typename MapType::Iterator oldIt,
+      typename MapType::const_iterator oldIt,
       const MapType* newMap,
-      typename MapType::Iterator newIt);
-  Iterator();
+      typename MapType::const_iterator newIt)
+      : oldIt_(oldIt),
+        newIt_(newIt),
+        oldMap_(oldMap),
+        newMap_(newMap),
+        value_(nullNode_, nullNode_) {
+    // Advance to the first difference
+    while (oldIt_ != oldMap_->end() && newIt_ != newMap_->end() &&
+           *oldIt_ == *newIt_) {
+      ++oldIt_;
+      ++newIt_;
+    }
+    updateValue();
+  }
 
   const value_type& operator*() const {
     return value_;
@@ -166,68 +128,208 @@ class NodeMapDelta<MAP, VALUE, MAPPOINTERTRAITS>::Iterator {
     return &value_;
   }
 
-  Iterator& operator++() {
+  DeltaValueIterator& operator++() {
     advance();
     return *this;
   }
-  Iterator operator++(int) {
-    Iterator tmp(*this);
+  DeltaValueIterator operator++(int) {
+    DeltaValueIterator tmp(*this);
     advance();
     return tmp;
   }
 
-  bool operator==(const Iterator& other) const {
+  bool operator==(const DeltaValueIterator& other) const {
     return oldIt_ == other.oldIt_ && newIt_ == other.newIt_;
   }
-  bool operator!=(const Iterator& other) const {
+  bool operator!=(const DeltaValueIterator& other) const {
     return !operator==(other);
   }
 
  private:
-  using InnerIter = typename MapType::Iterator;
-  using Traits = typename MapType::Traits;
+  void advance() {
+    // If we have already hit the end of one side, advance the other.
+    // We are immediately done after this.
+    if (oldIt_ == oldMap_->end()) {
+      // advance() shouldn't be called if we are already at the end
+      CHECK(newIt_ != newMap_->end());
+      ++newIt_;
+      updateValue();
+      return;
+    } else if (newIt_ == newMap_->end()) {
+      ++oldIt_;
+      updateValue();
+      return;
+    }
 
-  void advance();
-  void updateValue();
+    // We aren't at the end of either side.
+    // Check to see which one (or both) needs to be advanced.
+    const auto& oldKey = getKey(oldIt_);
+    const auto& newKey = getKey(newIt_);
+    if (oldKey < newKey) {
+      ++oldIt_;
+    } else if (oldKey > newKey) {
+      ++newIt_;
+    } else {
+      ++oldIt_;
+      ++newIt_;
+    }
 
-  InnerIter oldIt_{nullptr};
-  InnerIter newIt_{nullptr};
-  const MapType* oldMap_{nullptr};
-  const MapType* newMap_{nullptr};
+    // Advance past any unchanged nodes.
+    while (oldIt_ != oldMap_->end() && newIt_ != newMap_->end() &&
+           *oldIt_ == *newIt_) {
+      ++oldIt_;
+      ++newIt_;
+    }
+    updateValue();
+  }
+  void updateValue() {
+    if (oldIt_ == oldMap_->end()) {
+      if (newIt_ == newMap_->end()) {
+        value_.reset(nullNode_, nullNode_);
+      } else {
+        value_.reset(nullNode_, getValue(newIt_));
+      }
+      return;
+    }
+    if (newIt_ == newMap_->end()) {
+      value_.reset(getValue(oldIt_), nullNode_);
+      return;
+    }
+    const auto& oldKey = getKey(oldIt_);
+    const auto& newKey = getKey(newIt_);
+    if (oldKey < newKey) {
+      value_.reset(getValue(oldIt_), nullNode_);
+    } else if (newKey < oldKey) {
+      value_.reset(nullNode_, getValue(newIt_));
+    } else {
+      value_.reset(getValue(oldIt_), getValue(newIt_));
+    }
+  }
+
+ public:
+  InnerIter oldIt_;
+  InnerIter newIt_;
+  const MapType* oldMap_;
+  const MapType* newMap_;
   VALUE value_;
-
-  static std::shared_ptr<Node> nullNode_;
+  static const typename VALUE::NodeWrapper nullNode_;
 };
 
-template <typename MAP, typename VALUE, typename MAPPOINTERTRAITS>
-typename NodeMapDelta<MAP, VALUE, MAPPOINTERTRAITS>::Iterator
-NodeMapDelta<MAP, VALUE, MAPPOINTERTRAITS>::begin() const {
-  if (old_ == new_) {
-    return end();
-  }
-  // To support deltas where the old node is null (to represent newly created
-  // nodes), point the old side of the iterator at the new node, but start it
-  // at the end of the map.
-  if (!old_) {
-    return Iterator(getNew(), new_->end(), getNew(), new_->begin());
-  }
-  // And vice-versa for the new node being null (to represent removed nodes).
-  if (!new_) {
-    return Iterator(getOld(), old_->begin(), getOld(), old_->end());
-  }
-  return Iterator(getOld(), old_->begin(), getNew(), new_->begin());
-}
+template <typename MAP, typename VALUE, typename MAP_EXTRACTOR>
+const typename VALUE::NodeWrapper
+    DeltaValueIterator<MAP, VALUE, MAP_EXTRACTOR>::nullNode_ = nullptr;
+template <
+    typename MAP,
+    typename VALUE,
+    typename ITERATOR,
+    typename MAPPOINTERTRAITS = MapPointerTraits<MAP>>
+class MapDeltaImpl {
+ public:
+  using MapPointerType = typename MAPPOINTERTRAITS::MapPointerType;
+  using RawConstPointerType = typename MAPPOINTERTRAITS::RawConstPointerType;
+  using MapType = MAP;
+  using Node = typename MAP::mapped_type;
+  using NodeWrapper = typename VALUE::NodeWrapper;
+  using Iterator = ITERATOR;
 
-template <typename MAP, typename VALUE, typename MAPPOINTERTRAITS>
-typename NodeMapDelta<MAP, VALUE, MAPPOINTERTRAITS>::Iterator
-NodeMapDelta<MAP, VALUE, MAPPOINTERTRAITS>::end() const {
-  if (!old_) {
-    return Iterator(getNew(), new_->end(), getNew(), new_->end());
+  MapDeltaImpl(MapPointerType&& oldMap, MapPointerType&& newMap)
+      : old_(std::move(oldMap)), new_(std::move(newMap)) {}
+
+  RawConstPointerType getOld() const {
+    return MAPPOINTERTRAITS::getRawPointer(old_);
   }
-  if (!new_) {
-    return Iterator(getOld(), old_->end(), getOld(), old_->end());
+  RawConstPointerType getNew() const {
+    return MAPPOINTERTRAITS::getRawPointer(new_);
   }
-  return Iterator(getOld(), old_->end(), getNew(), new_->end());
-}
+
+  /*
+   * Return an iterator pointing to the first change.
+   */
+  Iterator begin() const {
+    if (old_ == new_) {
+      return end();
+    }
+    // To support deltas where the old node is null (to represent newly created
+    // nodes), point the old side of the iterator at the new node, but start it
+    // at the end of the map.
+    if (!old_) {
+      return Iterator(getNew(), new_->end(), getNew(), new_->begin());
+    }
+    // And vice-versa for the new node being null (to represent removed nodes).
+    if (!new_) {
+      return Iterator(getOld(), old_->begin(), getOld(), old_->end());
+    }
+    return Iterator(getOld(), old_->begin(), getNew(), new_->begin());
+  }
+
+  /*
+   * Return an iterator pointing just past the last change.
+   */
+  Iterator end() const {
+    if (!old_) {
+      return Iterator(getNew(), new_->end(), getNew(), new_->end());
+    }
+    if (!new_) {
+      return Iterator(getOld(), old_->end(), getOld(), old_->end());
+    }
+    return Iterator(getOld(), old_->end(), getNew(), new_->end());
+  }
+
+ private:
+  MapPointerType old_;
+  MapPointerType new_;
+};
+/*
+ * NodeMapDelta contains code for examining the differences between two NodeMap
+ * objects.
+ *
+ * The main function of this class is the Iterator that it provides.  This
+ * allows caller to walk over the changed, added, and removed nodes.
+ */
+template <
+    typename MAP,
+    typename VALUE =
+        DeltaValue<typename MAP::Node, std::shared_ptr<typename MAP::Node>>,
+    typename MAPPOINTERTRAITS = MapPointerTraits<MAP>>
+class NodeMapDelta {
+ public:
+  using MapPointerType = typename MAPPOINTERTRAITS::MapPointerType;
+  using RawConstPointerType = typename MAPPOINTERTRAITS::RawConstPointerType;
+  using MapType = MAP;
+  using Node = typename MAP::Node;
+  using NodeWrapper = std::shared_ptr<Node>;
+
+  struct NodeMapExtractor {
+    using KeyType = typename MAP::KeyType;
+    static KeyType getKey(typename MAP::const_iterator i) {
+      return MAP::Traits::getKey(*i);
+    }
+    static const std::shared_ptr<Node> getValue(
+        typename MAP::const_iterator i) {
+      return *i;
+    }
+  };
+  using Iterator = DeltaValueIterator<MAP, VALUE, NodeMapExtractor>;
+  using Impl = MapDeltaImpl<MAP, VALUE, Iterator, MAPPOINTERTRAITS>;
+
+  NodeMapDelta(MapPointerType&& oldMap, MapPointerType&& newMap)
+      : impl_(std::move(oldMap), std::move(newMap)) {}
+
+  RawConstPointerType getOld() const {
+    return impl_.getOld();
+  }
+  RawConstPointerType getNew() const {
+    return impl_.getNew();
+  }
+  Iterator begin() const {
+    return impl_.begin();
+  }
+  Iterator end() const {
+    return impl_.end();
+  }
+
+ private:
+  Impl impl_;
+};
 
 } // namespace facebook::fboss

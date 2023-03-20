@@ -32,16 +32,11 @@ using std::shared_ptr;
 
 DECLARE_bool(enable_acl_table_group);
 
-namespace {
-// We offset the start point in ApplyThriftConfig
-constexpr auto kAclStartPriority = 100000;
-} // namespace
-
 TEST(Acl, applyConfig) {
   FLAGS_enable_acl_table_group = false;
   auto platform = createMockPlatform();
   auto stateV0 = make_shared<SwitchState>();
-  auto aclEntry = make_shared<AclEntry>(0, "acl0");
+  auto aclEntry = make_shared<AclEntry>(0, std::string("acl0"));
   stateV0->addAcl(aclEntry);
   auto aclV0 = stateV0->getAcl("acl0");
   EXPECT_EQ(0, aclV0->getGeneration());
@@ -70,7 +65,7 @@ TEST(Acl, applyConfig) {
   ASSERT_NE(nullptr, aclV1);
   EXPECT_NE(aclV0, aclV1);
 
-  EXPECT_EQ(0 + kAclStartPriority, aclV1->getPriority());
+  EXPECT_EQ(0 + AclTable::kDataplaneAclMaxPriority, aclV1->getPriority());
   EXPECT_EQ(cfg::AclActionType::DENY, aclV1->getActionType());
   EXPECT_EQ(5, aclV1->getSrcPort());
   EXPECT_EQ(8, aclV1->getDstPort());
@@ -131,11 +126,11 @@ TEST(Acl, applyConfig) {
   auto stateV3 = publishAndApplyConfig(stateV2, &configV1, platform.get());
   EXPECT_NE(nullptr, stateV3);
   auto acls = stateV3->getAcls();
-  validateThriftyMigration(*stateV3->getAcls());
+  validateThriftMapMapSerialization(*stateV3->getAcls());
   auto aclV3 = stateV3->getAcl("acl3");
   ASSERT_NE(nullptr, aclV3);
   EXPECT_NE(aclV0, aclV3);
-  EXPECT_EQ(0 + kAclStartPriority, aclV3->getPriority());
+  EXPECT_EQ(0 + AclTable::kDataplaneAclMaxPriority, aclV3->getPriority());
   EXPECT_EQ(cfg::AclActionType::PERMIT, aclV3->getActionType());
   EXPECT_FALSE(!aclV3->getL4SrcPort());
   EXPECT_EQ(aclV3->getL4SrcPort().value(), 1);
@@ -317,7 +312,7 @@ TEST(Acl, Icmp) {
   EXPECT_NE(nullptr, stateV1);
   auto aclV1 = stateV1->getAcl("acl1");
   ASSERT_NE(nullptr, aclV1);
-  EXPECT_EQ(0 + kAclStartPriority, aclV1->getPriority());
+  EXPECT_EQ(0 + AclTable::kDataplaneAclMaxPriority, aclV1->getPriority());
   EXPECT_EQ(cfg::AclActionType::DENY, aclV1->getActionType());
   EXPECT_EQ(128, aclV1->getIcmpType().value());
   EXPECT_EQ(0, aclV1->getIcmpCode().value());
@@ -345,7 +340,7 @@ TEST(Acl, aclModifyPublished) {
   auto state = make_shared<SwitchState>();
   state->publish();
   auto aclMap = state->getAcls();
-  validateThriftyMigration(*aclMap);
+  validateThriftMapMapSerialization(*aclMap);
   EXPECT_NE(aclMap.get(), aclMap->modify(&state));
 }
 
@@ -415,33 +410,43 @@ TEST(Acl, AclGeneration) {
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
   EXPECT_NE(stateV1, nullptr);
   auto acls = stateV1->getAcls();
-  validateThriftyMigration(*acls);
+  validateThriftMapMapSerialization(*acls);
   EXPECT_NE(acls, nullptr);
   EXPECT_NE(acls->getEntryIf("acl1"), nullptr);
   EXPECT_NE(acls->getEntryIf("acl2"), nullptr);
   EXPECT_NE(acls->getEntryIf("acl3"), nullptr);
   EXPECT_NE(acls->getEntryIf("acl5"), nullptr);
 
-  EXPECT_EQ(acls->getEntryIf("acl1")->getPriority(), kAclStartPriority);
-  EXPECT_EQ(acls->getEntryIf("acl4")->getPriority(), kAclStartPriority + 1);
-  EXPECT_EQ(acls->getEntryIf("acl2")->getPriority(), kAclStartPriority + 2);
-  EXPECT_EQ(acls->getEntryIf("acl3")->getPriority(), kAclStartPriority + 3);
-  EXPECT_EQ(acls->getEntryIf("acl5")->getPriority(), kAclStartPriority + 4);
+  EXPECT_EQ(
+      acls->getEntryIf("acl1")->getPriority(),
+      AclTable::kDataplaneAclMaxPriority);
+  EXPECT_EQ(
+      acls->getEntryIf("acl4")->getPriority(),
+      AclTable::kDataplaneAclMaxPriority + 1);
+  EXPECT_EQ(
+      acls->getEntryIf("acl2")->getPriority(),
+      AclTable::kDataplaneAclMaxPriority + 2);
+  EXPECT_EQ(
+      acls->getEntryIf("acl3")->getPriority(),
+      AclTable::kDataplaneAclMaxPriority + 3);
+  EXPECT_EQ(
+      acls->getEntryIf("acl5")->getPriority(),
+      AclTable::kDataplaneAclMaxPriority + 4);
 
   // Ensure that the global actions in global traffic policy has been added to
   // the ACL entries
-  EXPECT_TRUE(acls->getEntryIf("acl5")->getAclAction().has_value());
+  EXPECT_TRUE(acls->getEntryIf("acl5")->getAclAction() != nullptr);
   EXPECT_EQ(
       8,
-      *acls->getEntryIf("acl5")
-           ->getAclAction()
-           ->getSetDscp()
-           .value()
-           .dscpValue());
+      acls->getEntryIf("acl5")
+          ->getAclAction()
+          ->cref<switch_state_tags::setDscp>()
+          ->cref<switch_config_tags::dscpValue>()
+          ->cref());
 }
 
 TEST(Acl, SerializeAclEntry) {
-  auto entry = std::make_unique<AclEntry>(0, "dscp1");
+  auto entry = std::make_unique<AclEntry>(0, std::string("dscp1"));
   entry->setDscp(1);
   entry->setL4SrcPort(179);
   entry->setL4DstPort(179);
@@ -451,35 +456,52 @@ TEST(Acl, SerializeAclEntry) {
   action.setSendToQueue(make_pair(queueAction, false));
   entry->setAclAction(action);
 
-  auto serialized = entry->toFollyDynamic();
-  auto entryBack = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entry);
+  auto serialized = entry->toThrift();
+  auto entryBack = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entry);
 
   EXPECT_TRUE(*entry == *entryBack);
   EXPECT_TRUE(entryBack->getAclAction());
-  auto aclAction = entryBack->getAclAction().value();
-  EXPECT_TRUE(aclAction.getSendToQueue());
-  EXPECT_EQ(aclAction.getSendToQueue().value().second, false);
-  EXPECT_EQ(*aclAction.getSendToQueue().value().first.queueId(), 3);
-
+  auto aclAction = entryBack->getAclAction();
+  EXPECT_TRUE(aclAction->cref<switch_state_tags::sendToQueue>() != nullptr);
+  EXPECT_EQ(
+      aclAction->cref<switch_state_tags::sendToQueue>()
+          ->cref<switch_state_tags::sendToCPU>()
+          ->cref(),
+      false);
+  EXPECT_EQ(
+      aclAction->cref<switch_state_tags::sendToQueue>()
+          ->cref<switch_state_tags::action>()
+          ->cref<switch_config_tags::queueId>()
+          ->cref(),
+      3);
   // change to sendToCPU = true
   action.setSendToQueue(make_pair(queueAction, true));
   EXPECT_EQ(action.getSendToQueue().value().second, true);
   entry->setAclAction(action);
-  serialized = entry->toFollyDynamic();
-  entryBack = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entry);
+  serialized = entry->toThrift();
+  entryBack = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entry);
 
   EXPECT_TRUE(*entry == *entryBack);
   EXPECT_TRUE(entryBack->getAclAction());
-  aclAction = entryBack->getAclAction().value();
-  EXPECT_TRUE(aclAction.getSendToQueue());
-  EXPECT_EQ(aclAction.getSendToQueue().value().second, true);
-  EXPECT_EQ(*aclAction.getSendToQueue().value().first.queueId(), 3);
+  aclAction = entryBack->getAclAction();
+  EXPECT_TRUE(aclAction->cref<switch_state_tags::sendToQueue>() != nullptr);
+  EXPECT_EQ(
+      aclAction->cref<switch_state_tags::sendToQueue>()
+          ->cref<switch_state_tags::sendToCPU>()
+          ->cref(),
+      true);
+  EXPECT_EQ(
+      aclAction->cref<switch_state_tags::sendToQueue>()
+          ->cref<switch_state_tags::action>()
+          ->cref<switch_config_tags::queueId>()
+          ->cref(),
+      3);
 }
 
 TEST(Acl, SerializeRedirectToNextHop) {
-  auto entry = std::make_unique<AclEntry>(0, "stat0");
+  auto entry = std::make_unique<AclEntry>(0, std::string("stat0"));
   MatchAction action = MatchAction();
   auto cfgRedirectToNextHop = cfg::RedirectToNextHopAction();
   std::vector<std::string> nexthops = {
@@ -531,20 +553,28 @@ TEST(Acl, SerializeRedirectToNextHop) {
   auto verifyEntries = [](AclEntry& entry,
                           std::vector<std::string>& nexthops,
                           MatchAction::NextHopSet& nhset) {
-    auto serialized = entry.toFollyDynamic();
-    auto entryBack = AclEntry::fromFollyDynamic(serialized);
+    auto serialized = entry.toThrift();
+    auto entryBack = std::make_shared<AclEntry>(serialized);
     EXPECT_TRUE(entry == *entryBack);
-    validateThriftyMigration(entry);
-    auto aclAction = entryBack->getAclAction().value();
-    auto newRedirectToNextHop = aclAction.getRedirectToNextHop().value();
+    validateThriftStructNodeSerialization(entry);
+    const auto& aclAction = entryBack->getAclAction();
+    const auto& newRedirectToNextHop =
+        aclAction->cref<switch_state_tags::redirectToNextHop>();
     int i = 0;
     int outIntfID = 0;
-    for (const auto& nh : *newRedirectToNextHop.first.redirectNextHops()) {
-      EXPECT_EQ(nh.ip_ref(), nexthops[i]);
-      EXPECT_EQ(nh.intfID_ref().value(), ++outIntfID);
+    const auto& redirectAction =
+        newRedirectToNextHop->cref<switch_state_tags::action>();
+    for (const auto& nh : std::as_const(
+             *(redirectAction->cref<switch_config_tags::redirectNextHops>()))) {
+      EXPECT_EQ(nh->cref<switch_config_tags::ip>()->cref(), nexthops[i]);
+      EXPECT_EQ(nh->cref<switch_config_tags::intfID>()->cref(), ++outIntfID);
       ++i;
     }
-    EXPECT_EQ(nhset, newRedirectToNextHop.second);
+
+    auto nhops = util::toRouteNextHopSet(
+        newRedirectToNextHop->cref<switch_state_tags::resolvedNexthops>()
+            ->toThrift());
+    EXPECT_EQ(nhset, nhops);
     EXPECT_EQ(entry.isEnabled(), entryBack->isEnabled());
   };
   verifyEntries(*entry, nexthops, nhset);
@@ -582,57 +612,83 @@ TEST(Acl, SerializeRedirectToNextHop) {
 }
 
 TEST(Acl, SerializePacketCounter) {
-  auto entry = std::make_unique<AclEntry>(0, "stat0");
+  auto entry = std::make_unique<AclEntry>(0, std::string("stat0"));
   MatchAction action = MatchAction();
   auto counter = cfg::TrafficCounter();
   *counter.name() = "stat0.c";
   action.setTrafficCounter(counter);
   entry->setAclAction(action);
 
-  auto serialized = entry->toFollyDynamic();
-  auto entryBack = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entry);
+  auto serialized = entry->toThrift();
+  auto entryBack = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entry);
 
   EXPECT_TRUE(*entry == *entryBack);
   EXPECT_TRUE(entryBack->getAclAction());
-  auto aclAction = entryBack->getAclAction().value();
-  EXPECT_TRUE(aclAction.getTrafficCounter());
-  EXPECT_EQ(*aclAction.getTrafficCounter()->name(), "stat0.c");
-  EXPECT_EQ(aclAction.getTrafficCounter()->types()->size(), 1);
+  const auto& aclAction = entryBack->getAclAction();
+
+  EXPECT_TRUE(aclAction->cref<switch_state_tags::trafficCounter>() != nullptr);
+
   EXPECT_EQ(
-      aclAction.getTrafficCounter()->types()[0], cfg::CounterType::PACKETS);
+      aclAction->cref<switch_state_tags::trafficCounter>()
+          ->cref<switch_config_tags::name>()
+          ->cref(),
+      "stat0.c");
+  EXPECT_EQ(
+      aclAction->cref<switch_state_tags::trafficCounter>()
+          ->cref<switch_config_tags::types>()
+          ->size(),
+      1);
+  EXPECT_EQ(
+      aclAction->cref<switch_state_tags::trafficCounter>()
+          ->cref<switch_config_tags::types>()
+          ->cref(0)
+          ->toThrift(),
+      cfg::CounterType::PACKETS);
 
   // Test SetDscpMatchAction
-  entry = std::make_unique<AclEntry>(0, "DspNew");
+  entry = std::make_unique<AclEntry>(0, std::string("DspNew"));
   action = MatchAction();
   auto setDscpMatchAction = cfg::SetDscpMatchAction();
   *setDscpMatchAction.dscpValue() = 8;
   action.setSetDscp(setDscpMatchAction);
   entry->setAclAction(action);
 
-  serialized = entry->toFollyDynamic();
-  entryBack = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entry);
+  serialized = entry->toThrift();
+  entryBack = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entry);
 
   EXPECT_TRUE(*entry == *entryBack);
   EXPECT_TRUE(entryBack->getAclAction());
-  aclAction = entryBack->getAclAction().value();
-  EXPECT_TRUE(aclAction.getSetDscp());
-  EXPECT_EQ(*aclAction.getSetDscp().value().dscpValue(), 8);
+  const auto& aclAction1 = entryBack->getAclAction();
+  EXPECT_TRUE(aclAction1->cref<switch_state_tags::setDscp>() != nullptr);
+  EXPECT_EQ(
+      aclAction1->cref<switch_state_tags::setDscp>()
+          ->cref<switch_config_tags::dscpValue>()
+          ->toThrift(),
+      8);
 
   // Set 2 counter types
   *counter.types() = {cfg::CounterType::PACKETS, cfg::CounterType::BYTES};
   action.setTrafficCounter(counter);
   entry->setAclAction(action);
 
-  serialized = entry->toFollyDynamic();
-  entryBack = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entry);
+  serialized = entry->toThrift();
+  entryBack = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entry);
 
   EXPECT_TRUE(*entry == *entryBack);
-  aclAction = entryBack->getAclAction().value();
-  EXPECT_EQ(aclAction.getTrafficCounter()->types()->size(), 2);
-  EXPECT_EQ(*aclAction.getTrafficCounter()->types(), *counter.types());
+  const auto& aclAction2 = entryBack->getAclAction();
+  EXPECT_EQ(
+      aclAction2->cref<switch_state_tags::trafficCounter>()
+          ->cref<switch_config_tags::types>()
+          ->size(),
+      2);
+  EXPECT_EQ(
+      aclAction2->cref<switch_state_tags::trafficCounter>()
+          ->cref<switch_config_tags::types>()
+          ->toThrift(),
+      *counter.types());
 }
 
 TEST(Acl, Ttl) {
@@ -674,7 +730,7 @@ TEST(Acl, Ttl) {
 }
 
 TEST(Acl, TtlSerialization) {
-  auto entry = std::make_unique<AclEntry>(0, "stat0");
+  auto entry = std::make_unique<AclEntry>(0, std::string("stat0"));
   entry->setTtl(AclTtl(42, 0xff));
   auto action = MatchAction();
   auto counter = cfg::TrafficCounter();
@@ -682,9 +738,9 @@ TEST(Acl, TtlSerialization) {
   action.setTrafficCounter(counter);
   entry->setAclAction(action);
 
-  auto serialized = entry->toFollyDynamic();
-  auto entryBack = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entry);
+  auto serialized = entry->toThrift();
+  auto entryBack = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entry);
 
   EXPECT_TRUE(*entry == *entryBack);
   EXPECT_TRUE(entryBack->getTtl());
@@ -702,7 +758,7 @@ TEST(Acl, TtlSerialization) {
 }
 
 TEST(Acl, PacketLookupResultSerialization) {
-  auto entry = std::make_unique<AclEntry>(0, "stat0");
+  auto entry = std::make_unique<AclEntry>(0, std::string("stat0"));
   entry->setPacketLookupResult(
       cfg::PacketLookupResultType::PACKET_LOOKUP_RESULT_MPLS_NO_MATCH);
   auto action = MatchAction();
@@ -711,9 +767,9 @@ TEST(Acl, PacketLookupResultSerialization) {
   action.setTrafficCounter(counter);
   entry->setAclAction(action);
 
-  auto serialized = entry->toFollyDynamic();
-  auto entryBack = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entry);
+  auto serialized = entry->toThrift();
+  auto entryBack = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entry);
 
   EXPECT_TRUE(*entry == *entryBack);
   EXPECT_TRUE(entryBack->getPacketLookupResult());
@@ -723,7 +779,7 @@ TEST(Acl, PacketLookupResultSerialization) {
 }
 
 TEST(Acl, VlanIDSerialization) {
-  auto entry = std::make_unique<AclEntry>(0, "stat0");
+  auto entry = std::make_unique<AclEntry>(0, std::string("stat0"));
   entry->setVlanID(2001);
   auto action = MatchAction();
   auto counter = cfg::TrafficCounter();
@@ -731,9 +787,9 @@ TEST(Acl, VlanIDSerialization) {
   action.setTrafficCounter(counter);
   entry->setAclAction(action);
 
-  auto serialized = entry->toFollyDynamic();
-  auto entryBack = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entry);
+  auto serialized = entry->toThrift();
+  auto entryBack = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entry);
 
   EXPECT_TRUE(*entry == *entryBack);
   EXPECT_TRUE(entryBack->getVlanID());
@@ -815,28 +871,28 @@ TEST(Acl, LookupClassSerialization) {
   action.setTrafficCounter(counter);
 
   // test for lookupClassL2 serialization/de-serialization
-  auto entryL2 = std::make_unique<AclEntry>(0, "stat1");
+  auto entryL2 = std::make_unique<AclEntry>(0, std::string("stat1"));
   auto lookupClassL2 = cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_7;
   entryL2->setLookupClassL2(lookupClassL2);
   entryL2->setAclAction(action);
 
-  auto serialized = entryL2->toFollyDynamic();
-  auto entryBackL2 = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entryL2);
+  auto serialized = entryL2->toThrift();
+  auto entryBackL2 = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entryL2);
 
   EXPECT_TRUE(*entryL2 == *entryBackL2);
   EXPECT_TRUE(entryBackL2->getLookupClassL2());
   EXPECT_EQ(entryBackL2->getLookupClassL2().value(), lookupClassL2);
 
   // test for lookupClassNeighbor serialization/de-serialization
-  auto entryNeighbor = std::make_unique<AclEntry>(0, "stat1");
+  auto entryNeighbor = std::make_unique<AclEntry>(0, std::string("stat1"));
   auto lookupClassNeighbor = cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_7;
   entryNeighbor->setLookupClassNeighbor(lookupClassNeighbor);
   entryNeighbor->setAclAction(action);
 
-  serialized = entryNeighbor->toFollyDynamic();
-  auto entryBackNeighbor = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entryNeighbor);
+  serialized = entryNeighbor->toThrift();
+  auto entryBackNeighbor = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entryNeighbor);
 
   EXPECT_TRUE(*entryNeighbor == *entryBackNeighbor);
   EXPECT_TRUE(entryBackNeighbor->getLookupClassNeighbor());
@@ -844,14 +900,14 @@ TEST(Acl, LookupClassSerialization) {
       entryBackNeighbor->getLookupClassNeighbor().value(), lookupClassNeighbor);
 
   // test for lookupClassRoute serialization/de-serialization
-  auto entryRoute = std::make_unique<AclEntry>(0, "stat1");
+  auto entryRoute = std::make_unique<AclEntry>(0, std::string("stat1"));
   auto lookupClassRoute = cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_7;
   entryRoute->setLookupClassRoute(lookupClassRoute);
   entryRoute->setAclAction(action);
 
-  serialized = entryRoute->toFollyDynamic();
-  auto entryBackRoute = AclEntry::fromFollyDynamic(serialized);
-  validateThriftyMigration(*entryRoute);
+  serialized = entryRoute->toThrift();
+  auto entryBackRoute = std::make_shared<AclEntry>(serialized);
+  validateNodeSerialization(*entryRoute);
 
   EXPECT_TRUE(*entryRoute == *entryBackRoute);
   EXPECT_TRUE(entryBackRoute->getLookupClassRoute());
@@ -919,7 +975,7 @@ TEST(Acl, GetRequiredAclTableQualifiers) {
   auto platform = createMockPlatform();
   auto stateV0 = make_shared<SwitchState>();
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
-  validateThriftyMigration(*stateV1->getAcls());
+  validateThriftMapMapSerialization(*stateV1->getAcls());
   auto q0 =
       stateV1->getAcls()->getEntry("acl0")->getRequiredAclTableQualifiers();
   auto q1 =

@@ -236,12 +236,13 @@ class BcmRtag7Module {
   void enableRtag7(LoadBalancerID);
   void programIPv4FieldSelection(
       LoadBalancer::IPv4FieldsRange v4FieldsRange,
-      LoadBalancer::TransportFieldsRange transportFieldsRange);
+      LoadBalancer::TransportFieldsRange transportFieldsRange,
+      const LoadBalancer::UdfGroupIds& udfGroupIds);
   void programIPv6FieldSelection(
       LoadBalancer::IPv6FieldsRange v6FieldsRange,
-      LoadBalancer::TransportFieldsRange transportFieldsRange);
+      LoadBalancer::TransportFieldsRange transportFieldsRange,
+      const LoadBalancer::UdfGroupIds& udfGroupIds);
   void programFieldControl();
-
   int computeIPv4Subfields(LoadBalancer::IPv4FieldsRange v4FieldsRange) const;
   int computeIPv6Subfields(LoadBalancer::IPv6FieldsRange v6FieldsRange) const;
   int computeTransportSubfields(
@@ -267,6 +268,21 @@ class BcmRtag7Module {
   getTerminatedMPLSFieldSelectionControl(char module);
   static NonTerminatedMPLSFieldSelectionControl
   getNonTerminatedMPLSFieldSelectionControl(char module);
+
+  // udf programming
+  void programUdfSelection(const LoadBalancer::UdfGroupIds& udfGroupIds);
+  int computeUdf(const LoadBalancer::UdfGroupIds& udfGroupIds) const;
+  void deleteUdfHash(
+      const std::string& udfGroupName,
+      const int bcmUdfGroupId,
+      const int bcmUdfFieldSize);
+  void addUdfHash(
+      const std::string& udfGroupName,
+      const int bcmUdfGroupId,
+      const int bcmUdfFieldSize);
+  void programUdfHash(
+      const LoadBalancer::UdfGroupIds& oldUdfGroups,
+      const LoadBalancer::UdfGroupIds& newUdfGroups);
 
   ModuleControl moduleControl_;
   OutputSelectionControl outputControl_;

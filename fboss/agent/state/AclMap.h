@@ -18,26 +18,25 @@
 
 namespace facebook::fboss {
 
-using AclMapTraits = NodeMapTraits<std::string, AclEntry>;
+using AclMapLegacyTraits = NodeMapTraits<std::string, AclEntry>;
 
-struct AclMapThriftTraits
-    : public ThriftyNodeMapTraits<std::string, state::AclEntryFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "name";
-    return _key;
-  }
+using AclMapTypeClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::string,
+    apache::thrift::type_class::structure>;
+using AclMapThriftType = std::map<std::string, state::AclEntryFields>;
 
-  static const KeyType parseKey(const folly::dynamic& key) {
-    return key.asString();
-  }
-};
+class AclMap;
+using AclMapTraits =
+    ThriftMapNodeTraits<AclMap, AclMapTypeClass, AclMapThriftType, AclEntry>;
 
 /*
  * A container for the set of entries.
  */
-class AclMap
-    : public ThriftyNodeMapT<AclMap, AclMapTraits, AclMapThriftTraits> {
+class AclMap : public ThriftMapNode<AclMap, AclMapTraits> {
  public:
+  using Base = ThriftMapNode<AclMap, AclMapTraits>;
+  using Base::modify;
+
   AclMap();
   ~AclMap() override;
 
@@ -45,7 +44,8 @@ class AclMap
     if (numEntries() != aclMap.numEntries()) {
       return false;
     }
-    for (auto const& entry : *this) {
+    for (auto const& iter : *this) {
+      const auto& entry = iter.second;
       if (!aclMap.getEntryIf(entry->getID()) ||
           *(aclMap.getEntry(entry->getID())) != *entry) {
         return false;
@@ -87,9 +87,19 @@ class AclMap
     removeNode(aclEntry);
   }
 
+  static const folly::dynamic& getAclMapName(
+      const folly::dynamic& aclTableJson) {
+    /*
+     * Entries data structure is a vector of maps. For our case, its a vector of
+     * size 1 and the first entry will contain the AclMap with the acl entries
+     * we are interested in. So return the first element
+     */
+    return aclTableJson[0][kAclMap];
+  }
+
  private:
   // Inherit the constructors required for clone()
-  using ThriftyNodeMapT::ThriftyNodeMapT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 
@@ -119,9 +129,9 @@ class PrioAclMap : public NodeMapT<PrioAclMap, PrioAclMapTraits> {
   PrioAclMap() {}
   ~PrioAclMap() override {}
 
-  void addAcls(const std::shared_ptr<AclMap>& acls) {
-    for (const auto& aclEntry : *acls) {
-      addNode(aclEntry);
+  void addAcls(const std::shared_ptr<const AclMap>& acls) {
+    for (const auto& iter : *acls) {
+      addNode(iter.second);
     }
   }
 

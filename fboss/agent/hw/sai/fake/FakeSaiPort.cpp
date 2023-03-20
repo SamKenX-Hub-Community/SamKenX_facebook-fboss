@@ -28,6 +28,11 @@ sai_status_t create_port_fn(
   std::vector<uint32_t> lanes;
   std::optional<sai_uint32_t> speed;
   std::optional<sai_port_fec_mode_t> fecMode;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+  std::optional<bool> useExtendedFec;
+  std::optional<sai_port_fec_mode_extended_t> extendedFecMode;
+#endif
+  std::optional<bool> fabricIsolate;
   std::optional<sai_port_internal_loopback_mode_t> internalLoopbackMode;
   std::optional<sai_port_flow_control_mode_t> flowControlMode;
   std::optional<sai_port_media_type_t> mediaType;
@@ -51,6 +56,17 @@ sai_status_t create_port_fn(
   std::optional<sai_port_ptp_mode_t> ptpMode;
   std::optional<sai_port_priority_flow_control_mode_t> priorityFlowControlMode;
   std::optional<sai_uint8_t> priorityFlowControl;
+  std::optional<sai_uint8_t> priorityFlowControlRx;
+  std::optional<sai_uint8_t> priorityFlowControlTx;
+  std::vector<sai_object_id_t> ingressPriorityGroupList;
+  std::optional<sai_uint32_t> numberOfIngressPriorityGroups;
+  std::optional<sai_object_id_t> qosTcToPriorityGroupMap;
+  std::optional<sai_object_id_t> qosPfcPriorityToQueueMap;
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+  std::optional<sai_uint32_t> interFrameGap;
+#endif
+  std::optional<bool> linkTrainingEnable;
+
   for (int i = 0; i < attr_count; ++i) {
     switch (attr_list[i].id) {
       case SAI_PORT_ATTR_ADMIN_STATE:
@@ -67,6 +83,20 @@ sai_status_t create_port_fn(
       case SAI_PORT_ATTR_FEC_MODE:
         fecMode = static_cast<sai_port_fec_mode_t>(attr_list[i].value.u32);
         break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+      case SAI_PORT_ATTR_USE_EXTENDED_FEC:
+        useExtendedFec = attr_list[i].value.booldata;
+        break;
+      case SAI_PORT_ATTR_FEC_MODE_EXTENDED:
+        extendedFecMode =
+            static_cast<sai_port_fec_mode_extended_t>(attr_list[i].value.u32);
+        break;
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+      case SAI_PORT_ATTR_FABRIC_ISOLATE:
+        fabricIsolate = attr_list[i].value.booldata;
+        break;
+#endif
       case SAI_PORT_ATTR_INTERNAL_LOOPBACK_MODE:
         internalLoopbackMode = static_cast<sai_port_internal_loopback_mode_t>(
             attr_list[i].value.u32);
@@ -121,7 +151,6 @@ sai_status_t create_port_fn(
       case SAI_PORT_ATTR_EGRESS_SAMPLEPACKET_ENABLE:
         egressSamplePacket = attr_list[i].value.oid;
         break;
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
       case SAI_PORT_ATTR_INGRESS_SAMPLE_MIRROR_SESSION: {
         for (int j = 0; j < attr_list[i].value.objlist.count; ++j) {
           ingressMirrorList.push_back(attr_list[i].value.objlist.list[j]);
@@ -132,7 +161,6 @@ sai_status_t create_port_fn(
           egressMirrorList.push_back(attr_list[i].value.objlist.list[j]);
         }
       } break;
-#endif
       case SAI_PORT_ATTR_INGRESS_MACSEC_ACL:
         ingressMacsecAcl = attr_list[i].value.oid;
         break;
@@ -153,6 +181,35 @@ sai_status_t create_port_fn(
       case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL:
         priorityFlowControl = attr_list[i].value.u8;
         break;
+      case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_RX:
+        priorityFlowControlRx = attr_list[i].value.u8;
+        break;
+      case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_TX:
+        priorityFlowControlTx = attr_list[i].value.u8;
+        break;
+      case SAI_PORT_ATTR_INGRESS_PRIORITY_GROUP_LIST: {
+        for (int j = 0; j < attr_list[i].value.objlist.count; ++j) {
+          ingressPriorityGroupList.push_back(
+              attr_list[i].value.objlist.list[j]);
+        }
+      } break;
+      case SAI_PORT_ATTR_NUMBER_OF_INGRESS_PRIORITY_GROUPS:
+        numberOfIngressPriorityGroups = attr_list[i].value.u32;
+        break;
+      case SAI_PORT_ATTR_QOS_TC_TO_PRIORITY_GROUP_MAP:
+        qosTcToPriorityGroupMap = attr_list[i].value.oid;
+        break;
+      case SAI_PORT_ATTR_QOS_PFC_PRIORITY_TO_QUEUE_MAP:
+        qosPfcPriorityToQueueMap = attr_list[i].value.oid;
+        break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+      case SAI_PORT_ATTR_IPG:
+        interFrameGap = attr_list[i].value.u32;
+        break;
+#endif
+      case SAI_PORT_ATTR_LINK_TRAINING_ENABLE:
+        linkTrainingEnable = attr_list[i].value.booldata;
+        break;
       default:
         return SAI_STATUS_INVALID_PARAMETER;
     }
@@ -167,6 +224,17 @@ sai_status_t create_port_fn(
   }
   if (fecMode.has_value()) {
     port.fecMode = fecMode.value();
+  }
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+  if (useExtendedFec.has_value()) {
+    port.useExtendedFec = useExtendedFec.value();
+  }
+  if (extendedFecMode.has_value()) {
+    port.extendedFecMode = extendedFecMode.value();
+  }
+#endif
+  if (fabricIsolate) {
+    port.fabricIsolate = fabricIsolate.value();
   }
   if (internalLoopbackMode.has_value()) {
     port.internalLoopbackMode = internalLoopbackMode.value();
@@ -233,6 +301,33 @@ sai_status_t create_port_fn(
   if (priorityFlowControl.has_value()) {
     port.priorityFlowControl = priorityFlowControl.value();
   }
+  if (priorityFlowControlRx.has_value()) {
+    port.priorityFlowControlRx = priorityFlowControlRx.value();
+  }
+  if (priorityFlowControlTx.has_value()) {
+    port.priorityFlowControlTx = priorityFlowControlTx.value();
+  }
+  if (ingressPriorityGroupList.size()) {
+    port.ingressPriorityGroupList = ingressPriorityGroupList;
+  }
+  if (numberOfIngressPriorityGroups.has_value()) {
+    port.numberOfIngressPriorityGroups = numberOfIngressPriorityGroups.value();
+  }
+  if (qosTcToPriorityGroupMap.has_value()) {
+    port.qosTcToPriorityGroupMap = qosTcToPriorityGroupMap.value();
+  }
+  if (qosPfcPriorityToQueueMap.has_value()) {
+    port.qosPfcPriorityToQueueMap = qosPfcPriorityToQueueMap.value();
+  }
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+  if (interFrameGap.has_value()) {
+    port.interFrameGap = interFrameGap.value();
+  }
+#endif
+  if (linkTrainingEnable.has_value()) {
+    port.linkTrainingEnable = linkTrainingEnable.value();
+  }
+
   return SAI_STATUS_SUCCESS;
 }
 
@@ -276,6 +371,15 @@ sai_status_t set_port_attribute_fn(
     case SAI_PORT_ATTR_FEC_MODE:
       port.fecMode = static_cast<sai_port_fec_mode_t>(attr->value.s32);
       break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+    case SAI_PORT_ATTR_USE_EXTENDED_FEC:
+      port.useExtendedFec = attr->value.booldata;
+      break;
+    case SAI_PORT_ATTR_FEC_MODE_EXTENDED:
+      port.extendedFecMode =
+          static_cast<sai_port_fec_mode_extended_t>(attr->value.u32);
+      break;
+#endif
     case SAI_PORT_ATTR_INTERNAL_LOOPBACK_MODE:
       port.internalLoopbackMode =
           static_cast<sai_port_internal_loopback_mode_t>(attr->value.s32);
@@ -336,7 +440,6 @@ sai_status_t set_port_attribute_fn(
     case SAI_PORT_ATTR_EGRESS_SAMPLEPACKET_ENABLE:
       port.egressSamplePacket = attr->value.oid;
       break;
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
     case SAI_PORT_ATTR_INGRESS_SAMPLE_MIRROR_SESSION: {
       auto& ingressSampleMirrorList = port.ingressSampleMirrorList;
       ingressSampleMirrorList.clear();
@@ -351,7 +454,6 @@ sai_status_t set_port_attribute_fn(
         egressSampleMirrorList.push_back(attr->value.objlist.list[j]);
       }
     } break;
-#endif
     case SAI_PORT_ATTR_PRBS_POLYNOMIAL:
       port.prbsPolynomial = attr->value.u32;
       break;
@@ -384,6 +486,57 @@ sai_status_t set_port_attribute_fn(
                 .list[j];
       }
     } break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+    case SAI_PORT_ATTR_RX_SIGNAL_DETECT: {
+      port.portRxSignalDetect.count =
+          static_cast<sai_port_lane_latch_status_list_t>(
+              attr->value.portlanelatchstatuslist)
+              .count;
+      auto& signalDetectList = port.portRxSignalDetect.list;
+      auto signalDetectVector = std::vector<sai_port_lane_latch_status_t>();
+      signalDetectVector.resize(port.portRxSignalDetect.count);
+      signalDetectList = signalDetectVector.data();
+      for (int j = 0; j < port.portRxSignalDetect.count; j++) {
+        signalDetectList[j] = static_cast<sai_port_lane_latch_status_list_t>(
+                                  attr->value.portlanelatchstatuslist)
+                                  .list[j];
+      }
+    } break;
+    case SAI_PORT_ATTR_RX_LOCK_STATUS: {
+      port.portRxLockStatus.count =
+          static_cast<sai_port_lane_latch_status_list_t>(
+              attr->value.portlanelatchstatuslist)
+              .count;
+      auto& rxLockStatusList = port.portRxLockStatus.list;
+      auto rxLockStatusVector = std::vector<sai_port_lane_latch_status_t>();
+      rxLockStatusVector.resize(port.portRxLockStatus.count);
+      rxLockStatusList = rxLockStatusVector.data();
+      for (int j = 0; j < port.portRxLockStatus.count; j++) {
+        rxLockStatusList[j] = static_cast<sai_port_lane_latch_status_list_t>(
+                                  attr->value.portlanelatchstatuslist)
+                                  .list[j];
+      }
+    } break;
+    case SAI_PORT_ATTR_FEC_ALIGNMENT_LOCK: {
+      port.portFecAlignmentLockStatus.count =
+          static_cast<sai_port_lane_latch_status_list_t>(
+              attr->value.portlanelatchstatuslist)
+              .count;
+      auto& fecAMLockStatusList = port.portFecAlignmentLockStatus.list;
+      auto fecAMLockStatusVector = std::vector<sai_port_lane_latch_status_t>();
+      fecAMLockStatusVector.resize(port.portFecAlignmentLockStatus.count);
+      fecAMLockStatusList = fecAMLockStatusVector.data();
+      for (int j = 0; j < port.portFecAlignmentLockStatus.count; j++) {
+        fecAMLockStatusList[j] = static_cast<sai_port_lane_latch_status_list_t>(
+                                     attr->value.portlanelatchstatuslist)
+                                     .list[j];
+      }
+    } break;
+    case SAI_PORT_ATTR_PCS_RX_LINK_STATUS: {
+      port.portPcsLinkStatus =
+          static_cast<sai_latch_status_t>(attr->value.latchstatus);
+    } break;
+#endif
     case SAI_PORT_ATTR_ERR_STATUS_LIST: {
       port.portError.count =
           static_cast<sai_port_err_status_list_t>(attr->value.porterror).count;
@@ -404,6 +557,41 @@ sai_status_t set_port_attribute_fn(
     case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL:
       port.priorityFlowControl = attr->value.u8;
       break;
+    case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_RX:
+      port.priorityFlowControlRx = attr->value.u8;
+      break;
+    case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_TX:
+      port.priorityFlowControlTx = attr->value.u8;
+      break;
+    case SAI_PORT_ATTR_INGRESS_PRIORITY_GROUP_LIST: {
+      auto& ingressPriorityGroupList = port.ingressPriorityGroupList;
+      ingressPriorityGroupList.clear();
+      for (int j = 0; j < attr->value.objlist.count; ++j) {
+        ingressPriorityGroupList.push_back(attr->value.objlist.list[j]);
+      }
+    } break;
+    case SAI_PORT_ATTR_NUMBER_OF_INGRESS_PRIORITY_GROUPS:
+      port.numberOfIngressPriorityGroups = attr->value.u32;
+      break;
+    case SAI_PORT_ATTR_QOS_TC_TO_PRIORITY_GROUP_MAP:
+      port.qosTcToPriorityGroupMap = attr->value.oid;
+      break;
+    case SAI_PORT_ATTR_QOS_PFC_PRIORITY_TO_QUEUE_MAP:
+      port.qosPfcPriorityToQueueMap = attr->value.oid;
+      break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+    case SAI_PORT_ATTR_IPG:
+      port.interFrameGap = attr->value.u32;
+      break;
+#endif
+    case SAI_PORT_ATTR_LINK_TRAINING_ENABLE:
+      port.linkTrainingEnable = attr->value.booldata;
+      break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+    case SAI_PORT_ATTR_FABRIC_ISOLATE:
+      port.fabricIsolate = attr->value.booldata;
+      break;
+#endif
     default:
       res = SAI_STATUS_INVALID_PARAMETER;
       break;
@@ -450,6 +638,14 @@ sai_status_t get_port_attribute_fn(
       case SAI_PORT_ATTR_FEC_MODE:
         attr[i].value.s32 = static_cast<int32_t>(port.fecMode);
         break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+      case SAI_PORT_ATTR_USE_EXTENDED_FEC:
+        attr[i].value.booldata = port.useExtendedFec;
+        break;
+      case SAI_PORT_ATTR_FEC_MODE_EXTENDED:
+        attr[i].value.u32 = static_cast<uint32_t>(port.extendedFecMode);
+        break;
+#endif
       case SAI_PORT_ATTR_INTERNAL_LOOPBACK_MODE:
         attr[i].value.s32 = static_cast<int32_t>(port.internalLoopbackMode);
         break;
@@ -522,7 +718,6 @@ sai_status_t get_port_attribute_fn(
       case SAI_PORT_ATTR_PORT_SERDES_ID:
         attr[i].value.oid = SAI_NULL_OBJECT_ID;
         break;
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
       case SAI_PORT_ATTR_INGRESS_SAMPLE_MIRROR_SESSION:
         if (port.ingressSampleMirrorList.size() > attr[i].value.objlist.count) {
           attr[i].value.objlist.count = port.ingressSampleMirrorList.size();
@@ -543,7 +738,6 @@ sai_status_t get_port_attribute_fn(
         }
         attr[i].value.objlist.count = port.egressSampleMirrorList.size();
         break;
-#endif
       case SAI_PORT_ATTR_PRBS_POLYNOMIAL:
         attr[i].value.u32 = port.prbsPolynomial;
         break;
@@ -574,12 +768,96 @@ sai_status_t get_port_attribute_fn(
           attr[i].value.porteyevalues.list[j] = port.portEyeValues.list[j];
         }
         break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+      case SAI_PORT_ATTR_RX_SIGNAL_DETECT:
+        attr[i].value.portlanelatchstatuslist.count =
+            port.portRxSignalDetect.count;
+        for (int j = 0; j < port.portRxSignalDetect.count; j++) {
+          attr[i].value.portlanelatchstatuslist.list[j] =
+              port.portRxSignalDetect.list[j];
+        }
+        break;
+      case SAI_PORT_ATTR_RX_LOCK_STATUS:
+        attr[i].value.portlanelatchstatuslist.count =
+            port.portRxLockStatus.count;
+        for (int j = 0; j < port.portRxLockStatus.count; j++) {
+          attr[i].value.portlanelatchstatuslist.list[j] =
+              port.portRxLockStatus.list[j];
+        }
+        break;
+      case SAI_PORT_ATTR_FEC_ALIGNMENT_LOCK:
+        attr[i].value.portlanelatchstatuslist.count =
+            port.portFecAlignmentLockStatus.count;
+        for (int j = 0; j < port.portFecAlignmentLockStatus.count; j++) {
+          attr[i].value.portlanelatchstatuslist.list[j] =
+              port.portFecAlignmentLockStatus.list[j];
+        }
+        break;
+      case SAI_PORT_ATTR_PCS_RX_LINK_STATUS:
+        attr[i].value.latchstatus = port.portPcsLinkStatus;
+        break;
+#endif
       case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_MODE:
         attr[i].value.u32 = static_cast<int32_t>(port.priorityFlowControlMode);
         break;
       case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL:
         attr[i].value.u8 = port.priorityFlowControl;
         break;
+      case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_RX:
+        attr[i].value.u8 = port.priorityFlowControlRx;
+        break;
+      case SAI_PORT_ATTR_PRIORITY_FLOW_CONTROL_TX:
+        attr[i].value.u8 = port.priorityFlowControlTx;
+        break;
+      case SAI_PORT_ATTR_INGRESS_PRIORITY_GROUP_LIST: {
+        if (port.ingressPriorityGroupList.size() >
+            attr[i].value.objlist.count) {
+          attr[i].value.objlist.count = port.ingressPriorityGroupList.size();
+          return SAI_STATUS_BUFFER_OVERFLOW;
+        }
+        for (int j = 0; j < port.ingressPriorityGroupList.size(); ++j) {
+          attr[i].value.objlist.list[j] = port.ingressPriorityGroupList[j];
+        }
+        attr[i].value.objlist.count = port.ingressPriorityGroupList.size();
+      } break;
+      case SAI_PORT_ATTR_NUMBER_OF_INGRESS_PRIORITY_GROUPS:
+        attr[i].value.u32 = port.numberOfIngressPriorityGroups;
+        break;
+      case SAI_PORT_ATTR_QOS_TC_TO_PRIORITY_GROUP_MAP:
+        attr[i].value.oid = port.qosTcToPriorityGroupMap;
+        break;
+      case SAI_PORT_ATTR_QOS_PFC_PRIORITY_TO_QUEUE_MAP:
+        attr[i].value.oid = port.qosPfcPriorityToQueueMap;
+        break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+      case SAI_PORT_ATTR_IPG:
+        attr[i].value.u32 = port.interFrameGap;
+        break;
+#endif
+      case SAI_PORT_ATTR_LINK_TRAINING_ENABLE:
+        attr->value.booldata = port.linkTrainingEnable;
+        break;
+      case SAI_PORT_ATTR_FABRIC_REACHABILITY:
+        attr->value.reachability.switch_id = 0;
+        attr->value.reachability.reachable = false;
+        break;
+      case SAI_PORT_ATTR_FABRIC_ATTACHED_SWITCH_ID:
+        attr->value.u32 = 0;
+        break;
+      case SAI_PORT_ATTR_FABRIC_ATTACHED_SWITCH_TYPE:
+        attr->value.u32 = SAI_SWITCH_TYPE_VOQ;
+        break;
+      case SAI_PORT_ATTR_FABRIC_ATTACHED:
+        attr->value.booldata = false;
+        break;
+      case SAI_PORT_ATTR_FABRIC_ATTACHED_PORT_INDEX:
+        attr->value.u32 = 0;
+        break;
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+      case SAI_PORT_ATTR_FABRIC_ISOLATE:
+        attr->value.booldata = port.fabricIsolate;
+        break;
+#endif
       default:
         return SAI_STATUS_INVALID_PARAMETER;
     }

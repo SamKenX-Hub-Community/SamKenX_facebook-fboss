@@ -17,6 +17,7 @@
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/platforms/tests/utils/TestPlatformTypes.h"
 #include "fboss/agent/rib/RoutingInformationBase.h"
+#include "fboss/agent/test/TestEnsembleIf.h"
 #include "fboss/agent/types.h"
 
 #include <folly/Synchronized.h>
@@ -27,6 +28,9 @@
 
 DECLARE_bool(mmu_lossless_mode);
 DECLARE_bool(qgroup_guarantee_enable);
+DECLARE_bool(enable_exact_match);
+DECLARE_bool(flowletSwitchingEnable);
+DECLARE_bool(skip_buffer_reservation);
 
 namespace folly {
 class FunctionScheduler;
@@ -38,7 +42,7 @@ class Platform;
 class SwitchState;
 class HwLinkStateToggler;
 
-class HwSwitchEnsemble : public HwSwitch::Callback {
+class HwSwitchEnsemble : public TestEnsembleIf {
  public:
   class HwSwitchEventObserverIf {
    public:
@@ -76,8 +80,7 @@ class HwSwitchEnsemble : public HwSwitch::Callback {
   void stopObservers();
   struct HwSwitchEnsembleInitInfo {
     std::optional<TransceiverInfo> overrideTransceiverInfo;
-    cfg::SwitchType switchType = cfg::SwitchType::NPU;
-    std::optional<int64_t> switchId;
+    std::optional<std::map<int64_t, cfg::DsfNode>> overrideDsfNodes;
   };
   enum Feature : uint32_t {
     PACKET_RX,
@@ -90,17 +93,19 @@ class HwSwitchEnsemble : public HwSwitch::Callback {
   explicit HwSwitchEnsemble(const Features& featuresDesired);
   ~HwSwitchEnsemble() override;
   std::shared_ptr<SwitchState> applyNewState(
-      std::shared_ptr<SwitchState> newState) {
-    return applyNewStateImpl(newState, false);
+      std::shared_ptr<SwitchState> newState,
+      bool rollbackOnHwOverflow = false) override {
+    return applyNewStateImpl(newState, false, rollbackOnHwOverflow);
   }
   std::shared_ptr<SwitchState> applyNewStateTransaction(
       std::shared_ptr<SwitchState> newState) {
     return applyNewStateImpl(newState, true);
   }
-  void applyInitialConfig(const cfg::SwitchConfig& cfg);
-  std::shared_ptr<SwitchState> applyNewConfig(const cfg::SwitchConfig& config);
+  void applyInitialConfig(const cfg::SwitchConfig& cfg) override;
+  std::shared_ptr<SwitchState> applyNewConfig(
+      const cfg::SwitchConfig& config) override;
 
-  std::shared_ptr<SwitchState> getProgrammedState() const;
+  std::shared_ptr<SwitchState> getProgrammedState() const override;
   HwLinkStateToggler* getLinkToggler() {
     return linkToggler_.get();
   }
@@ -113,12 +118,15 @@ class HwSwitchEnsemble : public HwSwitch::Callback {
   virtual const Platform* getPlatform() const {
     return platform_.get();
   }
-  virtual HwSwitch* getHwSwitch();
-  virtual const HwSwitch* getHwSwitch() const {
+  HwSwitch* getHwSwitch() override;
+  const HwSwitch* getHwSwitch() const override {
     return const_cast<HwSwitchEnsemble*>(this)->getHwSwitch();
   }
   const HwAsic* getAsic() const {
     return getPlatform()->getAsic();
+  }
+  virtual std::map<int64_t, cfg::DsfNode> dsfNodesFromInputConfig() const {
+    return {};
   }
   virtual void init(
       const HwSwitchEnsemble::HwSwitchEnsembleInitInfo& /*info*/) = 0;
@@ -165,12 +173,20 @@ class HwSwitchEnsemble : public HwSwitch::Callback {
       uint32_t retries = 20,
       std::chrono::duration<uint32_t, std::milli> msBetweenRetry =
           std::chrono::milliseconds(20));
+  bool waitStatsCondition(
+      const std::function<bool()>& conditionFn,
+      const std::function<void()>& updateStatsFn,
+      uint32_t retries = 20,
+      const std::chrono::duration<uint32_t, std::milli> msBetweenRetry =
+          std::chrono::milliseconds(20));
 
-  virtual std::vector<PortID> masterLogicalPortIds() const = 0;
+  virtual std::vector<PortID> masterLogicalPortIds(
+      const std::set<cfg::PortType>& filter = {}) const = 0;
+  std::vector<SystemPortID> masterLogicalSysPortIds() const;
   virtual std::vector<PortID> getAllPortsInGroup(PortID portID) const = 0;
   virtual std::vector<FlexPortMode> getSupportedFlexPortModes() const = 0;
   virtual bool isRouteScaleEnabled() const = 0;
-  virtual uint64_t getSwitchId() const = 0;
+  virtual uint64_t getSdkSwitchId() const = 0;
 
   virtual void dumpHwCounters() const = 0;
   /*
@@ -180,13 +196,19 @@ class HwSwitchEnsemble : public HwSwitch::Callback {
       const std::vector<PortID>& ports);
   HwPortStats getLatestPortStats(PortID port);
   /*
+   * Get latest sys port stats for given sys ports
+   */
+  virtual std::map<SystemPortID, HwSysPortStats> getLatestSysPortStats(
+      const std::vector<SystemPortID>& ports);
+  HwSysPortStats getLatestSysPortStats(SystemPortID port);
+  /*
    * Get latest stats for given aggregate ports
    */
   virtual std::map<AggregatePortID, HwTrunkStats> getLatestAggregatePortStats(
       const std::vector<AggregatePortID>& aggregatePorts) = 0;
   HwTrunkStats getLatestAggregatePortStats(AggregatePortID port);
 
-  folly::dynamic gracefulExitState() const;
+  std::tuple<folly::dynamic, state::WarmbootState> gracefulExitState() const;
   /*
    * Initiate graceful exit
    */
@@ -220,6 +242,10 @@ class HwSwitchEnsemble : public HwSwitch::Callback {
 
   virtual bool isSai() const = 0;
 
+  std::vector<PortID> filterByPortTypes(
+      const std::set<cfg::PortType>& filter,
+      const std::vector<PortID>& portIDs) const;
+
  protected:
   /*
    * Setup ensemble
@@ -235,11 +261,14 @@ class HwSwitchEnsemble : public HwSwitch::Callback {
   }
 
  private:
+  std::shared_ptr<SwitchState> updateEncapIndices(
+      const std::shared_ptr<SwitchState>& in) const;
   // To update programmed state after rollback
   friend class SaiRollbackTest;
   std::shared_ptr<SwitchState> applyNewStateImpl(
       const std::shared_ptr<SwitchState>& newState,
-      bool transaction);
+      bool transaction,
+      bool disableAppliedStateVerification = false);
   virtual std::unique_ptr<std::thread> setupThrift() = 0;
 
   void addOrUpdateCounter(const PortID& port, const bool deadlock);

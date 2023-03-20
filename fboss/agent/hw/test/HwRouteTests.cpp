@@ -13,8 +13,6 @@
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/hw/test/HwTestMplsUtils.h"
-#include "fboss/agent/hw/test/HwTestPacketSnooper.h"
-#include "fboss/agent/hw/test/HwTestPacketTrapEntry.h"
 #include "fboss/agent/hw/test/HwTestPacketUtils.h"
 #include "fboss/agent/hw/test/HwTestRouteUtils.h"
 #include "fboss/agent/packet/PktFactory.h"
@@ -22,6 +20,7 @@
 #include "fboss/agent/state/NodeBase-defs.h"
 #include "fboss/agent/state/Port.h"
 #include "fboss/agent/test/EcmpSetupHelper.h"
+#include "fboss/lib/CommonUtils.h"
 
 #include "fboss/agent/AddressUtil.h"
 #include "fboss/agent/if/gen-cpp2/common_types.h"
@@ -41,13 +40,11 @@ class HwRouteTest : public HwLinkStateDependentTest {
 
  protected:
   cfg::SwitchConfig initialConfig() const override {
-    return utility::onePortPerVlanConfig(
+    return utility::onePortPerInterfaceConfig(
         getHwSwitch(),
-        {masterLogicalPortIds()[0],
-         masterLogicalPortIds()[1],
-         masterLogicalPortIds()[2],
-         masterLogicalPortIds()[3]},
-        cfg::PortLoopbackMode::MAC);
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode(),
+        true);
   }
 
   HwSwitchEnsemble::Features featuresDesired() const override {
@@ -65,7 +62,7 @@ class HwRouteTest : public HwLinkStateDependentTest {
   std::vector<PortDescriptor> portDescs() const {
     std::vector<PortDescriptor> ports;
     for (auto i = 0; i < 4; ++i) {
-      ports.push_back(PortDescriptor(masterLogicalPortIds()[i]));
+      ports.push_back(PortDescriptor(masterLogicalInterfacePortIds()[i]));
     }
     return ports;
   }
@@ -74,7 +71,8 @@ class HwRouteTest : public HwLinkStateDependentTest {
       static const std::vector<RoutePrefix<AddrT>> routePrefixes = {
           RoutePrefix<folly::IPAddressV4>{folly::IPAddressV4{"10.10.1.0"}, 24},
           RoutePrefix<folly::IPAddressV4>{folly::IPAddressV4{"10.20.1.0"}, 24},
-          RoutePrefix<folly::IPAddressV4>{folly::IPAddressV4{"10.30.1.0"}, 24}};
+          RoutePrefix<folly::IPAddressV4>{folly::IPAddressV4{"10.30.1.0"}, 24},
+          RoutePrefix<folly::IPAddressV4>{folly::IPAddressV4{"10.40.1.1"}, 32}};
 
       return routePrefixes;
     } else {
@@ -84,7 +82,9 @@ class HwRouteTest : public HwLinkStateDependentTest {
           RoutePrefix<folly::IPAddressV6>{
               folly::IPAddressV6{"2803:6080:d038:3064::"}, 64},
           RoutePrefix<folly::IPAddressV6>{
-              folly::IPAddressV6{"2803:6080:d038:3065::"}, 64}};
+              folly::IPAddressV6{"2803:6080:d038:3065::"}, 64},
+          RoutePrefix<folly::IPAddressV6>{
+              folly::IPAddressV6{"2803:6080:d038:3065::1"}, 128}};
 
       return routePrefixes;
     }
@@ -119,6 +119,10 @@ class HwRouteTest : public HwLinkStateDependentTest {
     return kGetRoutePrefixes()[2];
   }
 
+  RoutePrefix<AddrT> kGetRoutePrefix3() const {
+    return kGetRoutePrefixes()[3];
+  }
+
   std::shared_ptr<SwitchState> addRoutes(
       const std::shared_ptr<SwitchState>& inState,
       const std::vector<RoutePrefix<AddrT>>& routePrefixes) {
@@ -149,9 +153,8 @@ TYPED_TEST_SUITE(HwRouteTest, IpTypes);
 TYPED_TEST(HwRouteTest, VerifyClassID) {
   auto setup = [=]() {
     // 3 routes r0, r1, r2. r0 & r1 have classID, r2 does not.
-    auto state = this->applyNewConfig(this->initialConfig());
-    auto state2 = this->addRoutes(
-        state,
+    this->addRoutes(
+        this->getProgrammedState(),
         {this->kGetRoutePrefix0(),
          this->kGetRoutePrefix1(),
          this->kGetRoutePrefix2()});
@@ -192,8 +195,7 @@ TYPED_TEST(HwRouteTest, VerifyClassID) {
 
 TYPED_TEST(HwRouteTest, VerifyClassIdWithNhopResolutionFlap) {
   auto setup = [=]() {
-    auto state = this->applyNewConfig(this->initialConfig());
-    this->addRoutes(state, {this->kGetRoutePrefix0()});
+    this->addRoutes(this->getProgrammedState(), {this->kGetRoutePrefix0()});
     auto updater = this->getHwSwitchEnsemble()->getRouteUpdater();
     updater.programClassID(
         this->kRouterID(),
@@ -225,7 +227,6 @@ TYPED_TEST(HwRouteTest, UnresolvedAndResolvedNextHop) {
   using AddrT = typename TestFixture::Type;
   auto ports = this->portDescs();
   auto setup = [=]() {
-    this->applyNewConfig(this->initialConfig());
     utility::EcmpSetupTargetedPorts<AddrT> ecmpHelper(
         this->getProgrammedState(), this->kRouterID());
     ecmpHelper.programRoutes(
@@ -265,7 +266,6 @@ TYPED_TEST(HwRouteTest, UnresolveResolvedNextHop) {
   using AddrT = typename TestFixture::Type;
 
   auto setup = [=]() {
-    this->applyNewConfig(this->initialConfig());
     utility::EcmpSetupAnyNPorts<AddrT> ecmpHelper(
         this->getProgrammedState(), this->kRouterID());
     this->applyNewState(
@@ -293,7 +293,6 @@ TYPED_TEST(HwRouteTest, UnresolvedAndResolvedMultiNextHop) {
   auto setup = [=]() {
     utility::EcmpSetupTargetedPorts<AddrT> ecmpHelper(
         this->getProgrammedState(), this->kRouterID());
-    this->applyNewConfig(this->initialConfig());
     ecmpHelper.programRoutes(
         this->getRouteUpdater(),
         {ports[0], ports[1]},
@@ -351,7 +350,6 @@ TYPED_TEST(HwRouteTest, UnresolvedAndResolvedMultiNextHop) {
 TYPED_TEST(HwRouteTest, ResolvedMultiNexthopToUnresolvedSingleNexthop) {
   auto ports = this->portDescs();
   using AddrT = typename TestFixture::Type;
-  auto setup = [=]() { this->applyNewConfig(this->initialConfig()); };
   auto verify = [=]() {
     utility::EcmpSetupTargetedPorts<AddrT> ecmpHelper(
         this->getProgrammedState(), this->kRouterID());
@@ -380,17 +378,17 @@ TYPED_TEST(HwRouteTest, ResolvedMultiNexthopToUnresolvedSingleNexthop) {
         ecmpHelper.nhop(ports[1]).ip));
     this->applyNewState(ecmpHelper.unresolveNextHops(
         this->getProgrammedState(),
-        {PortDescriptor(this->masterLogicalPortIds()[0]),
-         PortDescriptor(this->masterLogicalPortIds()[1])}));
+        {PortDescriptor(this->masterLogicalInterfacePortIds()[0]),
+         PortDescriptor(this->masterLogicalInterfacePortIds()[1])}));
     this->applyNewState(ecmpHelper.resolveNextHops(
         this->getProgrammedState(),
-        {PortDescriptor(this->masterLogicalPortIds()[0])}));
+        {PortDescriptor(this->masterLogicalInterfacePortIds()[0])}));
     ecmpHelper.programRoutes(
         this->getRouteUpdater(),
-        {PortDescriptor(this->masterLogicalPortIds()[0])},
+        {PortDescriptor(this->masterLogicalInterfacePortIds()[0])},
         {this->kGetRoutePrefix0()});
   };
-  this->verifyAcrossWarmBoots(setup, verify);
+  this->verifyAcrossWarmBoots([] {}, verify);
 }
 
 TYPED_TEST(HwRouteTest, StaticIp2MplsRoutes) {
@@ -419,14 +417,14 @@ TYPED_TEST(HwRouteTest, StaticIp2MplsRoutes) {
         this->getProgrammedState(), this->kRouterID());
     ecmpHelper.programRoutes(
         this->getRouteUpdater(),
-        {PortDescriptor(this->masterLogicalPortIds()[0]),
-         PortDescriptor(this->masterLogicalPortIds()[1])},
+        {PortDescriptor(this->masterLogicalInterfacePortIds()[0]),
+         PortDescriptor(this->masterLogicalInterfacePortIds()[1])},
         {this->kGetRoutePrefix0()});
 
     this->applyNewState(ecmpHelper.resolveNextHops(
         this->getProgrammedState(),
-        {PortDescriptor(this->masterLogicalPortIds()[0]),
-         PortDescriptor(this->masterLogicalPortIds()[1])}));
+        {PortDescriptor(this->masterLogicalInterfacePortIds()[0]),
+         PortDescriptor(this->masterLogicalInterfacePortIds()[1])}));
   };
   auto verify = [=]() {
     // prefix 1 subnet reachable via prefix 0 with mpls stack over this stack
@@ -448,9 +446,9 @@ TYPED_TEST(HwRouteTest, StaticIp2MplsRoutes) {
 
 TYPED_TEST(HwRouteTest, VerifyRouting) {
   if (this->getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_FAKE ||
+          cfg::AsicType::ASIC_TYPE_FAKE ||
       this->getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_MOCK) {
+          cfg::AsicType::ASIC_TYPE_MOCK) {
     GTEST_SKIP();
     return;
   }
@@ -458,7 +456,6 @@ TYPED_TEST(HwRouteTest, VerifyRouting) {
   auto constexpr isV4 = std::is_same_v<AddrT, folly::IPAddressV4>;
   auto ports = this->portDescs();
   auto setup = [=]() {
-    this->applyNewConfig(this->initialConfig());
     utility::EcmpSetupTargetedPorts<AddrT> ecmpHelper(
         this->getProgrammedState(), this->kRouterID());
     this->applyNewState(
@@ -467,9 +464,12 @@ TYPED_TEST(HwRouteTest, VerifyRouting) {
         this->getRouteUpdater(), {ports[0]}, {this->kDefaultPrefix()});
   };
   auto verify = [=]() {
+    const auto egressPort = ports[0].phyPortID();
     auto vlanId = utility::firstVlanID(this->initialConfig());
-    auto intfMac = utility::getInterfaceMac(this->getProgrammedState(), vlanId);
+    auto intfMac = utility::getFirstInterfaceMac(this->getProgrammedState());
 
+    auto beforeOutPkts =
+        *this->getLatestPortStats(egressPort).outUnicastPkts__ref();
     auto v4TxPkt = utility::makeUDPTxPacket(
         this->getHwSwitch(),
         vlanId,
@@ -478,9 +478,7 @@ TYPED_TEST(HwRouteTest, VerifyRouting) {
         folly::IPAddressV4("101.0.0.1"),
         folly::IPAddressV4("201.0.0.1"),
         1234,
-        4321,
-        0,
-        255);
+        4321);
 
     auto v6TxPkt = utility::makeUDPTxPacket(
         this->getHwSwitch(),
@@ -490,27 +488,84 @@ TYPED_TEST(HwRouteTest, VerifyRouting) {
         folly::IPAddressV6("101::1"),
         folly::IPAddressV6("201::1"),
         1234,
-        4321,
-        0,
-        255);
+        4321);
 
-    auto ensemble = this->getHwSwitchEnsemble();
-    auto snooper = std::make_unique<HwTestPacketSnooper>(ensemble);
-    auto entry = std::make_unique<HwTestPacketTrapEntry>(
-        ensemble->getHwSwitch(), ports[0].phyPortID());
     if (isV4) {
       this->getHwSwitchEnsemble()->ensureSendPacketOutOfPort(
           std::move(v4TxPkt), ports[1].phyPortID());
-
     } else {
       this->getHwSwitchEnsemble()->ensureSendPacketOutOfPort(
           std::move(v6TxPkt), ports[1].phyPortID());
     }
-
-    auto frameRx = snooper->waitForPacket(1);
-    ASSERT_TRUE(frameRx.has_value());
+    WITH_RETRIES({
+      auto afterOutPkts =
+          *this->getLatestPortStats(egressPort).outUnicastPkts__ref();
+      XLOG(DBG2) << "Stats:: beforeOutPkts: " << beforeOutPkts
+                 << " afterOutPkts: " << afterOutPkts;
+      EXPECT_EVENTUALLY_EQ(afterOutPkts - 1, beforeOutPkts);
+    });
   };
 
   this->verifyAcrossWarmBoots(setup, verify);
 }
+
+TYPED_TEST(HwRouteTest, verifyHostRouteChange) {
+  // Don't run this test on fake asic
+  if (this->getPlatform()->getAsic()->getAsicType() ==
+          cfg::AsicType::ASIC_TYPE_FAKE ||
+      this->getPlatform()->getAsic()->getAsicType() ==
+          cfg::AsicType::ASIC_TYPE_MOCK) {
+    GTEST_SKIP();
+    return;
+  }
+
+  using AddrT = typename TestFixture::Type;
+  auto ports = this->portDescs();
+
+  auto setup = [=]() {
+    utility::EcmpSetupTargetedPorts<AddrT> ecmpHelper(
+        this->getProgrammedState(), this->kRouterID());
+    this->applyNewState(ecmpHelper.resolveNextHops(
+        this->getProgrammedState(), {ports[0], ports[1]}));
+    ecmpHelper.programRoutes(
+        this->getRouteUpdater(), {ports[1]}, {this->kGetRoutePrefix3()});
+    ecmpHelper.programRoutes(
+        this->getRouteUpdater(),
+        {ports[0], ports[1]},
+        {this->kGetRoutePrefix3()});
+  };
+
+  auto verify = [=]() {
+    auto routePrefix = this->kGetRoutePrefix3();
+    auto cidr = folly::CIDRNetwork(routePrefix.network(), routePrefix.mask());
+    utility::EcmpSetupTargetedPorts<AddrT> ecmpHelper(
+        this->getProgrammedState(), this->kRouterID());
+    EXPECT_TRUE(utility::isHwRouteToNextHop(
+        this->getHwSwitch(),
+        this->kRouterID(),
+        cidr,
+        ecmpHelper.nhop(ports[0]).ip));
+    EXPECT_TRUE(utility::isHwRouteToNextHop(
+        this->getHwSwitch(),
+        this->kRouterID(),
+        cidr,
+        ecmpHelper.nhop(ports[1]).ip));
+  };
+
+  this->verifyAcrossWarmBoots(setup, verify);
+}
+
+TYPED_TEST(HwRouteTest, VerifyDefaultRoute) {
+  auto verify = [=]() {
+    // default routes should exist always.
+    utility::isHwRoutePresent(
+        this->getHwSwitch(), this->kRouterID(), {folly::IPAddress("::"), 0});
+    utility::isHwRoutePresent(
+        this->getHwSwitch(),
+        this->kRouterID(),
+        {folly::IPAddress("0.0.0.0"), 0});
+  };
+  this->verifyAcrossWarmBoots([] {}, verify);
+}
+
 } // namespace facebook::fboss

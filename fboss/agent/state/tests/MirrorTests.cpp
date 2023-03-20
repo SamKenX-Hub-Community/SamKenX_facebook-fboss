@@ -331,13 +331,13 @@ TEST_F(MirrorTest, AclMirror) {
   auto entry = state_->getAcls()->getEntryIf("acl0");
   EXPECT_NE(entry, nullptr);
   auto action = entry->getAclAction();
-  ASSERT_EQ(action.has_value(), true);
-  auto inMirror = action.value().getIngressMirror();
-  EXPECT_EQ(inMirror.has_value(), true);
-  EXPECT_EQ(inMirror.value(), "mirror0");
-  auto egMirror = action.value().getEgressMirror();
-  EXPECT_EQ(egMirror.has_value(), true);
-  EXPECT_EQ(egMirror.value(), "mirror0");
+  ASSERT_EQ(action != nullptr, true);
+  auto inMirror = action->cref<switch_state_tags::ingressMirror>();
+  EXPECT_TRUE(inMirror.has_value());
+  EXPECT_EQ(inMirror->cref(), "mirror0");
+  auto egMirror = action->cref<switch_state_tags::egressMirror>();
+  EXPECT_TRUE(egMirror.has_value());
+  EXPECT_EQ(egMirror->cref(), "mirror0");
 }
 
 TEST_F(MirrorTest, PortMirror) {
@@ -441,13 +441,13 @@ TEST_F(MirrorTest, AddAclAndPortToMirror) {
     auto entry = state_->getAcls()->getEntryIf(acls[i]);
     EXPECT_NE(entry, nullptr);
     auto action = entry->getAclAction();
-    ASSERT_EQ(action.has_value(), true);
-    auto aclInMirror = action.value().getIngressMirror();
-    EXPECT_EQ(aclInMirror.has_value(), true);
-    EXPECT_EQ(aclInMirror.value(), "mirror0");
-    auto aclEgMirror = action.value().getEgressMirror();
-    EXPECT_EQ(aclEgMirror.has_value(), true);
-    EXPECT_EQ(aclEgMirror.value(), "mirror0");
+    ASSERT_EQ(action != nullptr, true);
+    auto aclInMirror = action->cref<switch_state_tags::ingressMirror>();
+    EXPECT_TRUE(aclInMirror.has_value());
+    EXPECT_EQ(aclInMirror->cref(), "mirror0");
+    auto aclEgMirror = action->cref<switch_state_tags::egressMirror>();
+    EXPECT_TRUE(aclEgMirror.has_value());
+    EXPECT_EQ(aclEgMirror->cref(), "mirror0");
 
     auto port = state_->getPorts()->getPortIf(ports[i]);
     EXPECT_NE(port, nullptr);
@@ -495,13 +495,13 @@ TEST_F(MirrorTest, DeleleteAclAndPortToMirror) {
     } else {
       EXPECT_NE(entry, nullptr);
       auto action = entry->getAclAction();
-      ASSERT_EQ(action.has_value(), true);
-      auto aclInMirror = action.value().getIngressMirror();
-      EXPECT_EQ(aclInMirror.has_value(), true);
-      EXPECT_EQ(aclInMirror.value(), "mirror0");
-      auto aclEgMirror = action.value().getEgressMirror();
-      EXPECT_EQ(aclEgMirror.has_value(), true);
-      EXPECT_EQ(aclEgMirror.value(), "mirror0");
+      ASSERT_EQ(action != nullptr, true);
+      auto aclInMirror = action->cref<switch_state_tags::ingressMirror>();
+      EXPECT_TRUE(aclInMirror.has_value());
+      EXPECT_EQ(aclInMirror->cref(), "mirror0");
+      auto aclEgMirror = action->cref<switch_state_tags::egressMirror>();
+      EXPECT_TRUE(aclEgMirror.has_value());
+      EXPECT_EQ(aclEgMirror->cref(), "mirror0");
 
       auto port = state_->getPorts()->getPortIf(ports[i]);
       EXPECT_NE(port, nullptr);
@@ -546,7 +546,7 @@ TEST_F(MirrorTest, MirrorMirrorEgressPort) {
   publishWithFbossError();
 }
 
-TEST_F(MirrorTest, ToAndFromDynamic) {
+TEST_F(MirrorTest, ToAndFromThrift) {
   config_.mirrors()->push_back(
       utility::getSPANMirror("span", MirrorTest::egressPort));
 
@@ -579,8 +579,7 @@ TEST_F(MirrorTest, ToAndFromDynamic) {
       folly::MacAddress("1:1:1:1:1:1"),
       folly::MacAddress("2:2:2:2:2:2")));
   auto withTunnelType = state_->getMirrors()->getMirrorIf("with_tunnel_type");
-  auto reconstructedState =
-      SwitchState::fromFollyDynamic(state_->toFollyDynamic());
+  auto reconstructedState = SwitchState::fromThrift(state_->toThrift());
   EXPECT_EQ(
       *(reconstructedState->getMirrors()->getMirrorIf("span")),
       *(state_->getMirrors()->getMirrorIf("span")));
@@ -653,44 +652,7 @@ TEST_F(MirrorTest, MirrorThrifty) {
   auto& mirrors = state_->getMirrors();
   auto mirrorsThrift = mirrors->toThrift();
   auto newMirrors = MirrorMap::fromThrift(mirrorsThrift);
-  EXPECT_EQ(*mirrors, *newMirrors);
   EXPECT_EQ(mirrorsThrift, newMirrors->toThrift());
-}
-
-TEST_F(MirrorTest, MirrorMapThrifty) {
-  config_.mirrors()->push_back(
-      utility::getSPANMirror("mirror0", MirrorTest::egressPort));
-  config_.mirrors()->push_back(
-      utility::getGREMirror("mirror1", MirrorTest::tunnelDestination));
-  config_.mirrors()->push_back(utility::getSFlowMirror(
-      "mirror2",
-      8998,
-      9889,
-      MirrorTest::tunnelDestination,
-      folly::IPAddress("10.0.0.1"),
-      MirrorTest::dscp,
-      true));
-  publishWithStateUpdate();
-  auto mirrors = state_->getMirrors()->modify(&state_);
-  auto mirror2 = mirrors->getNode("mirror2")->clone();
-
-  MirrorTunnel tunnel(
-      mirror2->getFields()->srcIp().value(),
-      mirror2->getFields()->destinationIp().value(),
-      folly::MacAddress("1:2:3:4:5:6"),
-      folly::MacAddress("6:5:4:3:2:1"),
-      mirror2->getFields()->udpPorts().value());
-
-  mirror2->setMirrorTunnel(tunnel);
-  mirror2->setEgressPort(PortID(1));
-  mirrors->updateNode(mirror2);
-
-  validateThriftyMigration(*mirrors);
-  for (auto name : {"mirror0", "mirror1", "mirror2"}) {
-    auto mirror = mirrors->getNode(name);
-    validateThriftyMigration(*mirror);
-    auto dyn = mirror->toFollyDynamicLegacy();
-  }
 }
 
 } // namespace facebook::fboss

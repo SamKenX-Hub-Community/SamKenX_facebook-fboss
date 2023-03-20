@@ -18,6 +18,9 @@
 #include "fboss/thrift_cow/nodes/Types.h"
 #include "fboss/thrift_cow/nodes/tests/gen-cpp2/test_fatal_types.h"
 
+#include "fboss/agent/state/DeltaFunctions.h"
+#include "fboss/agent/state/MapDelta.h"
+
 #include <gtest/gtest.h>
 #include <type_traits>
 
@@ -39,21 +42,21 @@ cfg::L4PortRange buildPortRange(int min, int max) {
 } // namespace
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesSimple) {
-  ThriftMapFields<
+  ThriftMapFields<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       fields;
   ASSERT_EQ(fields.size(), 0);
 }
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesGetSet) {
-  ThriftMapFields<
+  ThriftMapFields<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       fields;
   fields.emplace(3, 99);
   ASSERT_EQ(fields.size(), 1);
@@ -65,11 +68,11 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesGetSet) {
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesConstructFromThrift) {
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
-  ThriftMapFields<
+  ThriftMapFields<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       fields(data);
 
   ASSERT_EQ(fields.size(), 2);
@@ -80,21 +83,21 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsPrimitivesConstructFromThrift) {
 }
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsStructsSimple) {
-  ThriftMapFields<
+  ThriftMapFields<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::unordered_map<TestEnum, cfg::L4PortRange>>
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>
       fields;
   ASSERT_EQ(fields.size(), 0);
 }
 
 TEST(ThriftMapNodeTests, ThriftMapFieldsStructsGetSet) {
-  ThriftMapFields<
+  ThriftMapFields<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::unordered_map<TestEnum, cfg::L4PortRange>>
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>
       fields;
 
   auto portRange1 = buildPortRange(100, 999);
@@ -116,11 +119,11 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsStructsConstructFromThrift) {
   std::map<TestEnum, cfg::L4PortRange> data = {
       {TestEnum::FIRST, buildPortRange(100, 999)},
       {TestEnum::SECOND, buildPortRange(1000, 9999)}};
-  ThriftMapFields<
+  ThriftMapFields<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::map<TestEnum, cfg::L4PortRange>>
+      std::map<TestEnum, cfg::L4PortRange>>>
       fields(data);
 
   ASSERT_EQ(fields.size(), 2);
@@ -131,21 +134,21 @@ TEST(ThriftMapNodeTests, ThriftMapFieldsStructsConstructFromThrift) {
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesSimple) {
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       node;
   ASSERT_EQ(node.size(), 0);
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesGetSet) {
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       node;
   node.emplace(3, 99);
   ASSERT_EQ(node.size(), 1);
@@ -157,11 +160,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesGetSet) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesConstructFromThrift) {
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       node(data);
 
   ASSERT_EQ(node.size(), 2);
@@ -173,11 +176,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesConstructFromThrift) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisit) {
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       node(data);
 
   folly::dynamic out;
@@ -203,11 +206,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisit) {
   ASSERT_EQ(out, 99);
 
   // Now create const node and test cvisit
-  const ThriftMapNode<
+  const ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       nodeConst(data);
   result = nodeConst.cvisitPath(path.begin(), path.end(), f);
   ASSERT_EQ(result, ThriftTraverseResult::OK);
@@ -216,11 +219,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisit) {
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisitMutable) {
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>
+      std::unordered_map<int, int>>>
       node(data);
 
   folly::dynamic toWrite, out;
@@ -251,11 +254,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesVisitMutable) {
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesClone) {
-  using TestNodeType = ThriftMapNode<
+  using TestNodeType = ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>;
+      std::unordered_map<int, int>>>;
 
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
 
@@ -272,11 +275,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesClone) {
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesModify) {
-  using TestNodeType = ThriftMapNode<
+  using TestNodeType = ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>;
+      std::unordered_map<int, int>>>;
 
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
 
@@ -301,11 +304,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesModify) {
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesRemove) {
-  using TestNodeType = ThriftMapNode<
+  using TestNodeType = ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::integral,
           apache::thrift::type_class::integral>,
-      std::unordered_map<int, int>>;
+      std::unordered_map<int, int>>>;
 
   std::unordered_map<int, int> data = {{1, 2}, {5, 99}};
 
@@ -336,21 +339,21 @@ TEST(ThriftMapNodeTests, ThriftMapNodePrimitivesRemove) {
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodeStructsSimple) {
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::unordered_map<TestEnum, cfg::L4PortRange>>
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>
       node;
   ASSERT_EQ(node.size(), 0);
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodeStructsGetSet) {
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::unordered_map<TestEnum, cfg::L4PortRange>>
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>
       node;
 
   auto portRange1 = buildPortRange(100, 999);
@@ -372,11 +375,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsConstructFromThrift) {
   std::map<TestEnum, cfg::L4PortRange> data = {
       {TestEnum::FIRST, buildPortRange(100, 999)},
       {TestEnum::SECOND, buildPortRange(1000, 9999)}};
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::map<TestEnum, cfg::L4PortRange>>
+      std::map<TestEnum, cfg::L4PortRange>>>
       node(data);
 
   ASSERT_EQ(node.size(), 2);
@@ -390,11 +393,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsVisit) {
   std::unordered_map<TestEnum, cfg::L4PortRange> data = {
       {TestEnum::FIRST, buildPortRange(100, 999)},
       {TestEnum::SECOND, buildPortRange(1000, 9999)}};
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::unordered_map<TestEnum, cfg::L4PortRange>>
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>
       node(data);
 
   folly::dynamic out;
@@ -463,11 +466,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsVisitMutable) {
   std::unordered_map<TestEnum, cfg::L4PortRange> data = {
       {TestEnum::FIRST, buildPortRange(100, 999)},
       {TestEnum::SECOND, buildPortRange(1000, 9999)}};
-  ThriftMapNode<
+  ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::unordered_map<TestEnum, cfg::L4PortRange>>
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>
       node(data);
 
   folly::dynamic toWrite, out;
@@ -524,11 +527,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsVisitMutable) {
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodeStructsClone) {
-  using TestNodeType = ThriftMapNode<
+  using TestNodeType = ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::unordered_map<TestEnum, cfg::L4PortRange>>;
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>;
 
   std::unordered_map<TestEnum, cfg::L4PortRange> data = {
       {TestEnum::FIRST, buildPortRange(100, 999)},
@@ -550,11 +553,11 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsClone) {
 }
 
 TEST(ThriftMapNodeTests, ThriftMapNodeStructsModify) {
-  using TestNodeType = ThriftMapNode<
+  using TestNodeType = ThriftMapNode<ThriftMapTraits<
       apache::thrift::type_class::map<
           apache::thrift::type_class::enumeration,
           apache::thrift::type_class::structure>,
-      std::unordered_map<TestEnum, cfg::L4PortRange>>;
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>;
 
   std::unordered_map<TestEnum, cfg::L4PortRange> data = {
       {TestEnum::FIRST, buildPortRange(100, 999)},
@@ -593,4 +596,44 @@ TEST(ThriftMapNodeTests, ThriftMapNodeStructsModify) {
   TestNodeType::modify(&node, "THIRD");
   ASSERT_EQ(node->size(), 3);
   ASSERT_NE(node->find(TestEnum::THIRD), node->end());
+}
+
+TEST(ThriftMapNodeTests, MapDelta) {
+  using Map = ThriftMapNode<ThriftMapTraits<
+      apache::thrift::type_class::map<
+          apache::thrift::type_class::enumeration,
+          apache::thrift::type_class::structure>,
+      std::unordered_map<TestEnum, cfg::L4PortRange>>>;
+
+  std::unordered_map<TestEnum, cfg::L4PortRange> data = {
+      {TestEnum::FIRST, buildPortRange(1000, 1999)},
+      {TestEnum::SECOND, buildPortRange(2000, 2999)}};
+
+  auto map = std::make_shared<Map>(data);
+  auto map1 = map->clone();
+  map1->remove(TestEnum::SECOND);
+
+  auto map2 = map->clone();
+  map2->emplace(TestEnum::THIRD, buildPortRange(3000, 3999));
+
+  auto map3 = map->clone();
+  map3->remove(TestEnum::FIRST);
+  map3->emplace(TestEnum::FIRST, buildPortRange(1001, 1999));
+
+  auto addedDelta = ThriftMapDelta(map.get(), map2.get());
+  auto removedDelta = ThriftMapDelta(map.get(), map1.get());
+  auto changedDelta = ThriftMapDelta(map.get(), map3.get());
+
+  DeltaFunctions::forEachAdded(addedDelta, [&](auto addedNode) {
+    auto thrift = addedNode->toThrift();
+    EXPECT_EQ(*thrift.min(), 3000);
+  });
+
+  DeltaFunctions::forEachRemoved(removedDelta, [&](auto removedNode) {
+    EXPECT_EQ(removedNode->toThrift(), buildPortRange(2000, 2999));
+  });
+  DeltaFunctions::forEachChanged(changedDelta, [&](auto oldNode, auto newNode) {
+    EXPECT_EQ(oldNode->toThrift(), buildPortRange(1000, 1999));
+    EXPECT_EQ(newNode->toThrift(), buildPortRange(1001, 1999));
+  });
 }

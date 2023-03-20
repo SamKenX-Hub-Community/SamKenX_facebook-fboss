@@ -49,20 +49,14 @@ int getPortItm(utility::BcmChip chip, BcmPort* bcmPort);
 
 bcm_port_loopback_t fbToBcmLoopbackMode(cfg::PortLoopbackMode inMode);
 
-std::map<phy::DataPlanePhyChip, std::vector<phy::PinConfig>> getCorePinMapping(
-    const PlatformMapping* platformMapping,
-    const std::vector<cfg::Port>& ports);
-
 int getBcmPfcDeadlockDetectionTimerGranularity(int timerMsec);
 
 int getAdjustedPfcDeadlockDetectionTimerValue(int timerMsec);
 
-int getAdjustedPfcDeadlockRecoveryTimerValue(
-    HwAsic::AsicType type,
-    int timerMsec);
+int getAdjustedPfcDeadlockRecoveryTimerValue(cfg::AsicType type, int timerMsec);
 
-int getDefaultPfcDeadlockDetectionTimer(HwAsic::AsicType type);
+int getDefaultPfcDeadlockDetectionTimer(cfg::AsicType type);
 
-int getDefaultPfcDeadlockRecoveryTimer(HwAsic::AsicType type);
+int getDefaultPfcDeadlockRecoveryTimer(cfg::AsicType type);
 
 } // namespace facebook::fboss::utility

@@ -15,30 +15,29 @@ namespace facebook::fboss {
 
 class SwitchState;
 
-using IpTunnelMapTraits = NodeMapTraits<std::string, IpTunnel>;
+using IpTunnelMapLegacyTraits = NodeMapTraits<std::string, IpTunnel>;
 
-struct IpTunnelMapThriftTraits
-    : public ThriftyNodeMapTraits<std::string, state::IpTunnelFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "ipTunnelId";
-    return _key;
-  }
-  static const KeyType parseKey(const folly::dynamic& key) {
-    return key.asString();
-  }
-};
+using IpTunnelMapClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::string,
+    apache::thrift::type_class::structure>;
+using IpTunnelMapThriftType = std::map<std::string, state::IpTunnelFields>;
+
+class IpTunnelMap;
+using IpTunnelMapTraits = ThriftMapNodeTraits<
+    IpTunnelMap,
+    IpTunnelMapClass,
+    IpTunnelMapThriftType,
+    IpTunnel>;
 /*
  * A container for all the present IpTunnels
  */
-class IpTunnelMap : public ThriftyNodeMapT<
-                        IpTunnelMap,
-                        IpTunnelMapTraits,
-                        IpTunnelMapThriftTraits> {
+class IpTunnelMap : public ThriftMapNode<IpTunnelMap, IpTunnelMapTraits> {
  public:
+  using Base = ThriftMapNode<IpTunnelMap, IpTunnelMapTraits>;
   IpTunnelMap();
   ~IpTunnelMap() override;
 
-  const std::shared_ptr<IpTunnel>& getTunnel(std::string id) const {
+  const std::shared_ptr<IpTunnel> getTunnel(std::string id) const {
     return getNode(id);
   }
   std::shared_ptr<IpTunnel> getTunnelIf(std::string id) const {
@@ -51,7 +50,7 @@ class IpTunnelMap : public ThriftyNodeMapT<
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyNodeMapT::ThriftyNodeMapT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 } // namespace facebook::fboss

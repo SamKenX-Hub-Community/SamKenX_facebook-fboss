@@ -21,12 +21,20 @@ namespace facebook::fboss {
 
 SaiBcmWedge40Platform::SaiBcmWedge40Platform(
     std::unique_ptr<PlatformProductInfo> productInfo,
-    folly::MacAddress localMac)
+    folly::MacAddress localMac,
+    const std::string& platformMappingStr)
     : SaiBcmPlatform(
           std::move(productInfo),
-          std::make_unique<Wedge40PlatformMapping>(),
-          localMac) {
-  asic_ = std::make_unique<Trident2Asic>();
+          platformMappingStr.empty()
+              ? std::make_unique<Wedge40PlatformMapping>()
+              : std::make_unique<Wedge40PlatformMapping>(platformMappingStr),
+          localMac) {}
+
+void SaiBcmWedge40Platform::setupAsic(
+    cfg::SwitchType switchType,
+    std::optional<int64_t> switchId,
+    std::optional<cfg::Range64> systemPortRange) {
+  asic_ = std::make_unique<Trident2Asic>(switchType, switchId, systemPortRange);
 }
 
 HwAsic* SaiBcmWedge40Platform::getAsic() const {

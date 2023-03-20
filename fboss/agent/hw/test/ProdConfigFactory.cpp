@@ -38,7 +38,8 @@ void addOlympicQosToConfig(
     const HwSwitch* hwSwitch) {
   auto hwAsic = hwSwitch->getPlatform()->getAsic();
   addOlympicQosMaps(config);
-  auto streamType = *hwAsic->getQueueStreamTypes(false).begin();
+  auto streamType =
+      *hwAsic->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT).begin();
   addOlympicQueueConfig(&config, streamType, hwAsic);
 }
 
@@ -48,7 +49,8 @@ void addNetworkAIQosToConfig(
   auto hwAsic = hwSwitch->getPlatform()->getAsic();
   // network AI qos map is the same as olympic
   addOlympicQosMaps(config);
-  auto streamType = *hwAsic->getQueueStreamTypes(false).begin();
+  auto streamType =
+      *hwAsic->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT).begin();
   // queue configuration is different
   addNetworkAIQueueConfig(&config, streamType);
 }
@@ -131,7 +133,7 @@ cfg::PortSpeed getPortSpeed(const HwSwitch* hwSwitch) {
   cfg::PortSpeed portSpeed = cfg::PortSpeed::DEFAULT;
 
   switch (hwAsicType) {
-    case HwAsic::AsicType::ASIC_TYPE_TRIDENT2:
+    case cfg::AsicType::ASIC_TYPE_TRIDENT2:
       portSpeed = cfg::PortSpeed::FORTYG;
       break;
     default:
@@ -187,7 +189,7 @@ cfg::SwitchConfig createProdRtswConfig(
       const_cast<HwSwitchEnsemble*>(ensemble),
       masterLogicalPortIds,
       portSpeed,
-      cfg::PortLoopbackMode::MAC,
+      hwAsic->desiredLoopbackMode(),
       uplinks,
       downlinks);
 
@@ -236,7 +238,7 @@ cfg::SwitchConfig createProdRswConfig(
       numUplinks,
       uplinkSpeed,
       downlinkSpeed,
-      cfg::PortLoopbackMode::MAC);
+      hwAsic->desiredLoopbackMode());
 
   addCpuQueueConfig(config, hwAsic);
 
@@ -277,7 +279,7 @@ cfg::SwitchConfig createProdFswConfig(
       numUplinks,
       uplinkSpeed,
       downlinkSpeed,
-      cfg::PortLoopbackMode::MAC);
+      hwAsic->desiredLoopbackMode());
 
   addCpuQueueConfig(config, hwAsic);
   if (hwAsic->isSupported(HwAsic::Feature::L3_QOS)) {
@@ -310,7 +312,7 @@ cfg::SwitchConfig createProdRswMhnicConfig(
       numUplinks,
       uplinkSpeed,
       downlinkSpeed,
-      cfg::PortLoopbackMode::MAC);
+      hwAsic->desiredLoopbackMode());
 
   addCpuQueueConfig(config, hwAsic);
   setDefaultCpuTrafficPolicyConfig(config, hwAsic);

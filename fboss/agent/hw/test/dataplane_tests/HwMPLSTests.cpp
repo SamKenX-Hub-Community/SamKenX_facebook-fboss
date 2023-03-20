@@ -35,7 +35,6 @@
 namespace {
 const facebook::fboss::Label kTopLabel{1101};
 constexpr auto kGetQueueOutPktsRetryTimes = 5;
-const int kAclStartPriority = 100000;
 const std::string kAclName = "acl0";
 using TestTypes =
     ::testing::Types<facebook::fboss::PortID, facebook::fboss::AggregatePortID>;
@@ -46,10 +45,22 @@ namespace facebook::fboss {
 template <typename PortType>
 class HwMPLSTest : public HwLinkStateDependentTest {
   struct HwPacketVerifier {
+    bool isSrcPortQualifierSupported() {
+      auto srcPortQualifierSupported =
+          ensemble_->getPlatform()->getAsic()->isSupported(
+              HwAsic::Feature::SAI_ACL_ENTRY_SRC_PORT_QUALIFIER);
+      bool isTajo = ensemble_->getPlatform()->getAsic()->getAsicVendor() ==
+          HwAsic::AsicVendor::ASIC_VENDOR_TAJO;
+      if (isTajo) {
+#if !defined(TAJO_SDK_VERSION_1_58_0) && !defined(TAJO_SDK_VERSION_1_62_0)
+        srcPortQualifierSupported = false;
+#endif
+      }
+      return srcPortQualifierSupported;
+    }
     HwPacketVerifier(HwSwitchEnsemble* ensemble, PortID port, MPLSHdr hdr)
         : ensemble_(ensemble), entry_{}, snooper_{}, expectedHdr_(hdr) {
-      if (!ensemble->getPlatform()->getAsic()->isSupported(
-              HwAsic::Feature::SAI_ACL_ENTRY_SRC_PORT_QUALIFIER)) {
+      if (!isSrcPortQualifierSupported()) {
         return;
       }
       // capture packet exiting port (entering back due to loopback)
@@ -59,8 +70,7 @@ class HwMPLSTest : public HwLinkStateDependentTest {
     }
 
     ~HwPacketVerifier() {
-      if (!ensemble_->getPlatform()->getAsic()->isSupported(
-              HwAsic::Feature::SAI_ACL_ENTRY_SRC_PORT_QUALIFIER)) {
+      if (!isSrcPortQualifierSupported()) {
         return;
       }
       auto pkt = snooper_->waitForPacket(10);
@@ -104,8 +114,11 @@ class HwMPLSTest : public HwLinkStateDependentTest {
         masterLogicalPortIds()[1],
         masterLogicalPortIds()[2],
     };
-    auto config = utility::onePortPerVlanConfig(
-        getHwSwitch(), std::move(ports), cfg::PortLoopbackMode::MAC, true);
+    auto config = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        std::move(ports),
+        getAsic()->desiredLoopbackMode(),
+        true);
 
     if constexpr (std::is_same_v<PortType, AggregatePortID>) {
       utility::addAggPort(1, {masterLogicalPortIds()[0]}, &config);
@@ -204,7 +217,13 @@ class HwMPLSTest : public HwLinkStateDependentTest {
       PortID from,
       std::optional<DSCP> dscp = std::nullopt) {
     CHECK(ecmpHelper_);
-    auto vlanId = utility::firstVlanID(initialConfig());
+    // TODO: Remove the dependency on VLAN below
+    auto vlan = utility::firstVlanID(initialConfig());
+    if (!vlan) {
+      throw FbossError("VLAN id unavailable for test");
+    }
+    auto vlanId = *vlan;
+
     // construct eth hdr
     const auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
 
@@ -239,7 +258,12 @@ class HwMPLSTest : public HwLinkStateDependentTest {
     const auto srcMac = utility::kLocalCpuMac();
     const auto dstMac = utility::kLocalCpuMac(); /* for l3 switching */
 
-    auto vlanId = utility::firstVlanID(initialConfig()) + 1;
+    // TODO: Remove the dependency on VLAN below
+    auto vlan = utility::firstVlanID(initialConfig());
+    if (!vlan) {
+      throw FbossError("VLAN id unavailable for test");
+    }
+    auto vlanId = *vlan;
 
     uint8_t tc = exp.has_value() ? static_cast<uint8_t>(exp.value()) : 0;
     MPLSHdr::Label mplsLabel{topLabel, tc, true, ttl};
@@ -324,7 +348,8 @@ class HwMPLSTest : public HwLinkStateDependentTest {
     } else {
       newState = getProgrammedState()->clone();
     }
-    auto newAcl = std::make_shared<AclEntry>(kAclStartPriority, aclName);
+    auto newAcl =
+        std::make_shared<AclEntry>(AclTable::kDataplaneAclMaxPriority, aclName);
     newAcl->setDstIp(folly::IPAddress::tryCreateNetwork(dstPrefix).value());
     newAcl->setVlanID(ingressVlanId);
     auto cfgRedirectToNextHop = cfg::RedirectToNextHopAction();

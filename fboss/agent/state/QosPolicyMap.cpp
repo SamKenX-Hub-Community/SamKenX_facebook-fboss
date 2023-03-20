@@ -10,7 +10,7 @@
 #include "fboss/agent/state/QosPolicyMap.h"
 
 #include "fboss/agent/state/NodeMap-defs.h"
-#include "fboss/agent/state/NodeMapDelta-defs.h"
+
 #include "fboss/agent/state/SwitchState.h"
 
 namespace facebook::fboss {
@@ -32,6 +32,6 @@ QosPolicyMap* QosPolicyMap::modify(std::shared_ptr<SwitchState>* state) {
   return ptr;
 }
 
-FBOSS_INSTANTIATE_NODE_MAP(QosPolicyMap, QosPolicyMapTraits);
+template class ThriftMapNode<QosPolicyMap, QosPolicyMapTraits>;
 
 } // namespace facebook::fboss

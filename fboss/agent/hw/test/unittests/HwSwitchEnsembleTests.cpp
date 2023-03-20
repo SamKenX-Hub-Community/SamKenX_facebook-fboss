@@ -6,7 +6,8 @@ namespace facebook::fboss {
 // the HwSwitchEnsemble class has lots of abstractions, so we need
 // to create a concrete class just to test it
 class TestHwSwitchEnsemble : HwSwitchEnsemble {
-  std::vector<PortID> masterLogicalPortIds() const override {
+  std::vector<PortID> masterLogicalPortIds(
+      const std::set<cfg::PortType>& filter) const override {
     return std::vector<PortID>();
   }
   std::vector<PortID> getAllPortsInGroup(PortID /* portID */) const override {
@@ -27,7 +28,7 @@ class TestHwSwitchEnsemble : HwSwitchEnsemble {
   bool isRouteScaleEnabled() const override {
     return true;
   }
-  uint64_t getSwitchId() const override {
+  uint64_t getSdkSwitchId() const override {
     return 0;
   }
   bool isSai() const override {

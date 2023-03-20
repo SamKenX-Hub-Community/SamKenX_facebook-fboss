@@ -11,7 +11,7 @@
 #include "fboss/agent/platforms/sai/elbert/SaiElbert8DDPhyPlatform.h"
 
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
-#include "fboss/agent/hw/switch_asics/CredoF104Asic.h"
+#include "fboss/agent/hw/switch_asics/CredoPhyAsic.h"
 #include "fboss/agent/platforms/common/elbert/facebook/Elbert8DDPimPlatformMapping.h"
 
 namespace facebook::fboss {
@@ -87,10 +87,14 @@ SaiElbert8DDPhyPlatform::SaiElbert8DDPhyPlatform(
               ->getPimPlatformMappingUniquePtr(pimId),
           localMac),
       pimId_(pimId),
-      phyId_(phyId) {
-  asic_ = std::make_unique<CredoF104Asic>();
-}
+      phyId_(phyId) {}
 
+void SaiElbert8DDPhyPlatform::setupAsic(
+    cfg::SwitchType switchType,
+    std::optional<int64_t> switchId,
+    std::optional<cfg::Range64> systemPortRange) {
+  asic_ = std::make_unique<CredoPhyAsic>(switchType, switchId, systemPortRange);
+}
 SaiElbert8DDPhyPlatform::~SaiElbert8DDPhyPlatform() {}
 
 std::string SaiElbert8DDPhyPlatform::getHwConfig() {

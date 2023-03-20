@@ -12,15 +12,14 @@
 
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
+#include "fboss/agent/test/TestEnsembleIf.h"
 
 namespace facebook::fboss {
+
 void SaiLinkStateToggler::setPortPreemphasis(
     const std::shared_ptr<Port>& port,
     int preemphasis) {
-  auto& portManager = static_cast<SaiSwitchEnsemble*>(getHwSwitchEnsemble())
-                          ->getHwSwitch()
-                          ->managerTable()
-                          ->portManager();
+  auto& portManager = getHw()->managerTable()->portManager();
   auto portHandle = portManager.getPortHandle(port->getID());
   if (!portHandle) {
     throw FbossError(
@@ -37,13 +36,13 @@ void SaiLinkStateToggler::setPortPreemphasis(
 
   auto setTxRxAttr = [](auto& attrs, auto type, const auto& val) {
     auto& attr = std::get<std::optional<std::decay_t<decltype(type)>>>(attrs);
-    if (attr != std::nullopt) {
+    if (!val.empty()) {
       attr = val;
     }
   };
   auto preemphasisVal =
       std::vector<uint32_t>(numLanes, static_cast<uint32_t>(preemphasis));
-  if (saiEnsemble_->getPlatform()->getAsic()->isSupported(
+  if (getHw()->getPlatform()->getAsic()->isSupported(
           HwAsic::Feature::SAI_PORT_SERDES_FIELDS_RESET)) {
     setTxRxAttr(
         serDesAttributes,
@@ -65,8 +64,32 @@ void SaiLinkStateToggler::setPortPreemphasis(
         SaiPortSerdesTraits::Attributes::TxFirMain{},
         preemphasisVal);
   }
-  if (saiEnsemble_->getPlatform()->isSerdesApiSupported()) {
+  if (getHw()->getPlatform()->isSerdesApiSupported()) {
     portHandle->serdes->setAttributes(serDesAttributes);
   }
+}
+
+void SaiLinkStateToggler::setLinkTraining(
+    const std::shared_ptr<Port>& port,
+    bool enable) {
+  auto& portManager = getHw()->managerTable()->portManager();
+  auto portHandle = portManager.getPortHandle(port->getID());
+  if (!portHandle) {
+    throw FbossError(
+        "Cannot set link training on non existent port: ", port->getID());
+  }
+
+  portHandle->port->setOptionalAttribute(
+      SaiPortTraits::Attributes::LinkTrainingEnable{enable});
+}
+
+SaiSwitch* SaiLinkStateToggler::getHw() const {
+  return static_cast<SaiSwitch*>(getHwSwitchEnsemble()->getHwSwitch());
+}
+
+std::unique_ptr<HwLinkStateToggler> createHwLinkStateToggler(
+    TestEnsembleIf* ensemble,
+    cfg::PortLoopbackMode desiredLoopbackMode) {
+  return std::make_unique<SaiLinkStateToggler>(ensemble, desiredLoopbackMode);
 }
 } // namespace facebook::fboss

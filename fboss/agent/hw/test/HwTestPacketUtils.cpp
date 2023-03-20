@@ -42,13 +42,33 @@ auto kDefaultPayload = std::vector<uint8_t>(256, 0xff);
 EthHdr makeEthHdr(
     MacAddress srcMac,
     MacAddress dstMac,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     ETHERTYPE etherType) {
   EthHdr::VlanTags_t vlanTags;
-  vlanTags.push_back(
-      VlanTag(vlan, static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_VLAN)));
+
+  if (vlan.has_value()) {
+    vlanTags.push_back(VlanTag(
+        vlan.value(), static_cast<uint16_t>(ETHERTYPE::ETHERTYPE_VLAN)));
+  }
+
   EthHdr ethHdr(dstMac, srcMac, vlanTags, static_cast<uint16_t>(etherType));
   return ethHdr;
+}
+
+template <typename CursorType>
+void writeEthHeader(
+    const std::unique_ptr<TxPacket>& txPacket,
+    CursorType* cursor,
+    folly::MacAddress dst,
+    folly::MacAddress src,
+    std::vector<VlanTag> vlanTags,
+    uint16_t protocol) {
+  if (vlanTags.size() != 0) {
+    txPacket->writeEthHeader(
+        cursor, dst, src, VlanID(vlanTags[0].vid()), protocol);
+  } else {
+    txPacket->writeEthHeader(cursor, dst, src, protocol);
+  }
 }
 
 } // namespace
@@ -66,17 +86,41 @@ folly::MacAddress getInterfaceMac(
   return state->getInterfaces()->getInterface(intf)->getMac();
 }
 
-VlanID firstVlanID(const cfg::SwitchConfig& cfg) {
-  return VlanID(*cfg.vlanPorts()[0].vlanID());
+folly::MacAddress getFirstInterfaceMac(const cfg::SwitchConfig& cfg) {
+  auto intfCfg = cfg.interfaces()[0];
+
+  if (!intfCfg.mac().has_value()) {
+    throw FbossError(
+        "No MAC address set for interface ", InterfaceID(*intfCfg.intfID()));
+  }
+
+  return folly::MacAddress(*intfCfg.mac());
 }
 
-VlanID firstVlanID(const std::shared_ptr<SwitchState>& state) {
-  return (*state->getVlans()->begin())->getID();
+folly::MacAddress getFirstInterfaceMac(std::shared_ptr<SwitchState> state) {
+  auto intf = std::as_const(*state->getInterfaces()->cbegin()).second;
+  return intf->getMac();
+}
+
+std::optional<VlanID> firstVlanID(const cfg::SwitchConfig& cfg) {
+  std::optional<VlanID> firstVlanId;
+  if (cfg.vlanPorts()->size()) {
+    firstVlanId = VlanID(*cfg.vlanPorts()[0].vlanID());
+  }
+  return firstVlanId;
+}
+
+std::optional<VlanID> firstVlanID(const std::shared_ptr<SwitchState>& state) {
+  std::optional<VlanID> firstVlanId;
+  if (state->getVlans()->size()) {
+    firstVlanId = (*state->getVlans()->cbegin()).second->getID();
+  }
+  return firstVlanId;
 }
 
 std::unique_ptr<facebook::fboss::TxPacket> makeEthTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     facebook::fboss::ETHERTYPE etherType,
@@ -113,11 +157,12 @@ std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
 
   folly::io::RWPrivateCursor rwCursor(txPacket->buf());
   // Write EthHdr
-  txPacket->writeEthHeader(
+  writeEthHeader(
+      txPacket,
       &rwCursor,
       ethHdr.getDstMac(),
       ethHdr.getSrcMac(),
-      VlanID(ethHdr.getVlanTags()[0].vid()),
+      ethHdr.getVlanTags(),
       ethHdr.getEtherType());
   ipHdr.serialize(&rwCursor);
 
@@ -128,7 +173,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddressV6& srcIp,
@@ -154,7 +199,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddressV4& srcIp,
@@ -183,7 +228,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeIpTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddress& srcIp,
@@ -225,7 +270,8 @@ std::unique_ptr<facebook::fboss::TxPacket> makeIpInIpTxPacket(
     const folly::IPAddressV6& innerDstIp,
     uint16_t srcPort,
     uint16_t dstPort,
-    uint8_t trafficClass,
+    uint8_t outerTrafficClass,
+    uint8_t innerTrafficClass,
     uint8_t hopLimit,
     std::optional<std::vector<uint8_t>> payload) {
   if (!payload) {
@@ -237,14 +283,14 @@ std::unique_ptr<facebook::fboss::TxPacket> makeIpInIpTxPacket(
   // IPv6Hdr -- outer
   IPv6Hdr outerIpHdr(outerSrcIp, outerDstIp);
   outerIpHdr.nextHeader = static_cast<uint8_t>(IP_PROTO::IP_PROTO_IPV6);
-  outerIpHdr.trafficClass = trafficClass;
+  outerIpHdr.trafficClass = outerTrafficClass;
   outerIpHdr.payloadLength =
       IPv6Hdr::size() + UDPHeader::size() + payloadBytes.size();
   outerIpHdr.hopLimit = hopLimit;
   // IPv6Hdr -- inner
   IPv6Hdr innerIpHdr(innerSrcIp, innerDstIp);
   innerIpHdr.nextHeader = static_cast<uint8_t>(IP_PROTO::IP_PROTO_UDP);
-  innerIpHdr.trafficClass = trafficClass;
+  innerIpHdr.trafficClass = innerTrafficClass;
   innerIpHdr.payloadLength = UDPHeader::size() + payloadBytes.size();
   innerIpHdr.hopLimit = hopLimit;
 
@@ -282,15 +328,16 @@ std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
     const UDPHeader& udpHdr,
     const std::vector<uint8_t>& payload) {
   auto txPacket = hw->allocatePacket(
-      EthHdr::SIZE + ipHdr.size() + udpHdr.size() + payload.size());
+      ethHdr.size() + ipHdr.size() + udpHdr.size() + payload.size());
 
   folly::io::RWPrivateCursor rwCursor(txPacket->buf());
   // Write EthHdr
-  txPacket->writeEthHeader(
+  writeEthHeader(
+      txPacket,
       &rwCursor,
       ethHdr.getDstMac(),
       ethHdr.getSrcMac(),
-      VlanID(ethHdr.getVlanTags()[0].vid()),
+      ethHdr.getVlanTags(),
       ethHdr.getEtherType());
   ipHdr.serialize(&rwCursor);
 
@@ -316,16 +363,18 @@ std::unique_ptr<facebook::fboss::TxPacket> makePTPUDPTxPacket(
     PTPMessageType ptpPktType) {
   int payloadSize = PTPHeader::getPayloadSize(ptpPktType);
   auto txPacket = hw->allocatePacket(
-      EthHdr::SIZE + ipHdr.size() + udpHdr.size() + payloadSize);
+      ethHdr.size() + ipHdr.size() + udpHdr.size() + payloadSize);
 
   folly::io::RWPrivateCursor rwCursor(txPacket->buf());
   // Write EthHdr
-  txPacket->writeEthHeader(
+  writeEthHeader(
+      txPacket,
       &rwCursor,
       ethHdr.getDstMac(),
       ethHdr.getSrcMac(),
-      VlanID(ethHdr.getVlanTags()[0].vid()),
+      ethHdr.getVlanTags(),
       ethHdr.getEtherType());
+
   ipHdr.serialize(&rwCursor);
 
   // write UDP header, payload and compute checksum
@@ -372,7 +421,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makePTPTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddressV6& srcIp,
@@ -404,7 +453,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddressV4& srcIp,
@@ -439,7 +488,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeUDPTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddress& srcIp,
@@ -486,15 +535,16 @@ std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
     const TCPHeader& tcpHdr,
     const std::vector<uint8_t>& payload) {
   auto txPacket = hw->allocatePacket(
-      EthHdr::SIZE + ipHdr.size() + tcpHdr.size() + payload.size());
+      ethHdr.size() + ipHdr.size() + tcpHdr.size() + payload.size());
 
   folly::io::RWPrivateCursor rwCursor(txPacket->buf());
   // Write EthHdr
-  txPacket->writeEthHeader(
+  writeEthHeader(
+      txPacket,
       &rwCursor,
       ethHdr.getDstMac(),
       ethHdr.getSrcMac(),
-      VlanID(ethHdr.getVlanTags()[0].vid()),
+      ethHdr.getVlanTags(),
       ethHdr.getEtherType());
   ipHdr.serialize(&rwCursor);
 
@@ -518,7 +568,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddressV6& srcIp,
@@ -548,7 +598,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddressV4& srcIp,
@@ -581,7 +631,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddress& srcIp,
@@ -622,7 +672,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeTCPTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeARPTxPacket(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddress& srcIp,
@@ -650,11 +700,12 @@ std::unique_ptr<facebook::fboss::TxPacket> makeARPTxPacket(
   auto ethHdr = makeEthHdr(srcMac, dstMac, vlan, ETHERTYPE::ETHERTYPE_ARP);
   folly::io::RWPrivateCursor rwCursor(txPacket->buf());
   // Write EthHdr
-  txPacket->writeEthHeader(
+  writeEthHeader(
+      txPacket,
       &rwCursor,
       ethHdr.getDstMac(),
       ethHdr.getSrcMac(),
-      VlanID(ethHdr.getVlanTags()[0].vid()),
+      ethHdr.getVlanTags(),
       ethHdr.getEtherType());
 
   // write ARP header
@@ -673,7 +724,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeARPTxPacket(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeNeighborSolicitation(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     const folly::IPAddressV6& srcIp,
     const folly::IPAddressV6& neighborIp) {
@@ -717,7 +768,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeNeighborSolicitation(
 
 std::unique_ptr<facebook::fboss::TxPacket> makeNeighborAdvertisement(
     const HwSwitch* hw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     folly::MacAddress srcMac,
     folly::MacAddress dstMac,
     const folly::IPAddressV6& srcIp,
@@ -795,7 +846,7 @@ std::unique_ptr<facebook::fboss::TxPacket> makeLLDPPacket(
 void sendTcpPkts(
     facebook::fboss::HwSwitch* hwSwitch,
     int numPktsToSend,
-    VlanID vlanId,
+    std::optional<VlanID> vlanId,
     folly::MacAddress dstMac,
     const folly::IPAddress& dstIpAddress,
     int l4SrcPort,

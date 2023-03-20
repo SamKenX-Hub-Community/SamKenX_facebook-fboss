@@ -130,7 +130,7 @@ int L3RouteToCPUCb(
 
   if ((egr.flags & BCM_L3_L2TOCPU) == 0 &&
       (egr.flags & BCM_L3_DST_DISCARD) == 0) {
-    XLOG(INFO) << "egress " << intf
+    XLOG(DBG2) << "egress " << intf
                << " does not have BCM_L3_L2TOCPU or DISCARD flag";
     *allToCPU = false;
   }
@@ -254,10 +254,12 @@ class BcmRouteTest : public BcmTest {
     int ipv4Routes, ipv6Routes;
 
     ipv4Routes = ipv6Routes = 0;
-    for (auto interface : *getProgrammedState()->getInterfaces()) {
-      for (auto address : interface->getAddresses()) {
-        auto mask = address.second;
-        auto ipAddress = address.first;
+    for (auto intfIter :
+         std::as_const(*getProgrammedState()->getInterfaces())) {
+      const auto& interface = intfIter.second;
+      for (auto iter : std::as_const(*interface->getAddresses())) {
+        auto mask = iter.second;
+        auto ipAddress = folly::IPAddress(iter.first);
 
         if (ipAddress.isV4() && mask != 32) {
           ipv4Routes++;
@@ -326,7 +328,8 @@ class BcmRouteHostReferenceTest : public BcmRouteTest {
     return BcmMultiPathNextHopKey(
         kRouter0,
         RouteNextHopEntry(
-            ResolvedNextHop(nexthop, InterfaceID(interface), weight),
+            static_cast<NextHop>(
+                ResolvedNextHop(nexthop, InterfaceID(interface), weight)),
             AdminDistance::MAX_ADMIN_DISTANCE)
             .getNextHopSet());
   }
@@ -613,12 +616,15 @@ TEST_F(BcmRouteHostReferenceTest, AddNoRoutesAndCheckDefaultHostReference) {
     std::vector<int32_t> interfaceIds;
 
     /* entries are created for non-local IP addresses of interface */
-    for (auto interface : *getProgrammedState()->getInterfaces()) {
-      for (auto address : interface->getAddresses()) {
-        if (address.first.isV6() && address.first.isLinkLocal()) {
+    for (auto intfIter :
+         std::as_const(*getProgrammedState()->getInterfaces())) {
+      const auto& interface = intfIter.second;
+      for (auto iter : std::as_const(*interface->getAddresses())) {
+        auto address = folly::IPAddress(iter.first);
+        if (address.isV6() && address.isLinkLocal()) {
           continue;
         }
-        interfaceIps.push_back(address.first);
+        interfaceIps.push_back(address);
         interfaceIds.push_back(interface->getID());
       }
     }
@@ -1017,7 +1023,7 @@ TEST_F(BcmRouteTest, UnresolveResolveNextHop) {
     auto state0 = getProgrammedState();
     for (auto port : ports) {
       auto ecmpNextHop = helper.nhop(port);
-      auto vlanId = helper.getVlan(port);
+      auto vlanId = helper.getVlan(port, getProgrammedState());
       auto ntable = state0->getVlans()->getVlan(*vlanId)->getNdpTable()->modify(
           *vlanId, &state0);
       auto entry = ntable->getEntry(ecmpNextHop.ip);
@@ -1031,12 +1037,12 @@ TEST_F(BcmRouteTest, UnresolveResolveNextHop) {
     // mark neighbors connected over ports reachable
     auto state1 = getProgrammedState();
     for (auto port : ports) {
-      auto vlanId = helper.getVlan(port);
+      auto vlanId = helper.getVlan(port, getProgrammedState());
       auto ntable = state1->getVlans()->getVlan(*vlanId)->getNdpTable()->modify(
           *vlanId, &state1);
       auto entry = entries[port];
-      auto* fields = entry->getFields();
-      ntable->updateEntry(*fields);
+      ntable->updateEntry(NeighborEntryFields<folly::IPAddressV6>::fromThrift(
+          entry->toThrift()));
     }
     applyNewState(state1);
     helper.programRoutes(getRouteUpdater(), ports, {route});

@@ -115,25 +115,23 @@ void TransceiverTestsHelper::verifyLaneDom(
   }
 }
 
+void TransceiverTestsHelper::verifyLaneSignals(
+    std::map<std::string, std::vector<bool>>& expectedSignals,
+    int numHostLanes,
+    int numMediaLanes) {
+  verifyHostLaneSignals(expectedSignals, numHostLanes);
+  verifyMediaLaneSignals(expectedSignals, numMediaLanes);
+}
+
 void TransceiverTestsHelper::verifyMediaLaneSignals(
     std::map<std::string, std::vector<bool>>& expectedMediaSignals,
     int lanes) {
   EXPECT_EQ(lanes, info_.mediaLaneSignals().value_or({}).size());
   for (auto& signal : info_.mediaLaneSignals().value_or({})) {
-    if (expectedMediaSignals.find("Tx_Los") != expectedMediaSignals.end()) {
-      EXPECT_EQ(
-          expectedMediaSignals["Tx_Los"][*signal.lane()],
-          signal.txLos().value_or({}));
-    }
     if (expectedMediaSignals.find("Rx_Los") != expectedMediaSignals.end()) {
       EXPECT_EQ(
           expectedMediaSignals["Rx_Los"][*signal.lane()],
           signal.rxLos().value_or({}));
-    }
-    if (expectedMediaSignals.find("Tx_Lol") != expectedMediaSignals.end()) {
-      EXPECT_EQ(
-          expectedMediaSignals["Tx_Lol"][*signal.lane()],
-          signal.txLol().value_or({}));
     }
     if (expectedMediaSignals.find("Rx_Lol") != expectedMediaSignals.end()) {
       EXPECT_EQ(
@@ -145,10 +143,28 @@ void TransceiverTestsHelper::verifyMediaLaneSignals(
           expectedMediaSignals["Tx_Fault"][*signal.lane()],
           signal.txFault().value_or({}));
     }
-    if (expectedMediaSignals.find("Tx_AdaptFault") !=
-        expectedMediaSignals.end()) {
+  }
+}
+
+void TransceiverTestsHelper::verifyHostLaneSignals(
+    std::map<std::string, std::vector<bool>>& expectedHostSignals,
+    int lanes) {
+  EXPECT_EQ(lanes, info_.hostLaneSignals().value_or({}).size());
+  for (auto& signal : info_.hostLaneSignals().value_or({})) {
+    if (expectedHostSignals.find("Tx_Los") != expectedHostSignals.end()) {
       EXPECT_EQ(
-          expectedMediaSignals["Tx_AdaptFault"][*signal.lane()],
+          expectedHostSignals["Tx_Los"][*signal.lane()],
+          signal.txLos().value_or({}));
+    }
+    if (expectedHostSignals.find("Tx_Lol") != expectedHostSignals.end()) {
+      EXPECT_EQ(
+          expectedHostSignals["Tx_Lol"][*signal.lane()],
+          signal.txLol().value_or({}));
+    }
+    if (expectedHostSignals.find("Tx_AdaptFault") !=
+        expectedHostSignals.end()) {
+      EXPECT_EQ(
+          expectedHostSignals["Tx_AdaptFault"][*signal.lane()],
           signal.txAdaptEqFault().value_or({}));
     }
   }

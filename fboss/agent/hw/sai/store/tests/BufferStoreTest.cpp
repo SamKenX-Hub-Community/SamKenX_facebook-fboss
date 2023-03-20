@@ -29,7 +29,8 @@ class BufferStoreTest : public SaiStoreTest {
     SaiBufferPoolTraits::Attributes::Size size{42};
     SaiBufferPoolTraits::Attributes::ThresholdMode mode{
         SAI_BUFFER_POOL_THRESHOLD_MODE_DYNAMIC};
-    return {type, size, mode};
+    std::optional<SaiBufferPoolTraits::Attributes::XoffSize> xoffSize;
+    return {type, size, mode, xoffSize};
   }
   BufferPoolSaiId createBufferPool() const {
     auto& bufferApi = saiApiTable->bufferApi();
@@ -56,6 +57,22 @@ class BufferStoreTest : public SaiStoreTest {
     auto& bufferApi = saiApiTable->bufferApi();
     return bufferApi.create<SaiBufferProfileTraits>(
         createProfileAttrs(_pool), 0);
+  }
+  SaiIngressPriorityGroupTraits::CreateAttributes
+  createIngressPriorityGroupAttrs(BufferProfileSaiId profileId) const {
+    SaiIngressPriorityGroupTraits::Attributes::Port port{1};
+    SaiIngressPriorityGroupTraits::Attributes::Index index{10};
+    std::optional<SaiIngressPriorityGroupTraits::Attributes::BufferProfile>
+        bufferProfile{profileId};
+
+    return SaiIngressPriorityGroupTraits::CreateAttributes{
+        port, index, bufferProfile};
+  }
+  IngressPriorityGroupSaiId createIngressPriorityGroup(
+      BufferProfileSaiId profileId) const {
+    auto& bufferApi = saiApiTable->bufferApi();
+    return bufferApi.create<SaiIngressPriorityGroupTraits>(
+        createIngressPriorityGroupAttrs(profileId), 0);
   }
 };
 
@@ -166,4 +183,79 @@ TEST_F(BufferStoreTest, toStrBufferProfile) {
   auto poolId = createBufferPool();
   std::ignore = createBufferProfile(poolId);
   verifyToStr<SaiBufferProfileTraits>();
+}
+
+TEST_F(BufferStoreTest, loadIngressPriorityGroup) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId);
+  auto ingressPriorityGroupId = createIngressPriorityGroup(profileId);
+  SaiStore s(0);
+  s.reload();
+  auto& store = s.get<SaiIngressPriorityGroupTraits>();
+  auto got = store.get(createIngressPriorityGroupAttrs(profileId));
+  EXPECT_EQ(got->adapterKey(), ingressPriorityGroupId);
+  EXPECT_EQ(
+      std::get<SaiIngressPriorityGroupTraits::Attributes::Port>(
+          got->attributes()),
+      1);
+  EXPECT_EQ(
+      std::get<SaiIngressPriorityGroupTraits::Attributes::Index>(
+          got->attributes()),
+      10);
+}
+
+TEST_F(BufferStoreTest, loadIngressPriorityGroupFromJson) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId);
+  auto ingressPriorityGroupId = createIngressPriorityGroup(profileId);
+  SaiStore s(0);
+  s.reload();
+  auto json = s.adapterKeysFollyDynamic();
+  SaiStore s2(0);
+  s2.reload(&json);
+  auto& store = s2.get<SaiIngressPriorityGroupTraits>();
+  auto got = store.get(createIngressPriorityGroupAttrs(profileId));
+  EXPECT_EQ(got->adapterKey(), ingressPriorityGroupId);
+  EXPECT_EQ(
+      std::get<SaiIngressPriorityGroupTraits::Attributes::Port>(
+          got->attributes()),
+      1);
+  EXPECT_EQ(
+      std::get<SaiIngressPriorityGroupTraits::Attributes::Index>(
+          got->attributes()),
+      10);
+}
+
+TEST_F(BufferStoreTest, ingressPriorityGroupLoadCtor) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId);
+  auto ingressPriorityGroupId = createIngressPriorityGroup(profileId);
+  SaiObject<SaiIngressPriorityGroupTraits> obj =
+      createObj<SaiIngressPriorityGroupTraits>(ingressPriorityGroupId);
+  EXPECT_EQ(obj.adapterKey(), ingressPriorityGroupId);
+  EXPECT_EQ(GET_ATTR(IngressPriorityGroup, Index, obj.attributes()), 10);
+}
+
+TEST_F(BufferStoreTest, ingressPriorityGroupCreateCtor) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId);
+  auto c = createIngressPriorityGroupAttrs(profileId);
+  SaiObject<SaiIngressPriorityGroupTraits> obj =
+      createObj<SaiIngressPriorityGroupTraits>(c, c, 0);
+  EXPECT_EQ(GET_ATTR(IngressPriorityGroup, Index, obj.attributes()), 10);
+}
+
+TEST_F(BufferStoreTest, serDeserIngressPriorityGroup) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId);
+  auto ingressPriorityGroupId = createIngressPriorityGroup(profileId);
+  verifyAdapterKeySerDeser<SaiIngressPriorityGroupTraits>(
+      {ingressPriorityGroupId});
+}
+
+TEST_F(BufferStoreTest, toStrIngressPriorityGroup) {
+  auto poolId = createBufferPool();
+  auto profileId = createBufferProfile(poolId);
+  std::ignore = createIngressPriorityGroup(profileId);
+  verifyToStr<SaiIngressPriorityGroupTraits>();
 }

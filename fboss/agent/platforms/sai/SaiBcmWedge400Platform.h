@@ -18,7 +18,8 @@ class SaiBcmWedge400Platform : public SaiBcmPlatform {
  public:
   explicit SaiBcmWedge400Platform(
       std::unique_ptr<PlatformProductInfo> productInfo,
-      folly::MacAddress localMac);
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
   ~SaiBcmWedge400Platform() override;
   HwAsic* getAsic() const override;
   uint32_t numLanesPerCore() const override {
@@ -44,9 +45,14 @@ class SaiBcmWedge400Platform : public SaiBcmPlatform {
 
   void initLEDs() override;
 
-  std::unique_ptr<PlatformMapping> createWedge400PlatformMapping();
+  std::unique_ptr<PlatformMapping> createWedge400PlatformMapping(
+      const std::string& platformMappingStr);
 
  private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
   std::unique_ptr<Tomahawk3Asic> asic_;
 };
 

@@ -14,33 +14,37 @@
 #include "fboss/agent/state/NodeMap.h"
 #include "fboss/agent/types.h"
 
+#include <cstdint>
 #include <memory>
 
 namespace facebook::fboss {
 
 class SwitchState;
 
-using ForwardingInformationBaseMapTraits =
+using LegacyForwardingInformationBaseMapTraits =
     NodeMapTraits<RouterID, ForwardingInformationBaseContainer>;
 
-struct ForwardingInformationBaseMapThriftTraits
-    : public ThriftyNodeMapTraits<int16_t, state::FibContainerFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "vrf";
-    return _key;
-  }
+using ForwardingInformationBaseMapClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::integral,
+    apache::thrift::type_class::structure>;
+using ForwardingInformationBaseMapThriftType =
+    std::map<int16_t, state::FibContainerFields>;
 
-  static KeyType parseKey(const folly::dynamic& key) {
-    return key.asInt();
-  }
-};
+class ForwardingInformationBaseMap;
+using ForwardingInformationBaseMapTraits = ThriftMapNodeTraits<
+    ForwardingInformationBaseMap,
+    ForwardingInformationBaseMapClass,
+    ForwardingInformationBaseMapThriftType,
+    ForwardingInformationBaseContainer>;
 
-class ForwardingInformationBaseMap
-    : public ThriftyNodeMapT<
-          ForwardingInformationBaseMap,
-          ForwardingInformationBaseMapTraits,
-          ForwardingInformationBaseMapThriftTraits> {
+class ForwardingInformationBaseMap : public ThriftMapNode<
+                                         ForwardingInformationBaseMap,
+                                         ForwardingInformationBaseMapTraits> {
  public:
+  using BaseT = ThriftMapNode<
+      ForwardingInformationBaseMap,
+      ForwardingInformationBaseMapTraits>;
+  using BaseT::modify;
   ForwardingInformationBaseMap();
   ~ForwardingInformationBaseMap() override;
 
@@ -59,7 +63,7 @@ class ForwardingInformationBaseMap
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyNodeMapT::ThriftyNodeMapT;
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 

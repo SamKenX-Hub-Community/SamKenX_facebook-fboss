@@ -21,9 +21,11 @@
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/TestUtils.h"
 
+#include <boost/container/flat_map.hpp>
 #include <gtest/gtest.h>
 
 using namespace facebook::fboss;
+using boost::container::flat_map;
 using std::make_pair;
 using std::make_shared;
 using std::shared_ptr;
@@ -56,7 +58,8 @@ TEST(Port, checkPortLoopbackMode) {
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
   ASSERT_NE(nullptr, stateV1);
 
-  for (const auto& intf : *stateV1->getInterfaces()) {
+  for (auto iter : std::as_const(*stateV1->getInterfaces())) {
+    auto intf = iter.second;
     EXPECT_FALSE(isAnyInterfacePortInLoopbackMode(stateV1, intf));
   }
 
@@ -67,8 +70,8 @@ TEST(Port, checkPortLoopbackMode) {
   }
   auto stateV2 = publishAndApplyConfig(stateV1, &config, platform.get());
 
-  for (const auto& intf : *stateV2->getInterfaces()) {
-    EXPECT_TRUE(isAnyInterfacePortInLoopbackMode(stateV2, intf));
+  for (auto iter : std::as_const(*stateV2->getInterfaces())) {
+    EXPECT_TRUE(isAnyInterfacePortInLoopbackMode(stateV2, iter.second));
   }
 }
 
@@ -143,6 +146,12 @@ TEST(Port, applyConfig) {
   *config.vlanPorts()[0].logicalPort() = 1;
   *config.vlanPorts()[0].vlanID() = 2021;
   *config.vlanPorts()[0].emitTags() = false;
+  config.vlans()->resize(3);
+  *config.vlans()[2].id() = 2021;
+  config.interfaces()->resize(3);
+  *config.interfaces()[2].intfID() = 2021;
+  *config.interfaces()[2].vlanID() = 2021;
+  config.interfaces()[2].mac() = "00:00:00:00:00:21";
 
   Port::VlanMembership expectedVlansV2;
   expectedVlansV2.insert(make_pair(VlanID(2021), Port::VlanInfo(false)));
@@ -178,542 +187,6 @@ TEST(Port, applyConfig) {
   EXPECT_EQ(
       cfg::PortProfileID::PROFILE_25G_1_NRZ_NOFEC_COPPER,
       portV3->getProfileID());
-}
-
-TEST(Port, ToFromWithPgConfigs) {
-  std::string jsonStr = R"(
-        {
-         "pgConfigs": [
-            {
-                "id": 0,
-                "name": "first",
-                "minLimitBytes": 3328,
-                "scalingFactor": "ONE",
-                "resumeOffsetBytes": 10,
-                "bufferPoolName": ""
-            },
-            {
-                "id": 1,
-                "name": "second",
-                "minLimitBytes": 4000,
-                "scalingFactor": "TWO",
-                "resumeOffsetBytes": 300,
-                "bufferPoolName": ""
-            },
-            {
-                "id": 2,
-                "name": "third",
-                "minLimitBytes": 4500,
-                "scalingFactor": "FOUR",
-                "resumeOffsetBytes": 400,
-                "headroomLimitBytes": 2000,
-                "bufferPoolName": "foo1",
-                "bufferPoolConfig": {
-                  "id": "foo1",
-                  "headroomBytes": 2000,
-                  "sharedBytes": 4000
-                }
-            }
-          ],
-          "sFlowIngressRate" : 100,
-          "vlanMemberShips" : {
-            "2000" : {
-              "tagged" : true
-            }
-          },
-          "queues": [
-          ],
-          "rxPause" : false,
-          "portState" : "ENABLED",
-          "portType": 0,
-          "sFlowEgressRate" : 200,
-          "portDescription" : "TEST",
-          "portName" : "eth1/1/1",
-          "portId" : 100,
-          "portOperState" : true,
-          "portProfileID": "PROFILE_10G_1_NRZ_NOFEC",
-          "ingressVlan" : 2000,
-          "portSpeed" : "XG",
-          "txPause" : false,
-          "sampleDest" : "MIRROR",
-          "portLoopbackMode" : "PHY",
-          "lookupClassesToDistrubuteTrafficOn": [
-            10,
-            11,
-            12,
-            13,
-            14
-          ],
-          "maxFrameSize" : 9000,
-          "pfc": {
-            "tx": false,
-            "rx": false,
-            "portPgConfigName": "foo",
-            "watchdog": {
-              "detectionTimeMsecs": 15,
-              "recoveryTimeMsecs": 16,
-              "recoveryAction": 1
-            }
-          },
-          "profileConfig": {
-            "numLanes": 1,
-            "modulation": 1,
-            "fec": 1,
-            "medium": 1,
-            "interfaceMode": 10,
-            "interfaceType": 10
-          },
-          "pinConfigs": [
-            {
-              "id": {
-                "chip": "FC21",
-                "lane": 0
-              },
-              "tx": {
-                "pre": 2,
-                "pre2": 0,
-                "main": 72,
-                "post": 38,
-                "post2": 0,
-                "post3": 0,
-                "driveCurrent": 8
-              }
-            }
-          ]
-       }
-  )";
-  auto port = Port::fromJson(jsonStr);
-
-  auto portPgs = port->getPortPgConfigs();
-  EXPECT_TRUE(portPgs.has_value());
-
-  auto portPgsTmp = portPgs.value();
-  EXPECT_EQ(portPgsTmp.size(), 3);
-  auto dyn1 = port->toFollyDynamic();
-  dyn1.erase(ThriftyUtils::kThriftySchemaUpToDate);
-  auto dyn2 = folly::parseJson(jsonStr);
-  EXPECT_EQ(dyn1, dyn2);
-}
-
-TEST(Port, ToFromJSON) {
-  std::string jsonStr = R"(
-        {
-          "queues" : [
-            {
-                "streamType": "UNICAST",
-                "weight": 1,
-                "reserved": 3328,
-                "scheduling": "WEIGHTED_ROUND_ROBIN",
-                "id": 0,
-                "scalingFactor": "ONE"
-            },
-            {
-                "streamType": "UNICAST",
-                "weight": 9,
-                "reserved": 19968,
-                "scheduling": "WEIGHTED_ROUND_ROBIN",
-                "id": 1,
-                "scalingFactor": "EIGHT"
-            },
-            {
-                "streamType": "UNICAST",
-                "scheduling": "WEIGHTED_ROUND_ROBIN",
-                "id": 2,
-                "weight": 1
-            },
-            {
-                "streamType": "UNICAST",
-                "scheduling": "WEIGHTED_ROUND_ROBIN",
-                "id": 3,
-                "weight": 1
-            }
-          ],
-          "sFlowIngressRate" : 100,
-          "vlanMemberShips" : {
-            "2000" : {
-              "tagged" : true
-            }
-          },
-          "rxPause" : true,
-          "portState" : "ENABLED",
-          "portType": 0,
-          "sFlowEgressRate" : 200,
-          "portDescription" : "TEST",
-          "portName" : "eth1/1/1",
-          "portId" : 100,
-          "portOperState" : true,
-          "portProfileID": "PROFILE_10G_1_NRZ_NOFEC",
-          "ingressVlan" : 2000,
-          "portSpeed" : "XG",
-          "txPause" : true,
-          "sampleDest" : "MIRROR",
-          "portLoopbackMode" : "PHY",
-          "lookupClassesToDistrubuteTrafficOn": [
-            10,
-            11,
-            12,
-            13,
-            14
-          ],
-          "maxFrameSize" : 9000,
-          "pfc": {
-            "tx": false,
-            "rx": false,
-            "portPgConfigName": "foo",
-            "watchdog": {
-              "detectionTimeMsecs": 15,
-              "recoveryTimeMsecs": 16,
-              "recoveryAction": 1
-            }
-          },
-          "profileConfig": {
-            "numLanes": 1,
-            "modulation": 1,
-            "fec": 1,
-            "medium": 1,
-            "interfaceMode": 10,
-            "interfaceType": 10
-          },
-          "pinConfigs": [
-            {
-              "id": {
-                "chip": "FC21",
-                "lane": 0
-              },
-              "tx": {
-                "pre": 2,
-                "pre2": 0,
-                "main": 72,
-                "post": 38,
-                "post2": 0,
-                "post3": 0,
-                "driveCurrent": 8
-              }
-            }
-          ]
-       }
-  )";
-  auto port = Port::fromJson(jsonStr);
-
-  EXPECT_EQ(100, port->getSflowIngressRate());
-  EXPECT_EQ(200, port->getSflowEgressRate());
-  EXPECT_EQ(9000, port->getMaxFrameSize());
-  auto vlans = port->getVlans();
-  EXPECT_EQ(1, vlans.size());
-  EXPECT_TRUE(vlans.at(VlanID(2000)).tagged);
-  EXPECT_TRUE(*port->getPause().rx());
-  EXPECT_EQ(cfg::PortState::ENABLED, port->getAdminState());
-  EXPECT_EQ("TEST", port->getDescription());
-  EXPECT_EQ("eth1/1/1", port->getName());
-  EXPECT_EQ(PortID{100}, port->getID());
-  EXPECT_EQ(PortFields::OperState::UP, port->getOperState());
-  EXPECT_EQ(VlanID(2000), port->getIngressVlan());
-  EXPECT_EQ(cfg::PortSpeed::XG, port->getSpeed());
-  EXPECT_EQ(cfg::PortProfileID::PROFILE_10G_1_NRZ_NOFEC, port->getProfileID());
-  EXPECT_TRUE(*port->getPause().tx());
-  EXPECT_EQ(cfg::PortLoopbackMode::PHY, port->getLoopbackMode());
-  EXPECT_TRUE(port->getSampleDestination().has_value());
-  EXPECT_EQ(
-      cfg::SampleDestination::MIRROR, port->getSampleDestination().value());
-
-  auto queues = port->getPortQueues();
-  EXPECT_EQ(4, queues.size());
-
-  EXPECT_EQ(cfg::StreamType::UNICAST, queues[0]->getStreamType());
-  EXPECT_EQ(3328, queues[0]->getReservedBytes().value());
-  EXPECT_EQ(1, queues[0]->getWeight());
-  EXPECT_EQ(0, queues[0]->getID());
-  EXPECT_EQ(
-      cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN, queues[0]->getScheduling());
-  EXPECT_EQ(cfg::MMUScalingFactor::ONE, queues[0]->getScalingFactor().value());
-
-  EXPECT_EQ(cfg::StreamType::UNICAST, queues[1]->getStreamType());
-  EXPECT_EQ(19968, queues[1]->getReservedBytes().value());
-  EXPECT_EQ(9, queues[1]->getWeight());
-  EXPECT_EQ(1, queues[1]->getID());
-  EXPECT_EQ(
-      cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN, queues[1]->getScheduling());
-  EXPECT_EQ(
-      cfg::MMUScalingFactor::EIGHT, queues[1]->getScalingFactor().value());
-
-  EXPECT_EQ(cfg::StreamType::UNICAST, queues[2]->getStreamType());
-  EXPECT_FALSE(queues[2]->getReservedBytes().has_value());
-  EXPECT_EQ(1, queues[2]->getWeight());
-  EXPECT_EQ(2, queues[2]->getID());
-  EXPECT_EQ(
-      cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN, queues[2]->getScheduling());
-  EXPECT_FALSE(queues[2]->getScalingFactor().has_value());
-
-  EXPECT_EQ(cfg::StreamType::UNICAST, queues[3]->getStreamType());
-  EXPECT_FALSE(queues[3]->getReservedBytes().has_value());
-  EXPECT_EQ(1, queues[3]->getWeight());
-  EXPECT_EQ(3, queues[3]->getID());
-  EXPECT_EQ(
-      cfg::QueueScheduling::WEIGHTED_ROUND_ROBIN, queues[3]->getScheduling());
-  EXPECT_FALSE(queues[3]->getScalingFactor().has_value());
-
-  std::vector<cfg::AclLookupClass> expectedLookupClasses = {
-      cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_0,
-      cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_1,
-      cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_2,
-      cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_3,
-      cfg::AclLookupClass::CLASS_QUEUE_PER_HOST_QUEUE_4};
-  EXPECT_EQ(
-      port->getLookupClassesToDistributeTrafficOn(), expectedLookupClasses);
-
-  EXPECT_TRUE(port->getPfc().has_value());
-  EXPECT_FALSE(*port->getPfc()->rx());
-  EXPECT_FALSE(*port->getPfc()->tx());
-  EXPECT_TRUE(port->getPfc()->watchdog().has_value());
-  auto pfcWatchdog = port->getPfc()->watchdog().value();
-  EXPECT_EQ(15, *pfcWatchdog.detectionTimeMsecs());
-  EXPECT_EQ(16, *pfcWatchdog.recoveryTimeMsecs());
-  EXPECT_EQ(
-      cfg::PfcWatchdogRecoveryAction::DROP, *pfcWatchdog.recoveryAction());
-  auto dyn1 = port->toFollyDynamic();
-  dyn1.erase(ThriftyUtils::kThriftySchemaUpToDate);
-  auto dyn2 = folly::parseJson(jsonStr);
-
-  EXPECT_EQ(dyn1, dyn2);
-}
-
-TEST(Port, ToFromJSONMissingMaxFrameSize) {
-  std::string jsonStr = R"(
-        {
-          "queues" : [
-            {
-                "streamType": "UNICAST",
-                "weight": 1,
-                "reserved": 3328,
-                "scheduling": "WEIGHTED_ROUND_ROBIN",
-                "id": 0,
-                "scalingFactor": "ONE"
-            },
-            {
-                "streamType": "UNICAST",
-                "weight": 9,
-                "reserved": 19968,
-                "scheduling": "WEIGHTED_ROUND_ROBIN",
-                "id": 1,
-                "scalingFactor": "EIGHT"
-            },
-            {
-                "streamType": "UNICAST",
-                "scheduling": "WEIGHTED_ROUND_ROBIN",
-                "id": 2,
-                "weight": 1
-            },
-            {
-                "streamType": "UNICAST",
-                "scheduling": "WEIGHTED_ROUND_ROBIN",
-                "id": 3,
-                "weight": 1
-            }
-          ],
-          "sFlowIngressRate" : 100,
-          "vlanMemberShips" : {
-            "2000" : {
-              "tagged" : true
-            }
-          },
-          "rxPause" : true,
-          "portState" : "ENABLED",
-          "sFlowEgressRate" : 200,
-          "portDescription" : "TEST",
-          "portName" : "eth1/1/1",
-          "portId" : 100,
-          "portOperState" : true,
-          "portProfileID": "PROFILE_10G_1_NRZ_NOFEC",
-          "ingressVlan" : 2000,
-          "portSpeed" : "XG",
-          "txPause" : true,
-          "sampleDest" : "MIRROR",
-          "portLoopbackMode" : "PHY"
-        }
-  )";
-  auto port = Port::fromJson(jsonStr);
-
-  EXPECT_EQ(
-      cfg::switch_config_constants::DEFAULT_PORT_MTU(),
-      port->getMaxFrameSize());
-}
-
-TEST(AggregatePort, ToFromJSON) {
-  std::string jsonStr = R"(
-        {
-          "id": 10,
-          "name": "tr0",
-          "description": "Some trunk port",
-          "systemPriority": 10,
-          "systemID": "12:42:00:22:53:01",
-          "minimumLinkCount": 2,
-          "subports": [
-            {
-              "portId": 42,
-              "priority": 1,
-              "rate": "fast",
-              "activity": "active",
-              "holdTimerMultiplier": 3
-            },
-            {
-              "portId": 43,
-              "priority": 1,
-              "rate": "fast",
-              "activity": "passive",
-              "holdTimerMultiplier": 3
-            },
-            {
-              "portId": 44,
-              "priority": 1,
-              "rate": "slow",
-              "activity": "active",
-              "holdTimerMultiplier": 3
-            }
-          ],
-          "forwardingStates": [
-            {
-              "portId": 42,
-              "forwarding": "disabled"
-            },
-            {
-              "portId": 43,
-              "forwarding": "enabled"
-            },
-            {
-              "portId": 44,
-              "forwarding": "enabled"
-            }
-          ],
-          "partnerInfos": [
-            {
-              "portId": 42,
-              "partnerInfo": {
-                "id": 52,
-                "portId": 152,
-                "priority": 1,
-                "state": 0,
-                "systemID": [ 12, 42, 00, 32, 10, 01],
-                "systemPriority": 10
-              }
-            },
-            {
-              "portId": 43,
-              "partnerInfo": {
-                "id": 53,
-                "portId": 153,
-                "priority": 1,
-                "state": 63,
-                "systemID": [ 12, 42, 00, 32, 10, 02],
-                "systemPriority": 10
-              }
-            },
-            {
-              "portId": 44,
-              "partnerInfo": {
-                "id": 54,
-                "portId": 154,
-                "priority": 1,
-                "state": 61,
-                "systemID": [ 12, 42, 00, 32, 10, 03],
-                "systemPriority": 10
-              }
-            }
-          ]
-        }
-  )";
-  auto aggPort = AggregatePort::fromJson(jsonStr);
-
-  EXPECT_EQ(AggregatePortID(10), aggPort->getID());
-  EXPECT_EQ("tr0", aggPort->getName());
-  EXPECT_EQ("Some trunk port", aggPort->getDescription());
-  EXPECT_EQ(10, aggPort->getSystemPriority());
-  EXPECT_EQ(folly::MacAddress("12:42:00:22:53:01"), aggPort->getSystemID());
-  EXPECT_EQ(2, aggPort->getMinimumLinkCount());
-  EXPECT_EQ(3, aggPort->subportsCount());
-
-  auto lacpState = LacpState::ACTIVE | LacpState::AGGREGATABLE |
-      LacpState::COLLECTING | LacpState::DISTRIBUTING | LacpState::IN_SYNC;
-
-  for (const auto& subport : aggPort->sortedSubports()) {
-    EXPECT_EQ(1, subport.priority);
-    EXPECT_EQ(
-        (subport.portID == PortID{44}) ? cfg::LacpPortRate::SLOW
-                                       : cfg::LacpPortRate::FAST,
-        subport.rate);
-    EXPECT_EQ(
-        (subport.portID == PortID{43}) ? cfg::LacpPortActivity::PASSIVE
-                                       : cfg::LacpPortActivity::ACTIVE,
-        subport.activity);
-    EXPECT_EQ(
-        (subport.portID == PortID{42}) ? AggregatePort::Forwarding::DISABLED
-                                       : AggregatePort::Forwarding::ENABLED,
-        aggPort->getForwardingState(subport.portID));
-
-    auto partnerInfo = aggPort->getPartnerState(subport.portID);
-    EXPECT_EQ(
-        (subport.portID == PortID{42}) ? 0
-            : (subport.portID == PortID{43})
-            ? (lacpState | LacpState::SHORT_TIMEOUT)
-            : lacpState,
-        partnerInfo.state);
-  }
-
-  auto dyn1 = aggPort->toFollyDynamic();
-  auto dyn2 = folly::parseJson(jsonStr);
-
-  EXPECT_EQ(dyn1, dyn2);
-}
-
-TEST(Port, ToFromJSONLoopbackModeMissingFromJson) {
-  std::string jsonStr = R"(
-        {
-          "queues" : [
-          ],
-          "sFlowIngressRate" : 100,
-          "vlanMemberShips" : {
-            "2000" : {
-              "tagged" : true
-            }
-          },
-          "rxPause" : true,
-          "portState" : "ENABLED",
-          "sFlowEgressRate" : 200,
-          "portDescription" : "TEST",
-          "portName" : "eth1/1/1",
-          "portId" : 100,
-          "portOperState" : true,
-          "ingressVlan" : 2000,
-          "portSpeed" : "XG",
-          "portProfileID": "PROFILE_10G_1_NRZ_NOFEC",
-          "txPause" : true
-        }
-  )";
-  auto port = Port::fromJson(jsonStr);
-
-  EXPECT_EQ(100, port->getSflowIngressRate());
-  EXPECT_EQ(200, port->getSflowEgressRate());
-  auto vlans = port->getVlans();
-  EXPECT_EQ(1, vlans.size());
-  EXPECT_TRUE(vlans.at(VlanID(2000)).tagged);
-  EXPECT_TRUE(*port->getPause().rx());
-  EXPECT_EQ(cfg::PortState::ENABLED, port->getAdminState());
-  EXPECT_EQ("TEST", port->getDescription());
-  EXPECT_EQ("eth1/1/1", port->getName());
-  EXPECT_EQ(PortID{100}, port->getID());
-  EXPECT_EQ(PortFields::OperState::UP, port->getOperState());
-  EXPECT_EQ(VlanID(2000), port->getIngressVlan());
-  EXPECT_EQ(cfg::PortSpeed::XG, port->getSpeed());
-  EXPECT_EQ(cfg::PortProfileID::PROFILE_10G_1_NRZ_NOFEC, port->getProfileID());
-  EXPECT_TRUE(*port->getPause().tx());
-  EXPECT_EQ(cfg::PortLoopbackMode::NONE, port->getLoopbackMode());
-
-  auto queues = port->getPortQueues();
-  EXPECT_EQ(0, queues.size());
-
-  auto dyn1 = port->toFollyDynamic();
-  auto dyn2 = Port::fromJson(jsonStr)->toFollyDynamic();
-
-  EXPECT_EQ(dyn1, dyn2);
 }
 
 TEST(Port, emptyConfig) {
@@ -1052,7 +525,7 @@ TEST(PortMap, registerPorts) {
   EXPECT_TRUE(port4->isPublished());
   EXPECT_TRUE(port10->isPublished());
 
-  validateThriftyMigration(*ports);
+  validateThriftMapMapSerialization(*ports);
 }
 
 /*
@@ -1088,8 +561,10 @@ TEST(PortMap, applyConfig) {
   auto stateV0 = make_shared<SwitchState>();
   auto portsV0 = stateV0->getPorts();
   auto registerPort = [&](int i) {
-    auto port =
-        std::make_shared<Port>(PortID(i), folly::format("port{}", i).str());
+    state::PortFields portFields;
+    portFields.portId() = PortID(i);
+    portFields.portName() = fmt::format("port{}", i);
+    auto port = std::make_shared<Port>(std::move(portFields));
     prepareDefaultSwPort(platform.get(), port);
     QueueConfig defaultQueues;
     for (int q = 0; q < platform->getAsic()->getDefaultNumPortQueues(
@@ -1107,7 +582,7 @@ TEST(PortMap, applyConfig) {
   }
   portsV0->publish();
 
-  validateThriftyMigration(*portsV0);
+  validateThriftMapMapSerialization(*portsV0);
 
   EXPECT_EQ(0, portsV0->getGeneration());
   auto port1 = portsV0->getPort(PortID(1));
@@ -1159,7 +634,7 @@ TEST(PortMap, applyConfig) {
   EXPECT_TRUE(newPort2->isPublished());
   EXPECT_TRUE(port1->isPublished());
 
-  validateThriftyMigration(*portsV1);
+  validateThriftMapMapSerialization(*portsV1);
 
   // Applying the same config again should do nothing.
   EXPECT_EQ(nullptr, publishAndApplyConfig(stateV1, &config, platform.get()));
@@ -1221,7 +696,7 @@ TEST(PortMap, applyConfig) {
   EXPECT_EQ(
       cfg::PortState::ENABLED, portsV3->getPort(PortID(4))->getAdminState());
   checkChangedPorts(portsV2, portsV3, {3});
-  validateThriftyMigration(*portsV3);
+  validateThriftMapMapSerialization(*portsV3);
 }
 
 TEST(PortMap, iterateOrder) {
@@ -1238,30 +713,30 @@ TEST(PortMap, iterateOrder) {
   ports->registerPort(PortID(4), "d");
   ports->publish();
 
-  auto it = ports->begin();
-  ASSERT_NE(ports->end(), it);
-  EXPECT_EQ(PortID(4), (*it)->getID());
-  EXPECT_EQ("d", (*it)->getName());
+  auto it = ports->cbegin();
+  ASSERT_NE(ports->cend(), it);
+  EXPECT_EQ(PortID(4), it->second->getID());
+  EXPECT_EQ("d", it->second->getName());
 
   ++it;
-  ASSERT_NE(ports->end(), it);
-  EXPECT_EQ(PortID(37), (*it)->getID());
-  EXPECT_EQ("b", (*it)->getName());
+  ASSERT_NE(ports->cend(), it);
+  EXPECT_EQ(PortID(37), it->second->getID());
+  EXPECT_EQ("b", it->second->getName());
 
   ++it;
-  ASSERT_NE(ports->end(), it);
-  EXPECT_EQ(PortID(88), (*it)->getID());
-  EXPECT_EQ("c", (*it)->getName());
+  ASSERT_NE(ports->cend(), it);
+  EXPECT_EQ(PortID(88), it->second->getID());
+  EXPECT_EQ("c", it->second->getName());
 
   ++it;
-  ASSERT_NE(ports->end(), it);
-  EXPECT_EQ(PortID(99), (*it)->getID());
-  EXPECT_EQ("a", (*it)->getName());
+  ASSERT_NE(ports->cend(), it);
+  EXPECT_EQ(PortID(99), it->second->getID());
+  EXPECT_EQ("a", it->second->getName());
 
   ++it;
-  EXPECT_EQ(ports->end(), it);
+  EXPECT_EQ(ports->cend(), it);
 
-  validateThriftyMigration(*ports);
+  validateThriftMapMapSerialization(*ports);
 }
 
 TEST(Port, portFabricType) {
@@ -1273,12 +748,51 @@ TEST(Port, portFabricType) {
   ASSERT_NE(nullptr, stateV1);
 
   for (auto port : *stateV1->getPorts()) {
-    EXPECT_EQ(port->getPortType(), cfg::PortType::INTERFACE_PORT);
-    auto newPort = port->clone();
+    EXPECT_EQ(port.second->getPortType(), cfg::PortType::INTERFACE_PORT);
+    auto newPort = port.second->clone();
     newPort->setPortType(cfg::PortType::FABRIC_PORT);
-    auto newerPort = Port::fromFollyDynamic(newPort->toFollyDynamic());
+    auto newerPort = std::make_shared<Port>(newPort->toThrift());
     EXPECT_EQ(newerPort->getPortType(), cfg::PortType::FABRIC_PORT);
   }
+}
+
+TEST(Port, portDrainInterfacePort) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+  cfg::SwitchConfig config;
+
+  config.ports()->resize(1);
+  preparedMockPortConfig(
+      config.ports()[0], 1, "port1", cfg::PortState::DISABLED);
+  config.ports()[0].portType<cfg::PortType>() = cfg::PortType::INTERFACE_PORT;
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  auto port = stateV1->getPort(PortID(1));
+  EXPECT_EQ(port->getPortDrainState(), cfg::PortDrainState::UNDRAINED);
+
+  config.ports()[0].drainState<cfg::PortDrainState>() =
+      cfg::PortDrainState::DRAINED;
+  EXPECT_THROW(
+      publishAndApplyConfig(stateV0, &config, platform.get()), FbossError);
+}
+
+TEST(Port, portDrainFabricPort) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+  cfg::SwitchConfig config;
+
+  config.ports()->resize(1);
+  preparedMockPortConfig(
+      config.ports()[0], 1, "port1", cfg::PortState::DISABLED);
+  config.ports()[0].portType<cfg::PortType>() = cfg::PortType::FABRIC_PORT;
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  auto port = stateV1->getPort(PortID(1));
+  EXPECT_EQ(port->getPortDrainState(), cfg::PortDrainState::UNDRAINED);
+
+  config.ports()[0].drainState<cfg::PortDrainState>() =
+      cfg::PortDrainState::DRAINED;
+  auto stateV2 = publishAndApplyConfig(stateV1, &config, platform.get());
+  port = stateV2->getPort(PortID(1));
+  EXPECT_EQ(port->getPortDrainState(), cfg::PortDrainState::DRAINED);
 }
 
 TEST(Port, portFabricTypeApplyConfig) {
@@ -1296,8 +810,9 @@ TEST(Port, portFabricTypeApplyConfig) {
   auto stateV2 = publishAndApplyConfig(stateV1, &config, platform.get());
   ASSERT_NE(nullptr, stateV2);
   for (auto port : *stateV2->getPorts()) {
-    EXPECT_EQ(port->getPortType(), cfg::PortType::FABRIC_PORT);
-    EXPECT_NE(*port, *stateV1->getPorts()->getPort(port->getID()));
+    EXPECT_EQ(port.second->getPortType(), cfg::PortType::FABRIC_PORT);
+    EXPECT_NE(
+        *port.second, *stateV1->getPorts()->getPort(port.second->getID()));
   }
   EXPECT_EQ(nullptr, publishAndApplyConfig(stateV2, &config, platform.get()));
   // Flip back to intefac_port type
@@ -1306,9 +821,201 @@ TEST(Port, portFabricTypeApplyConfig) {
   }
   auto stateV3 = publishAndApplyConfig(stateV2, &config, platform.get());
   ASSERT_NE(nullptr, stateV3);
-  for (auto port : *stateV3->getPorts()) {
-    EXPECT_EQ(port->getPortType(), cfg::PortType::INTERFACE_PORT);
-    EXPECT_NE(*port, *stateV2->getPorts()->getPort(port->getID()));
+  for (auto port : std::as_const(*stateV3->getPorts())) {
+    EXPECT_EQ(port.second->getPortType(), cfg::PortType::INTERFACE_PORT);
+    EXPECT_NE(
+        *port.second, *stateV2->getPorts()->getPort(port.second->getID()));
   }
   EXPECT_EQ(nullptr, publishAndApplyConfig(stateV3, &config, platform.get()));
+}
+
+TEST(Port, portSerilization) {
+  state::PortFields portFields;
+  portFields.portId() = PortID(42);
+  portFields.portName() = "test_port";
+  auto port = std::make_shared<Port>(std::move(portFields));
+  EXPECT_EQ(port->getName(), "test_port");
+  EXPECT_EQ(port->getID(), PortID(42));
+
+  // IphyLinkStatus
+  EXPECT_EQ(port->getIPhyLinkFaultStatus(), std::nullopt);
+  phy::LinkFaultStatus linkFaultStatus;
+  linkFaultStatus.localFault() = true;
+  port->setIPhyLinkFaultStatus(linkFaultStatus);
+  EXPECT_TRUE(port->getIPhyLinkFaultStatus().has_value());
+  EXPECT_EQ(port->getIPhyLinkFaultStatus().value(), linkFaultStatus);
+
+  // AsicPrbs, GbSystemPrbs & GbLinePrbs
+  phy::PortPrbsState prbsState;
+  EXPECT_EQ(port->getAsicPrbs(), prbsState);
+  EXPECT_EQ(port->getGbSystemPrbs(), prbsState);
+  EXPECT_EQ(port->getGbLinePrbs(), prbsState);
+  prbsState.polynominal() = 42;
+  port->setAsicPrbs(prbsState);
+  port->setGbSystemPrbs(prbsState);
+  port->setGbLinePrbs(prbsState);
+  EXPECT_EQ(port->getAsicPrbs(), prbsState);
+  EXPECT_EQ(port->getGbSystemPrbs(), prbsState);
+  EXPECT_EQ(port->getGbLinePrbs(), prbsState);
+
+  // Pfc Priorities
+  EXPECT_TRUE(!port->getPfcPriorities());
+  std::optional<std::vector<int16_t>> pfcPriorities{{42}};
+  port->setPfcPriorities(pfcPriorities);
+  EXPECT_TRUE(port->getPfcPriorities());
+  EXPECT_EQ(port->getPfcPriorities()->size(), 1);
+
+  // expected LLDP values
+  EXPECT_TRUE(port->getLLDPValidations().empty());
+  PortFields::LLDPValidations lldpMap{{cfg::LLDPTag::TTL, "ttlTag"}};
+  port->setExpectedLLDPValues(lldpMap);
+  EXPECT_EQ(port->getLLDPValidations().size(), 1);
+
+  // expected Neighbor reachability values
+  EXPECT_TRUE(port->getExpectedNeighborValues()->empty());
+  cfg::PortNeighbor nbr;
+  nbr.remoteSystem() = "RemoteA";
+  nbr.remotePort() = "portA";
+  port->setExpectedNeighborReachability({nbr});
+  EXPECT_EQ(port->getExpectedNeighborValues()->size(), 1);
+
+  // RxSaks
+  EXPECT_TRUE(
+      port->cref<switch_state_tags::rxSecureAssociationKeys>()->empty());
+  state::MKASakKey sakKey;
+  sakKey.sci() = mka::MKASci{};
+  sakKey.associationNum() = 42;
+  state::RxSak rxSak;
+  rxSak.sakKey() = sakKey;
+  rxSak.sak() = mka::MKASak{};
+  std::vector<state::RxSak> rxSaks{rxSak};
+  port->set<switch_state_tags::rxSecureAssociationKeys>(rxSaks);
+  EXPECT_EQ(
+      port->cref<switch_state_tags::rxSecureAssociationKeys>()->size(), 1);
+
+  // txSecureAssociationKey
+  EXPECT_EQ(port->getTxSak(), std::nullopt);
+  port->setTxSak(mka::MKASak{});
+  EXPECT_TRUE(port->getTxSak().has_value());
+
+  EXPECT_FALSE(port->getMacsecDesired());
+  EXPECT_FALSE(port->getDropUnencrypted());
+  port->setMacsecDesired(true);
+  port->setDropUnencrypted(true);
+  EXPECT_TRUE(port->getMacsecDesired());
+  EXPECT_TRUE(port->getDropUnencrypted());
+
+  validateNodeSerialization(*port);
+}
+
+TEST(Port, verifyInterfaceIDsForNonVoqSwitches) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+  auto config = testConfigA();
+
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+
+  auto getExpectedPort2Interface = [](const auto& config) {
+    flat_map<VlanID, int32_t> vlan2Interface;
+    for (const auto& interfaceCfg : *config.interfaces()) {
+      vlan2Interface[VlanID(*interfaceCfg.vlanID())] = *interfaceCfg.intfID();
+    }
+
+    flat_map<PortID, Port::VlanMembership> port2Vlans;
+    for (const auto& vp : *config.vlanPorts()) {
+      PortID portID(*vp.logicalPort());
+      VlanID vlanID(*vp.vlanID());
+
+      port2Vlans[portID].insert(
+          std::make_pair(vlanID, Port::VlanInfo(*vp.emitTags())));
+    }
+
+    flat_map<PortID, int32_t> port2Interface;
+    for (const auto& portCfg : *config.ports()) {
+      auto portID = PortID(*portCfg.logicalID());
+      for (const auto& [vlanID, vlanInfo] : port2Vlans[portID]) {
+        auto it = vlan2Interface.find(vlanID);
+        EXPECT_TRUE(it != vlan2Interface.end());
+        port2Interface.insert(std::make_pair(portID, it->second));
+      }
+    }
+    return port2Interface;
+  };
+
+  auto expectedPort2Interface = getExpectedPort2Interface(config);
+
+  for (const auto& port : std::as_const(*(stateV1->getPorts()))) {
+    for (const auto& intfID : *port.second->getInterfaceIDs()) {
+      auto portID = port.second->getID();
+      auto expectedIntfID = expectedPort2Interface[portID];
+      auto gotIntfID = int(intfID->cref());
+
+      EXPECT_EQ(expectedIntfID, gotIntfID);
+    }
+  }
+}
+
+TEST(Port, verifyInterfaceIDsForVoqSwitches) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+  auto config = testConfigA(cfg::SwitchType::VOQ);
+
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+
+  auto dsfIter = config.dsfNodes()->find(
+      static_cast<int64_t>(*config.switchSettings()->switchId()));
+  EXPECT_TRUE(dsfIter != config.dsfNodes()->end());
+  auto myNode = dsfIter->second;
+
+  for (const auto& port : std::as_const(*(stateV1->getPorts()))) {
+    for (const auto& intfID : *port.second->getInterfaceIDs()) {
+      auto expectedIntfID =
+          *myNode.systemPortRange()->minimum() + port.second->getID();
+      auto gotIntfID = static_cast<int>(intfID->cref());
+      EXPECT_EQ(expectedIntfID, gotIntfID);
+    }
+  }
+}
+
+TEST(Port, verifyNeighborReachability) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+  auto config = testConfigA(cfg::SwitchType::VOQ);
+
+  cfg::PortNeighbor nbr;
+  nbr.remoteSystem() = "RemoteA";
+  nbr.remotePort() = "portA";
+
+  config.ports()[0].expectedNeighborReachability() = {nbr};
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+
+  for (const auto& nbrIter : *(stateV1->getPorts()
+                                   ->getPortIf(PortID(1))
+                                   ->getExpectedNeighborValues())) {
+    EXPECT_EQ(
+        nbrIter->cref<switch_config_tags::remoteSystem>()->toThrift(),
+        "RemoteA");
+    EXPECT_EQ(
+        nbrIter->cref<switch_config_tags::remotePort>()->toThrift(), "portA");
+  }
+}
+
+TEST(Port, portDrainState) {
+  auto platform = createMockPlatform();
+  auto stateV0 = make_shared<SwitchState>();
+  auto config = testConfigA();
+
+  auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
+  ASSERT_NE(nullptr, stateV1);
+
+  for (auto port : *stateV1->getPorts()) {
+    EXPECT_EQ(port.second->getPortDrainState(), cfg::PortDrainState::UNDRAINED);
+    auto newPort = port.second->clone();
+    newPort->setPortDrainState(cfg::PortDrainState::DRAINED);
+    auto newerPort = std::make_shared<Port>(newPort->toThrift());
+    EXPECT_EQ(newerPort->getPortDrainState(), cfg::PortDrainState::DRAINED);
+  }
 }

@@ -4,13 +4,15 @@
 # cmake/FooBar.cmake
 
 add_library(nodebase
+  fboss/agent/state/DeltaFunctions.h
+  fboss/agent/state/DeltaFunctions-detail.h
+  fboss/agent/state/MapDelta.h
   fboss/agent/state/NodeBase.cpp
   fboss/agent/state/NodeBase.h
   fboss/agent/state/NodeBase-defs.h
   fboss/agent/state/NodeMap.h
   fboss/agent/state/NodeMap-defs.h
   fboss/agent/state/NodeMapDelta.h
-  fboss/agent/state/NodeMapDelta-defs.h
   fboss/agent/state/NodeMapIterator.h
 )
 
@@ -34,12 +36,16 @@ add_library(state
   fboss/agent/state/ArpResponseTable.cpp
   fboss/agent/state/ArpTable.cpp
   fboss/agent/state/ControlPlane.cpp
+  fboss/agent/state/DsfNode.cpp
+  fboss/agent/state/DsfNodeMap.cpp
+  fboss/agent/state/FlowletSwitchingConfig.cpp
   fboss/agent/state/ForwardingInformationBase.cpp
   fboss/agent/state/ForwardingInformationBaseContainer.cpp
   fboss/agent/state/ForwardingInformationBaseDelta.cpp
   fboss/agent/state/ForwardingInformationBaseMap.cpp
   fboss/agent/state/Interface.cpp
   fboss/agent/state/InterfaceMap.cpp
+  fboss/agent/state/InterfaceMapDelta.cpp
   fboss/agent/state/IpTunnel.cpp
   fboss/agent/state/LabelForwardingInformationBase.cpp
   fboss/agent/state/LoadBalancer.cpp
@@ -79,6 +85,11 @@ add_library(state
   fboss/agent/state/TeFlowTable.cpp
   fboss/agent/state/Transceiver.cpp
   fboss/agent/state/TransceiverMap.cpp
+  fboss/agent/state/UdfConfig.cpp
+  fboss/agent/state/UdfGroup.cpp
+  fboss/agent/state/UdfGroupMap.cpp
+  fboss/agent/state/UdfPacketMatcher.cpp
+  fboss/agent/state/UdfPacketMatcherMap.cpp
   fboss/agent/state/IpTunnel.cpp
   fboss/agent/state/IpTunnelMap.cpp
   fboss/agent/state/Vlan.cpp
@@ -93,13 +104,17 @@ target_link_libraries(state
   switch_state_cpp2
   mka_structs_cpp2
   fboss_cpp2
+  fsdb_helper
   label_forwarding_action
   nodebase
   state_utils
   radix_tree
   phy_cpp2
+  thrift_cow_nodes
   Folly::folly
 )
+
+set_target_properties(state PROPERTIES COMPILE_FLAGS "-DENABLE_DYNAMIC_APIS")
 
 add_library(state_utils
   fboss/agent/state/StateUtils.cpp

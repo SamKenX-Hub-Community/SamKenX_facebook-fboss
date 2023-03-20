@@ -41,7 +41,7 @@ SaiRouteTraits::RouteEntry getSaiRouteAdapterKey(
   }
 
   return SaiRouteTraits::RouteEntry(
-      saiSwitch->getSwitchId(),
+      saiSwitch->getSaiSwitchId(),
       virtualRouterHandle->virtualRouter->adapterKey(),
       prefix);
 }
@@ -166,5 +166,31 @@ uint64_t getRouteStat(
     }
   } while (retries-- > 0);
   return initialStat;
+}
+
+bool isHwRoutePresent(
+    const HwSwitch* hwSwitch,
+    RouterID rid,
+    const folly::CIDRNetwork& cidrNetwork) {
+  const auto saiSwitch = static_cast<const SaiSwitch*>(hwSwitch);
+
+  auto routeAdapterKey = getSaiRouteAdapterKey(saiSwitch, rid, cidrNetwork);
+  try {
+    SaiApiTable::getInstance()->routeApi().getAttribute(
+        routeAdapterKey, SaiRouteTraits::Attributes::NextHopId());
+  } catch (const SaiApiError& err) {
+    return false;
+  }
+
+  return true;
+}
+
+bool isRouteCounterSupported(const HwSwitch* hwSwitch) {
+  bool routeCountersSupported = hwSwitch->getPlatform()->getAsic()->isSupported(
+      HwAsic::Feature::ROUTE_COUNTERS);
+#if defined(TAJO_SDK_VERSION_1_42_1) || defined(TAJO_SDK_VERSION_1_42_8)
+  routeCountersSupported = false;
+#endif
+  return routeCountersSupported;
 }
 } // namespace facebook::fboss::utility

@@ -29,6 +29,11 @@ struct FakePort {
   std::vector<uint32_t> lanes;
   uint32_t speed{0};
   sai_port_fec_mode_t fecMode{SAI_PORT_FEC_MODE_NONE};
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+  bool useExtendedFec{false};
+  sai_port_fec_mode_extended_t extendedFecMode{SAI_PORT_FEC_MODE_EXTENDED_NONE};
+#endif
+  bool fabricIsolate{false};
   sai_port_internal_loopback_mode_t internalLoopbackMode{
       SAI_PORT_INTERNAL_LOOPBACK_MODE_NONE};
   sai_port_flow_control_mode_t globalFlowControlMode{
@@ -59,10 +64,26 @@ struct FakePort {
   uint16_t systemPortId{0};
   sai_port_ptp_mode_t ptpMode{SAI_PORT_PTP_MODE_NONE};
   sai_port_eye_values_list_t portEyeValues;
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3)
+  sai_port_lane_latch_status_list_t portRxSignalDetect;
+  sai_port_lane_latch_status_list_t portRxLockStatus;
+  sai_port_lane_latch_status_list_t portFecAlignmentLockStatus;
+  sai_latch_status_t portPcsLinkStatus;
+#endif
   sai_port_priority_flow_control_mode_t priorityFlowControlMode{
       SAI_PORT_PRIORITY_FLOW_CONTROL_MODE_COMBINED};
   sai_uint8_t priorityFlowControl{0xff};
+  sai_uint8_t priorityFlowControlRx{0xff};
+  sai_uint8_t priorityFlowControlTx{0xff};
   sai_port_err_status_list_t portError;
+  std::vector<sai_object_id_t> ingressPriorityGroupList;
+  sai_uint32_t numberOfIngressPriorityGroups{0};
+  sai_object_id_t qosTcToPriorityGroupMap{SAI_NULL_OBJECT_ID};
+  sai_object_id_t qosPfcPriorityToQueueMap{SAI_NULL_OBJECT_ID};
+#if SAI_API_VERSION >= SAI_VERSION(1, 9, 0)
+  sai_uint32_t interFrameGap{96};
+#endif
+  bool linkTrainingEnable{false};
 };
 
 struct FakePortSerdes {

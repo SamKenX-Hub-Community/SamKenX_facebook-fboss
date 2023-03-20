@@ -52,9 +52,6 @@ class IPv6Handler : public StateObserver {
       folly::io::Cursor cursor);
 
   void floodNeighborAdvertisements();
-  void sendNeighborSolicitation(
-      const folly::IPAddressV6& targetIP,
-      const std::shared_ptr<Vlan> vlan);
 
   /*
    * TODO(aeckert): 17949183 unify packet handling pipeline and then
@@ -69,7 +66,7 @@ class IPv6Handler : public StateObserver {
    * internally in response to incoming packets
    */
   void sendNeighborAdvertisement(
-      VlanID vlan,
+      std::optional<VlanID> vlan,
       folly::MacAddress srcMac,
       folly::IPAddressV6 srcIP,
       folly::MacAddress dstMac,
@@ -88,7 +85,7 @@ class IPv6Handler : public StateObserver {
       SwSwitch* sw,
       const folly::IPAddressV6& targetIP,
       const folly::MacAddress& srcMac,
-      const VlanID& vlanID);
+      const std::optional<VlanID>& vlanID);
   static void sendMulticastNeighborSolicitation(
       SwSwitch* sw,
       const folly::IPAddressV6& targetIP,
@@ -101,8 +98,7 @@ class IPv6Handler : public StateObserver {
       const folly::IPAddressV6& srcIP,
       const folly::MacAddress& srcMac,
       const VlanID& vlanID,
-      const std::optional<PortDescriptor>& portDescriptor =
-          std::optional<PortDescriptor>());
+      const PortDescriptor& portDescriptor);
 
  private:
   struct ICMPHeaders;
@@ -117,6 +113,7 @@ class IPv6Handler : public StateObserver {
   void intfDeleted(const Interface* intf);
 
   void sendICMPv6TimeExceeded(
+      PortID srcPort,
       VlanID srcVlan,
       folly::MacAddress dst,
       folly::MacAddress src,
@@ -182,7 +179,7 @@ class IPv6Handler : public StateObserver {
       const folly::IPAddressV6& srcIP,
       const folly::MacAddress& srcMac,
       const folly::IPAddressV6& neighborIP,
-      const VlanID& vlanID,
+      const std::optional<VlanID>& vlanID,
       const std::optional<PortDescriptor>& portDescriptor =
           std::optional<PortDescriptor>(),
       const NDPOptions& options = NDPOptions());

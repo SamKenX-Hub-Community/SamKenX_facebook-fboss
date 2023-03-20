@@ -54,10 +54,17 @@ class SaiQueueManager {
       SaiStore* saiStore,
       SaiManagerTable* managerTable,
       const SaiPlatform* platform);
-  SaiQueueHandles loadQueues(
-      PortSaiId portSaiId,
-      const std::vector<QueueSaiId>& queueSaiIds);
+  SaiQueueHandles loadQueues(const std::vector<QueueSaiId>& queueSaiIds);
   void changeQueue(SaiQueueHandle* queueHandle, const PortQueue& newPortQueue);
+  void changeQueueBufferProfile(
+      SaiQueueHandle* queueHandle,
+      const PortQueue& newPortQueue);
+  void changeQueueEcnWred(
+      SaiQueueHandle* queueHandle,
+      const PortQueue& newPortQueue);
+  void changeQueueScheduler(
+      SaiQueueHandle* queueHandle,
+      const PortQueue& newPortQueue);
   void ensurePortQueueConfig(
       PortSaiId portSaiId,
       const SaiQueueHandles& queueHandles,
@@ -66,12 +73,28 @@ class SaiQueueManager {
       const std::vector<SaiQueueHandle*>& queues,
       HwPortStats& stats,
       bool updateWatermarks);
+  void updateStats(
+      const std::vector<SaiQueueHandle*>& queues,
+      HwSysPortStats& stats,
+      bool updateWatermarks);
   void getStats(SaiQueueHandles& queueHandles, HwPortStats& hwPortStats);
+  void clearStats(const std::vector<SaiQueueHandle*>& queueHandles);
   QueueConfig getQueueSettings(const SaiQueueHandles& queueHandles) const;
-  const std::vector<sai_stat_id_t>& supportedNonWatermarkCounterIdsRead(
-      int queueType) const;
 
  private:
+  const std::vector<sai_stat_id_t>& supportedNonWatermarkCounterIdsRead(
+      int queueType,
+      SaiQueueHandle* queueHandle) const;
+
+  const std::vector<sai_stat_id_t>& egressQueueNonWatermarkCounterIdsRead(
+      int queueType) const;
+
+  const std::vector<sai_stat_id_t>& voqNonWatermarkCounterIdsRead(
+      int queueType,
+      SaiQueueHandle* queueHandle) const;
+
+  const std::vector<sai_stat_id_t>& supportedWatermarkCounterIdsReadAndClear(
+      int queueType) const;
   SaiStore* saiStore_;
   SaiManagerTable* managerTable_;
   const SaiPlatform* platform_;

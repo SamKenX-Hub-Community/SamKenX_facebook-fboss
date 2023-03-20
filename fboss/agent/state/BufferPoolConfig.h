@@ -12,7 +12,6 @@
 #include <string>
 #include <utility>
 
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeBase.h"
 #include "fboss/agent/state/Thrifty.h"
@@ -20,77 +19,46 @@
 
 namespace facebook::fboss {
 
-struct BufferPoolCfgFields
-    : public ThriftyFields<BufferPoolCfgFields, state::BufferPoolFields> {
-  template <typename Fn>
-  void forEachChild(Fn) {}
-
-  state::BufferPoolFields toThrift() const override;
-  static BufferPoolCfgFields fromThrift(state::BufferPoolFields const&);
-
-  BufferPoolCfgFields() {}
-  BufferPoolCfgFields(std::string _id, int _sharedBytes, int _headroomBytes)
-      : id(_id), sharedBytes(_sharedBytes), headroomBytes(_headroomBytes) {}
-
-  // BufferPoolCfgFields migration is complete
-  static BufferPoolCfgFields fromFollyDynamicLegacy(folly::dynamic const& dyn) {
-    return fromFollyDynamic(dyn);
-  }
-  folly::dynamic toFollyDynamicLegacy() const {
-    return toFollyDynamic();
-  }
-
-  std::string id;
-  int sharedBytes;
-  int headroomBytes;
-};
-
+USE_THRIFT_COW(BufferPoolCfg)
 /*
  * BufferPoolCfg stores the buffer pool related properites as need by {port, PG}
  */
-class BufferPoolCfg : public ThriftyBaseT<
-                          state::BufferPoolFields,
-                          BufferPoolCfg,
-                          BufferPoolCfgFields> {
+class BufferPoolCfg
+    : public ThriftStructNode<BufferPoolCfg, state::BufferPoolFields> {
  public:
+  using BaseT = ThriftStructNode<BufferPoolCfg, state::BufferPoolFields>;
+
   explicit BufferPoolCfg(const std::string& id) {
-    writableFields()->id = id;
+    set<switch_state_tags::id>(id);
   }
-  bool operator==(const BufferPoolCfg& cfg) const {
-    return getFields()->sharedBytes == cfg.getSharedBytes() &&
-        getFields()->headroomBytes == cfg.getHeadroomBytes();
+  BufferPoolCfg(const std::string& id, int sharedBytes, int headroomBytes) {
+    set<switch_state_tags::id>(id);
+    setSharedBytes(sharedBytes);
+    setHeadroomBytes(headroomBytes);
   }
-
-  bool operator!=(const BufferPoolCfg& cfg) const {
-    return !(*this == cfg);
-  }
-
   int getSharedBytes() const {
-    return getFields()->sharedBytes;
+    return get<switch_state_tags::sharedBytes>()->cref();
   }
 
   int getHeadroomBytes() const {
-    return getFields()->headroomBytes;
+    return get<switch_state_tags::headroomBytes>()->cref();
   }
 
   const std::string& getID() const {
-    return getFields()->id;
+    return cref<switch_state_tags::id>()->cref();
   }
 
   void setHeadroomBytes(int headroomBytes) {
-    writableFields()->headroomBytes = headroomBytes;
+    set<switch_state_tags::headroomBytes>(headroomBytes);
   }
 
   void setSharedBytes(int sharedBytes) {
-    writableFields()->sharedBytes = sharedBytes;
+    set<switch_state_tags::sharedBytes>(sharedBytes);
   }
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT<
-      state::BufferPoolFields,
-      BufferPoolCfg,
-      BufferPoolCfgFields>::ThriftyBaseT;
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 

@@ -12,6 +12,9 @@
 
 namespace facebook::fboss {
 
+// oss definition
+class AgentFsdbSyncManager {};
+
 std::vector<std::string> FsdbSyncer::getAgentStatePath() {
   return {"agent"};
 }
@@ -27,4 +30,27 @@ std::vector<std::string> FsdbSyncer::getAgentSwitchConfigPath() {
 std::vector<std::string> FsdbSyncer::getAgentStatsPath() {
   return {"agent"};
 }
+
+std::optional<std::string> FsdbSyncer::getBitsflowLockdownLevel() {
+  return std::nullopt;
+}
+
+FsdbSyncer::FsdbSyncer(SwSwitch* /*sw*/) {}
+
+FsdbSyncer::~FsdbSyncer() {}
+
+void FsdbSyncer::stop() {}
+
+void FsdbSyncer::stateUpdated(const StateDelta& /*stateDelta*/) {}
+
+void FsdbSyncer::cfgUpdated(
+    const cfg::SwitchConfig& /*oldConfig*/,
+    const cfg::SwitchConfig& /*newConfig*/) {}
+
+void FsdbSyncer::statsUpdated(const AgentStats& /*stats*/) {}
+
+void FsdbSyncer::fsdbStatPublisherStateChanged(
+    fsdb::FsdbStreamClient::State /*oldState*/,
+    fsdb::FsdbStreamClient::State /*newState*/) {}
+
 } // namespace facebook::fboss

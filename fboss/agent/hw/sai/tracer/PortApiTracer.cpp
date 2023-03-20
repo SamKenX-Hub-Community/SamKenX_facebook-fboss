@@ -8,6 +8,7 @@
  *
  */
 
+#include "fboss/agent/hw/sai/tracer/PortApiTracer.h"
 #include <typeindex>
 #include <utility>
 
@@ -33,16 +34,34 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _PortMap {
       SAI_ATTR_MAP(Port, EgressMirrorSession),
       SAI_ATTR_MAP(Port, IngressSamplePacketEnable),
       SAI_ATTR_MAP(Port, EgressSamplePacketEnable),
-#if SAI_API_VERSION >= SAI_VERSION(1, 7, 0)
       SAI_ATTR_MAP(Port, IngressSampleMirrorSession),
       SAI_ATTR_MAP(Port, EgressSampleMirrorSession),
-#endif
       SAI_ATTR_MAP(Port, PrbsPolynomial), SAI_ATTR_MAP(Port, PrbsConfig),
       SAI_ATTR_MAP(Port, IngressMacSecAcl), SAI_ATTR_MAP(Port, EgressMacSecAcl),
       SAI_ATTR_MAP(Port, PtpMode), SAI_ATTR_MAP(Port, PortEyeValues),
       SAI_ATTR_MAP(Port, PriorityFlowControlMode),
       SAI_ATTR_MAP(Port, PriorityFlowControl),
+#if !defined(TAJO_SDK)
+      SAI_ATTR_MAP(Port, PriorityFlowControlRx),
+      SAI_ATTR_MAP(Port, PriorityFlowControlTx),
+#endif
       SAI_ATTR_MAP(Port, PortErrStatus),
+      SAI_ATTR_MAP(Port, IngressPriorityGroupList),
+      SAI_ATTR_MAP(Port, NumberOfIngressPriorityGroups),
+      SAI_ATTR_MAP(Port, QosTcToPriorityGroupMap),
+      SAI_ATTR_MAP(Port, QosPfcPriorityToQueueMap),
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
+      SAI_ATTR_MAP(Port, PortLoopbackMode), SAI_ATTR_MAP(Port, UseExtendedFec),
+      SAI_ATTR_MAP(Port, ExtendedFecMode),
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 11, 0)
+      SAI_ATTR_MAP(Port, FabricIsolate),
+#endif
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+      SAI_ATTR_MAP(Port, RxSignalDetect), SAI_ATTR_MAP(Port, RxLockStatus),
+      SAI_ATTR_MAP(Port, FecAlignmentLock), SAI_ATTR_MAP(Port, PcsRxLinkStatus),
+#endif
+      SAI_ATTR_MAP(Port, LinkTrainingEnable),
 };
 
 std::map<int32_t, std::pair<std::string, std::size_t>> _PortSerdesMap{

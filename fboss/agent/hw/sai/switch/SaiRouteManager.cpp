@@ -24,6 +24,11 @@
 
 #include <optional>
 
+DEFINE_bool(
+    disable_valid_route_check,
+    false,
+    "Disable valid route check when creating or changing routes in SAI switches");
+
 namespace facebook::fboss {
 
 sai_object_id_t SaiRouteHandle::nextHopAdapterKey() const {
@@ -82,9 +87,11 @@ std::vector<std::shared_ptr<SaiRoute>> SaiRouteManager::makeInterfaceToMeRoutes(
   SwitchSaiId switchId = managerTable_->switchManager().getSwitchSaiId();
   PortSaiId cpuPortId = managerTable_->switchManager().getCpuPort();
 
-  toMeRoutes.reserve(swInterface->getAddresses().size());
+  toMeRoutes.reserve(swInterface->getAddresses()->size());
   // Compute per-address information
-  for (const auto& address : swInterface->getAddresses()) {
+  for (auto iter : std::as_const(*swInterface->getAddresses())) {
+    folly::CIDRNetwork address(
+        folly::IPAddress(iter.first), iter.second->cref());
     // empty next hop group -- this route will not manage the
     // lifetime of a next hop group
     std::shared_ptr<SaiNextHopGroupHandle> nextHopGroup;
@@ -128,7 +135,8 @@ bool SaiRouteManager::validRoute(const std::shared_ptr<Route<AddrT>>& swRoute) {
   // N.B., for now, this code looks a bit silly (could just do direct return)
   // but we use this style to suggest the possibility of future extension
   // with other conditions for invalid routes.
-  if (swRoute->isConnected() && swRoute->isHostRoute()) {
+  if (!FLAGS_disable_valid_route_check && swRoute->isConnected() &&
+      swRoute->isHostRoute()) {
     return false;
   }
   return true;
@@ -141,7 +149,7 @@ void SaiRouteManager::addOrUpdateRoute(
     const std::shared_ptr<Route<AddrT>>& oldRoute,
     const std::shared_ptr<Route<AddrT>>& newRoute) {
   SaiRouteTraits::RouteEntry entry = routeEntryFromSwRoute(routerId, newRoute);
-  auto fwd = newRoute->getForwardInfo();
+  const auto& fwd = newRoute->getForwardInfo();
   sai_int32_t packetAction;
   std::optional<SaiRouteTraits::CreateAttributes> attributes;
   SaiRouteHandle::NextHopHandle nextHopHandle;
@@ -178,13 +186,13 @@ void SaiRouteManager::addOrUpdateRoute(
             interfaceId);
       }
       RouterInterfaceSaiId routerInterfaceId{
-          routerInterfaceHandle->routerInterface->adapterKey()};
+          routerInterfaceHandle->adapterKey()};
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
       attributes = SaiRouteTraits::CreateAttributes{
-          packetAction, std::move(routerInterfaceId), metadata, std::nullopt};
+          packetAction, routerInterfaceId, metadata, std::nullopt};
 #else
       attributes = SaiRouteTraits::CreateAttributes{
-          packetAction, std::move(routerInterfaceId), metadata};
+          packetAction, routerInterfaceId, metadata};
 #endif
 
       XLOG(DBG3) << "Connected route: " << newRoute->str()
@@ -203,10 +211,10 @@ void SaiRouteManager::addOrUpdateRoute(
           nextHopGroupHandle->nextHopGroup->adapterKey()};
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
       attributes = SaiRouteTraits::CreateAttributes{
-          packetAction, std::move(nextHopGroupId), metadata, counterID};
+          packetAction, nextHopGroupId, metadata, counterID};
 #else
       attributes = SaiRouteTraits::CreateAttributes{
-          packetAction, std::move(nextHopGroupId), metadata};
+          packetAction, nextHopGroupId, metadata};
 #endif
       nextHopHandle = nextHopGroupHandle;
 
@@ -255,10 +263,10 @@ void SaiRouteManager::addOrUpdateRoute(
     PortSaiId cpuPortId = managerTable_->switchManager().getCpuPort();
 #if SAI_API_VERSION >= SAI_VERSION(1, 10, 0)
     attributes = SaiRouteTraits::CreateAttributes{
-        packetAction, std::move(cpuPortId), metadata, std::nullopt};
+        packetAction, cpuPortId, metadata, std::nullopt};
 #else
-    attributes = SaiRouteTraits::CreateAttributes{
-        packetAction, std::move(cpuPortId), metadata};
+    attributes =
+        SaiRouteTraits::CreateAttributes{packetAction, cpuPortId, metadata};
 #endif
 
     XLOG(DBG3) << "Route action TO CPU: " << newRoute->str()
@@ -378,7 +386,7 @@ std::shared_ptr<SaiCounterHandle> SaiRouteManager::getCounterHandleForRoute(
   std::shared_ptr<SaiCounterHandle> counterHandle;
   // Counters are supported only with IPv6 prefixes
   if constexpr (std::is_same_v<AddrT, folly::IPAddressV6>) {
-    auto fwd = newRoute->getForwardInfo();
+    const auto& fwd = newRoute->getForwardInfo();
     if (fwd.getCounterID().has_value()) {
       counterHandle = managerTable_->counterManager().incRefOrAddRouteCounter(
           fwd.getCounterID().value());
@@ -413,10 +421,11 @@ SaiRouteManager::refOrCreateManagedRouteNextHop(
       return existingManagedRouteNextHop;
     }
   }
-
+  auto routeMetadataSupported =
+      platform_->getAsic()->isSupported(HwAsic::Feature::ROUTE_METADATA);
   PortSaiId cpuPort = managerTable_->switchManager().getCpuPort();
-  auto managedRouteNextHop =
-      std::make_shared<ManagedRouteNextHopT>(cpuPort, this, entry, nexthop);
+  auto managedRouteNextHop = std::make_shared<ManagedRouteNextHopT>(
+      cpuPort, this, entry, nexthop, routeMetadataSupported);
   SaiObjectEventPublisher::getInstance()->get<NextHopTraitsT>().subscribe(
       managedRouteNextHop);
   return managedRouteNextHop;
@@ -427,13 +436,15 @@ ManagedRouteNextHop<NextHopTraitsT>::ManagedRouteNextHop(
     PortSaiId cpuPort,
     SaiRouteManager* routeManager,
     SaiRouteTraits::AdapterHostKey routeKey,
-    std::shared_ptr<ManagedNextHop<NextHopTraitsT>> managedNextHop)
+    std::shared_ptr<ManagedNextHop<NextHopTraitsT>> managedNextHop,
+    bool routeMetadataSupported)
     : detail::SaiObjectEventSubscriber<NextHopTraitsT>(
           managedNextHop->adapterHostKey()),
       cpuPort_(cpuPort),
       routeManager_(routeManager),
       routeKey_(std::move(routeKey)),
-      managedNextHop_(managedNextHop) {}
+      managedNextHop_(managedNextHop),
+      routeMetadataSupported_(routeMetadataSupported) {}
 
 template <typename NextHopTraitsT>
 void ManagedRouteNextHop<NextHopTraitsT>::afterCreate(
@@ -450,9 +461,10 @@ void ManagedRouteNextHop<NextHopTraitsT>::afterCreate(
     return;
   }
   auto& api = SaiApiTable::getInstance()->routeApi();
-  SaiRouteTraits::Attributes::Metadata currentMetadata = api.getAttribute(
-      route->adapterKey(), SaiRouteTraits::Attributes::Metadata{});
-
+  SaiRouteTraits::Attributes::Metadata currentMetadata = routeMetadataSupported_
+      ? api.getAttribute(
+            route->adapterKey(), SaiRouteTraits::Attributes::Metadata{})
+      : 0;
   auto attributes = route->attributes();
   sai_object_id_t nextHopId = nexthop->adapterKey();
   auto& currentNextHop =

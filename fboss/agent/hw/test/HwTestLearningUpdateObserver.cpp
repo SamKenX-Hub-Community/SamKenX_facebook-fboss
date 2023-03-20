@@ -87,6 +87,10 @@ HwTestLearningUpdateObserver::waitForLearningUpdates(
   return data_;
 }
 
+void HwTestLearningUpdateObserver::waitForStateUpdate() {
+  applyStateUpdateEventBase_.runInEventBaseThreadAndWait([]() { return; });
+}
+
 HwTestLearningUpdateAutoObserver::HwTestLearningUpdateAutoObserver(
     HwSwitchEnsemble* ensemble)
     : ensemble_(ensemble) {

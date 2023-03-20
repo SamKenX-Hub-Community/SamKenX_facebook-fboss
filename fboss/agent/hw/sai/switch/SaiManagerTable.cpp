@@ -10,6 +10,7 @@
 
 #include "fboss/agent/hw/sai/switch/SaiManagerTable.h"
 
+#include "fboss/agent/hw/UnsupportedFeatureManager.h"
 #include "fboss/agent/hw/sai/store/SaiStore.h"
 #include "fboss/agent/hw/sai/switch/ConcurrentIndices.h"
 #include "fboss/agent/hw/sai/switch/SaiAclTableGroupManager.h"
@@ -39,7 +40,6 @@
 #include "fboss/agent/hw/sai/switch/SaiSystemPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiTamManager.h"
 #include "fboss/agent/hw/sai/switch/SaiTunnelManager.h"
-#include "fboss/agent/hw/sai/switch/SaiUnsupportedFeatureManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVirtualRouterManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVlanManager.h"
 #include "fboss/agent/hw/sai/switch/SaiWredManager.h"
@@ -80,8 +80,8 @@ void SaiManagerTable::createSaiTableManagers(
   mirrorManager_ = std::make_unique<SaiMirrorManager>(saiStore, this, platform);
   portManager_ = std::make_unique<SaiPortManager>(
       saiStore, this, platform, concurrentIndices);
-  systemPortManager_ =
-      std::make_unique<SaiSystemPortManager>(saiStore, this, platform);
+  systemPortManager_ = std::make_unique<SaiSystemPortManager>(
+      saiStore, this, platform, concurrentIndices);
   qosMapManager_ = std::make_unique<SaiQosMapManager>(saiStore, this, platform);
   macsecManager_ = std::make_unique<SaiMacsecManager>(saiStore, this);
   virtualRouterManager_ =
@@ -106,11 +106,16 @@ void SaiManagerTable::createSaiTableManagers(
       saiStore, this, platform, concurrentIndices);
   wredManager_ = std::make_unique<SaiWredManager>(saiStore, this, platform);
   // CSP CS00011823810
-#if !defined(SAI_VERSION_5_1_0_3_ODP) && !defined(SAI_VERSION_7_2_0_0_ODP) && \
-    !defined(SAI_VERSION_8_0_EA_ODP) && !defined(SAI_VERSION_8_0_EA_DNX_ODP)
+#if !defined(SAI_VERSION_7_2_0_0_ODP) && !defined(SAI_VERSION_8_2_0_0_ODP) && \
+    !defined(SAI_VERSION_8_2_0_0_DNX_ODP) &&                                  \
+    !defined(SAI_VERSION_8_2_0_0_SIM_ODP) &&                                  \
+    !defined(SAI_VERSION_9_0_EA_SIM_ODP) &&                                   \
+    !defined(SAI_VERSION_9_0_EA_ODP) && !defined(SAI_VERSION_9_0_EA_DNX_ODP)
   tamManager_ = std::make_unique<SaiTamManager>(saiStore, this, platform);
 #endif
   tunnelManager_ = std::make_unique<SaiTunnelManager>(saiStore, this, platform);
+  teFlowEntryManager_ =
+      std::make_unique<UnsupportedFeatureManager>("EM entries");
 }
 
 SaiManagerTable::~SaiManagerTable() {
@@ -152,6 +157,14 @@ void SaiManagerTable::reset(bool skipSwitchManager) {
   // dependency with mirror and can be removed.
   mirrorManager_.reset();
   macsecManager_.reset();
+  systemPortManager_->resetQueues();
+  // Reset the qos maps on system port before ports are
+  // removed from the system.
+  systemPortManager_->resetQosMaps();
+  // On Silicon one family chips, queues are tied to system
+  // ports. So before we delete system ports, its required
+  // to reset the queue associations.
+  portManager_->resetQueues();
   systemPortManager_.reset();
   portManager_.reset();
   // Hash manager is going away, reset hashes
@@ -178,14 +191,18 @@ void SaiManagerTable::reset(bool skipSwitchManager) {
   wredManager_.reset();
 
   // CSP CS00011823810
-#if !defined(SAI_VERSION_5_1_0_3_ODP) && !defined(SAI_VERSION_7_2_0_0_ODP) && \
-    !defined(SAI_VERSION_8_0_EA_ODP) && !defined(SAI_VERSION_8_0_EA_DNX_ODP)
+#if !defined(SAI_VERSION_7_2_0_0_ODP) && !defined(SAI_VERSION_8_2_0_0_ODP) && \
+    !defined(SAI_VERSION_8_2_0_0_DNX_ODP) &&                                  \
+    !defined(SAI_VERSION_8_2_0_0_SIM_ODP) &&                                  \
+    !defined(SAI_VERSION_9_0_EA_SIM_ODP) &&                                   \
+    !defined(SAI_VERSION_9_0_EA_ODP) && !defined(SAI_VERSION_9_0_EA_DNX_ODP)
   tamManager_.reset();
 #endif
   tunnelManager_.reset();
   queueManager_.reset();
   routeManager_.reset();
   schedulerManager_.reset();
+  teFlowEntryManager_.reset();
   if (!skipSwitchManager) {
     switchManager_.reset();
   }
@@ -231,6 +248,13 @@ SaiDebugCounterManager& SaiManagerTable::debugCounterManager() {
 }
 const SaiDebugCounterManager& SaiManagerTable::debugCounterManager() const {
   return *debugCounterManager_;
+}
+
+UnsupportedFeatureManager& SaiManagerTable::teFlowEntryManager() {
+  return *teFlowEntryManager_;
+}
+const UnsupportedFeatureManager& SaiManagerTable::teFlowEntryManager() const {
+  return *teFlowEntryManager_;
 }
 
 SaiFdbManager& SaiManagerTable::fdbManager() {

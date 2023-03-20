@@ -42,13 +42,14 @@ class Initializer {
   Initializer(SwSwitch* sw, Platform* platform)
       : sw_(sw), platform_(platform) {}
   void start();
+  void start(HwSwitch::Callback* callback);
   void stopFunctionScheduler();
   void waitForInitDone();
 
  private:
-  void initThread();
+  void initThread(HwSwitch::Callback* callback);
   SwitchFlags setupFlags();
-  void initImpl();
+  void initImpl(HwSwitch::Callback* callback);
   SwSwitch* sw_;
   Platform* platform_;
   std::unique_ptr<folly::FunctionScheduler> fs_;
@@ -80,7 +81,7 @@ typedef std::unique_ptr<Platform> (
     *PlatformInitFn)(std::unique_ptr<AgentConfig>, uint32_t featuresDesired);
 
 class AgentInitializer {
- protected:
+ public:
   SwSwitch* sw() const {
     return sw_.get();
   }
@@ -91,7 +92,6 @@ class AgentInitializer {
     return initializer_.get();
   }
 
- public:
   virtual ~AgentInitializer() = default;
   void stopServices();
   void createSwitch(
@@ -100,9 +100,9 @@ class AgentInitializer {
       uint32_t hwFeaturesDesired,
       PlatformInitFn initPlatform);
   int initAgent();
+  int initAgent(HwSwitch::Callback* callback);
   void stopAgent(bool setupWarmboot);
 
- protected:
   /*
    * API to all flag overrides for individual tests. Primarily
    * used for features which we don't want to enable for
@@ -125,5 +125,6 @@ int fbossMain(
     PlatformInitFn initPlatform);
 void fbossFinalize();
 void setVersionInfo();
+void initializeBitsflow();
 
 } // namespace facebook::fboss

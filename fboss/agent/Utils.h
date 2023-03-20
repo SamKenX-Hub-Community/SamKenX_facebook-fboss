@@ -15,18 +15,25 @@
 #include <boost/container/flat_map.hpp>
 #include <boost/iterator/filter_iterator.hpp>
 
+#include <folly/FileUtil.h>
 #include <folly/IPAddress.h>
 #include <folly/IPAddressV4.h>
 #include <folly/IPAddressV6.h>
 #include <folly/MacAddress.h>
 #include <folly/Range.h>
 #include <folly/lang/Bits.h>
+#include <folly/logging/xlog.h>
 
+#include <thrift/lib/cpp2/protocol/BinaryProtocol.h>
+
+#include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/if/gen-cpp2/ctrl_types.h"
 #include "fboss/agent/types.h"
 
 #include <chrono>
 
+DECLARE_string(mac);
+DECLARE_uint64(ingress_egress_buffer_pool_size);
 namespace folly {
 struct dynamic;
 }
@@ -62,6 +69,20 @@ folly::IPAddressV4 getSwitchVlanIP(
     VlanID vlan);
 
 /**
+ * Helper function to get an IPv4 address for a particular interface
+ * Used to set src IP address for DHCP and ICMP packets
+ * throw an FbossError in case no IP address exists.
+ */
+folly::IPAddressV4 getSwitchIntfIP(
+    const std::shared_ptr<SwitchState>& state,
+    InterfaceID intfID);
+
+/**
+ * Helper function to get an IPv4 address of any(first) interface.
+ */
+folly::IPAddressV4 getAnyIntfIP(const std::shared_ptr<SwitchState>& state);
+
+/**
  * Helper function to get an IPv6 address for a particular vlan
  * used to set src IP address for DHCPv6 and ICMPv6 packets
  * throw an FbossError in case no IPv6 address exists.
@@ -69,6 +90,21 @@ folly::IPAddressV4 getSwitchVlanIP(
 folly::IPAddressV6 getSwitchVlanIPv6(
     const std::shared_ptr<SwitchState>& state,
     VlanID vlan);
+
+/**
+ * Helper function to get an IPv6 address for a particular interface
+ * used to set src IP address for DHCPv6 and ICMPv6 packets
+ * throw an FbossError in case no IPv6 address exists.
+ */
+folly::IPAddressV6 getSwitchIntfIPv6(
+    const std::shared_ptr<SwitchState>& state,
+    InterfaceID intfID);
+
+/**
+ * Helper function to get an IPvv6 address of any(first) interface.
+ */
+folly::IPAddressV6 getAnyIntfIPv6(const std::shared_ptr<SwitchState>& state);
+
 /*
  * Increases the nice value of the calling thread by increment. Note that this
  * code relies on the fact that Linux is not POSIX compliant. Otherwise, there
@@ -84,6 +120,13 @@ void incNiceValue(const uint32_t increment);
  * Serialize folly dynamic to JSON and write to file
  */
 bool dumpStateToFile(const std::string& filename, const folly::dynamic& json);
+
+/*
+ * Whether thrift state is valid for sw switch state recovery
+ */
+bool isValidThriftStateFile(
+    const std::string& follyStateFileName,
+    const std::string& thriftStateFileName);
 
 std::vector<ClientID> AllClientIDs();
 
@@ -148,6 +191,18 @@ bool isAnyInterfacePortInLoopbackMode(
     std::shared_ptr<SwitchState> swState,
     const std::shared_ptr<Interface> interface);
 
+PortID getPortID(
+    SystemPortID sysPortId,
+    const std::shared_ptr<SwitchState>& state);
+
+SystemPortID getSystemPortID(
+    const PortID& portId,
+    const std::shared_ptr<SwitchState>& state);
+
+std::vector<PortID> getPortsForInterface(
+    InterfaceID intf,
+    const std::shared_ptr<SwitchState>& state);
+
 class StopWatch {
  public:
   StopWatch(std::optional<std::string> name, bool json);
@@ -166,6 +221,46 @@ class StopWatch {
 inline constexpr uint8_t kGetNetworkControlTrafficClass() {
   // Network Control << ECN-bits
   return 48 << 2;
+}
+
+void enableExactMatch(std::string& yamlCfg);
+
+/*
+ * Serialize thrift struct to binary and write to file
+ */
+template <typename ThriftT>
+bool dumpBinaryThriftToFile(
+    const std::string& filename,
+    const ThriftT& thrift) {
+  apache::thrift::BinaryProtocolWriter writer;
+  folly::IOBufQueue queue;
+  writer.setOutput(&queue);
+  auto bytesWritten = thrift.write(&writer);
+  std::vector<std::byte> result;
+  result.resize(bytesWritten);
+  // @lint-ignore CLANGTIDY
+  folly::io::Cursor(queue.front()).pull(result.data(), bytesWritten);
+  return folly::writeFile(result, filename.c_str());
+}
+
+/*
+ * Deserialize thrift struct to from file and write into thriftState
+ */
+template <typename ThriftT>
+bool readThriftFromBinaryFile(
+    const std::string& filename,
+    ThriftT& thriftState) {
+  std::vector<std::byte> serializedThrift;
+  auto ret = folly::readFile(filename.c_str(), serializedThrift);
+  if (ret) {
+    auto buf = folly::IOBuf::copyBuffer(
+        serializedThrift.data(), serializedThrift.size());
+    apache::thrift::BinaryProtocolReader reader;
+    reader.setInput(buf.get());
+    thriftState.read(&reader);
+    return true;
+  }
+  return false;
 }
 
 } // namespace facebook::fboss

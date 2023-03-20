@@ -1,6 +1,11 @@
 // Copyright 2021-present Facebook. All Rights Reserved.
 #include "fboss/qsfp_service/TransceiverManager.h"
 
+#include <fb303/ThreadCachedServiceData.h>
+#include <folly/DynamicConverter.h>
+#include <folly/FileUtil.h>
+#include <folly/json.h>
+
 #include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/FbossError.h"
 #include "fboss/agent/Utils.h"
@@ -13,7 +18,6 @@
 #include "fboss/lib/thrift_service_client/ThriftServiceClient.h"
 #include "fboss/qsfp_service/TransceiverStateMachineUpdate.h"
 #include "fboss/qsfp_service/if/gen-cpp2/transceiver_types.h"
-#include "folly/DynamicConverter.h"
 
 using namespace std::chrono;
 
@@ -43,6 +47,8 @@ constexpr auto kAgentConfigAppliedInfoStateKey = "agentConfigAppliedInfo";
 constexpr auto kAgentConfigLastAppliedInMsKey = "agentConfigLastAppliedInMs";
 constexpr auto kAgentConfigLastColdbootAppliedInMsKey =
     "agentConfigLastColdbootAppliedInMs";
+static constexpr auto kStateMachineThreadHeartbeatMissed =
+    "state_machine_thread_heartbeat_missed";
 } // namespace
 
 namespace facebook::fboss {
@@ -263,7 +269,12 @@ void TransceiverManager::startThreads() {
   heartbeatWatchdog_ = std::make_unique<ThreadHeartbeatWatchdog>(
       std::chrono::milliseconds(
           FLAGS_state_machine_update_thread_heartbeat_ms * 10),
-      [this]() { stateMachineThreadHeartbeatMissedCount_ += 1; });
+      [this]() {
+        stateMachineThreadHeartbeatMissedCount_ += 1;
+        tcData().setCounter(
+            kStateMachineThreadHeartbeatMissed,
+            stateMachineThreadHeartbeatMissedCount_);
+      });
   for (auto heartbeat : heartbeats_) {
     heartbeatWatchdog_->startMonitoringHeartbeat(heartbeat);
   }
@@ -479,11 +490,13 @@ bool TransceiverManager::getNeedResetDataPath(TransceiverID id) const {
 
 std::vector<TransceiverID> TransceiverManager::triggerProgrammingEvents() {
   std::vector<TransceiverID> programmedTcvrs;
-  int32_t numProgramIphy{0}, numProgramXphy{0}, numProgramTcvr{0};
+  int32_t numProgramIphy{0}, numProgramXphy{0}, numProgramTcvr{0},
+      numPrepareTcvr{0};
   BlockingStateUpdateResultList results;
   steady_clock::time_point begin = steady_clock::now();
   for (auto& stateMachine : stateMachines_) {
-    bool needProgramIphy{false}, needProgramXphy{false}, needProgramTcvr{false};
+    bool needProgramIphy{false}, needProgramXphy{false}, needProgramTcvr{false},
+        moduleStateReady{false};
     {
       const auto& lockedStateMachine =
           stateMachine.second->getStateMachine().rlock();
@@ -491,27 +504,44 @@ std::vector<TransceiverID> TransceiverManager::triggerProgrammingEvents() {
       needProgramXphy = !lockedStateMachine->get_attribute(isXphyProgrammed);
       needProgramTcvr =
           !lockedStateMachine->get_attribute(isTransceiverProgrammed);
+      moduleStateReady =
+          (getStateByOrder(*lockedStateMachine->current_state()) ==
+           TransceiverStateMachineState::TRANSCEIVER_READY);
     }
     auto tcvrID = stateMachine.first;
     if (needProgramIphy) {
       if (auto result = updateStateBlockingWithoutWait(
-              tcvrID, TransceiverStateMachineEvent::PROGRAM_IPHY)) {
+              tcvrID, TransceiverStateMachineEvent::TCVR_EV_PROGRAM_IPHY)) {
         programmedTcvrs.push_back(tcvrID);
         ++numProgramIphy;
         results.push_back(result);
       }
     } else if (needProgramXphy && phyManager_ != nullptr) {
       if (auto result = updateStateBlockingWithoutWait(
-              tcvrID, TransceiverStateMachineEvent::PROGRAM_XPHY)) {
+              tcvrID, TransceiverStateMachineEvent::TCVR_EV_PROGRAM_XPHY)) {
         programmedTcvrs.push_back(tcvrID);
         ++numProgramXphy;
         results.push_back(result);
       }
     } else if (needProgramTcvr) {
-      if (auto result = updateStateBlockingWithoutWait(
-              tcvrID, TransceiverStateMachineEvent::PROGRAM_TRANSCEIVER)) {
+      std::shared_ptr<BlockingTransceiverStateMachineUpdateResult> result{
+          nullptr};
+
+      if (moduleStateReady) {
+        result = updateStateBlockingWithoutWait(
+            tcvrID, TransceiverStateMachineEvent::TCVR_EV_PROGRAM_TRANSCEIVER);
+        if (result) {
+          ++numProgramTcvr;
+        }
+      } else {
+        result = updateStateBlockingWithoutWait(
+            tcvrID, TransceiverStateMachineEvent::TCVR_EV_PREPARE_TRANSCEIVER);
+        if (result) {
+          ++numPrepareTcvr;
+        }
+      }
+      if (result) {
         programmedTcvrs.push_back(tcvrID);
-        ++numProgramTcvr;
         results.push_back(result);
       }
     }
@@ -520,7 +550,8 @@ std::vector<TransceiverID> TransceiverManager::triggerProgrammingEvents() {
   XLOG_IF(DBG2, !programmedTcvrs.empty())
       << "triggerProgrammingEvents has " << numProgramIphy
       << " IPHY programming, " << numProgramXphy << " XPHY programming, "
-      << numProgramTcvr << " TCVR programming. Total execute time(ms):"
+      << numProgramTcvr << " TCVR programming, " << numPrepareTcvr
+      << " TCVR prepare. Total execute time(ms):"
       << duration_cast<milliseconds>(steady_clock::now() - begin).count();
   return programmedTcvrs;
 }
@@ -592,7 +623,9 @@ TransceiverManager::getOverrideProgrammedIphyPortAndProfileForTest(
   return {};
 }
 
-void TransceiverManager::programExternalPhyPorts(TransceiverID id) {
+void TransceiverManager::programExternalPhyPorts(
+    TransceiverID id,
+    bool needResetDataPath) {
   auto phyManager = getPhyManager();
   if (!phyManager) {
     return;
@@ -616,10 +649,12 @@ void TransceiverManager::programExternalPhyPorts(TransceiverID id) {
       continue;
     }
 
-    phyManager->programOnePort(portID, portInfo.profile, transceiver);
+    phyManager->programOnePort(
+        portID, portInfo.profile, transceiver, needResetDataPath);
     XLOG(INFO) << "Programmed XPHY port for Transceiver=" << id
                << ", Port=" << portID << ", Profile="
-               << apache::thrift::util::enumNameSafe(portInfo.profile);
+               << apache::thrift::util::enumNameSafe(portInfo.profile)
+               << ", needResetDataPath=" << needResetDataPath;
   }
 }
 
@@ -695,6 +730,25 @@ void TransceiverManager::programTransceiver(
              << " resetting data path";
 }
 
+/*
+ * readyTransceiver
+ *
+ * Calls the module type specific function to check their power control
+ * configuration and if needed, corrects it. Returns if the module is in ready
+ * state to proceed further with programming.
+ */
+bool TransceiverManager::readyTransceiver(TransceiverID id) {
+  auto lockedTransceivers = transceivers_.rlock();
+  auto tcvrIt = lockedTransceivers->find(id);
+  if (tcvrIt == lockedTransceivers->end()) {
+    XLOG(DBG2) << "Skip Ready Checking Transceiver=" << id
+               << ". Transeciver is not present";
+    return true;
+  }
+
+  return tcvrIt->second->readyTransceiver();
+}
+
 bool TransceiverManager::tryRemediateTransceiver(TransceiverID id) {
   auto lockedTransceivers = transceivers_.rlock();
   auto tcvrIt = lockedTransceivers->find(id);
@@ -753,10 +807,12 @@ void TransceiverManager::updateTransceiverPortStatus() noexcept {
         }
         if (isTcvrPresent) {
           ++numResetToDiscovered;
-          event.emplace(TransceiverStateMachineEvent::RESET_TO_DISCOVERED);
+          event.emplace(
+              TransceiverStateMachineEvent::TCVR_EV_RESET_TO_DISCOVERED);
         } else {
           ++numResetToNotPresent;
-          event.emplace(TransceiverStateMachineEvent::RESET_TO_NOT_PRESENT);
+          event.emplace(
+              TransceiverStateMachineEvent::TCVR_EV_RESET_TO_NOT_PRESENT);
         }
       };
 
@@ -826,8 +882,8 @@ void TransceiverManager::updateTransceiverPortStatus() noexcept {
       // finished programming
       if (!event && ((!statusChangedPorts.empty()) || isTcvrJustProgrammed)) {
         event.emplace(
-            anyPortUp ? TransceiverStateMachineEvent::PORT_UP
-                      : TransceiverStateMachineEvent::ALL_PORTS_DOWN);
+            anyPortUp ? TransceiverStateMachineEvent::TCVR_EV_PORT_UP
+                      : TransceiverStateMachineEvent::TCVR_EV_ALL_PORTS_DOWN);
         ++numPortStatusChanged;
       }
 
@@ -917,8 +973,9 @@ void TransceiverManager::updateTransceiverActiveState(
       // Make sure we update active state for a transceiver which just
       // finished programming
       if ((!statusChangedPorts.empty()) || isTcvrJustProgrammed) {
-        auto event = anyPortUp ? TransceiverStateMachineEvent::PORT_UP
-                               : TransceiverStateMachineEvent::ALL_PORTS_DOWN;
+        auto event = anyPortUp
+            ? TransceiverStateMachineEvent::TCVR_EV_PORT_UP
+            : TransceiverStateMachineEvent::TCVR_EV_ALL_PORTS_DOWN;
         ++numPortStatusChanged;
         if (auto result = updateStateBlockingWithoutWait(tcvrID, event)) {
           results.push_back(result);
@@ -1012,18 +1069,20 @@ void TransceiverManager::triggerAgentConfigChangeEvent() {
 
   // Only need to reset data path if there's a new coldboot
   bool resetDataPath = false;
-  std::optional<std::string> resetDataPathLog;
+  std::string resetDataPathLog;
   if (auto lastColdbootAppliedInMs =
           newConfigAppliedInfo.lastColdbootAppliedInMs()) {
     if (auto oldLastColdbootAppliedInMs =
             configAppliedInfo_.lastColdbootAppliedInMs()) {
       resetDataPath = (*lastColdbootAppliedInMs > *oldLastColdbootAppliedInMs);
-      resetDataPathLog = folly::to<std::string>(
-          "Need reset data path. [Old Coldboot time:",
-          *oldLastColdbootAppliedInMs,
-          ", New Coldboot time:",
-          *lastColdbootAppliedInMs,
-          "]");
+      if (resetDataPath) {
+        resetDataPathLog = folly::to<std::string>(
+            "Need reset data path. [Old Coldboot time:",
+            *oldLastColdbootAppliedInMs,
+            ", New Coldboot time:",
+            *lastColdbootAppliedInMs,
+            "]");
+      }
     } else {
       // Always reset data path the cached info doesn't have coldboot config
       // applied time
@@ -1039,8 +1098,7 @@ void TransceiverManager::triggerAgentConfigChangeEvent() {
              << *newConfigAppliedInfo.lastAppliedInMs()
              << " and last cached time:"
              << *configAppliedInfo_.lastAppliedInMs()
-             << ". Issue all ports reprogramming events. "
-             << (resetDataPathLog ? *resetDataPathLog : "");
+             << ". Issue all ports reprogramming events. " << resetDataPathLog;
 
   // Update present transceiver state machine back to DISCOVERED
   // and absent transeiver state machine back to NOT_PRESENT
@@ -1058,13 +1116,15 @@ void TransceiverManager::triggerAgentConfigChangeEvent() {
     auto tcvrID = stateMachine.first;
     if (presentTransceivers.find(tcvrID) != presentTransceivers.end()) {
       if (auto result = updateStateBlockingWithoutWait(
-              tcvrID, TransceiverStateMachineEvent::RESET_TO_DISCOVERED)) {
+              tcvrID,
+              TransceiverStateMachineEvent::TCVR_EV_RESET_TO_DISCOVERED)) {
         ++numResetToDiscovered;
         results.push_back(result);
       }
     } else {
       if (auto result = updateStateBlockingWithoutWait(
-              tcvrID, TransceiverStateMachineEvent::RESET_TO_NOT_PRESENT)) {
+              tcvrID,
+              TransceiverStateMachineEvent::TCVR_EV_RESET_TO_NOT_PRESENT)) {
         ++numResetToNotPresent;
         results.push_back(result);
       }
@@ -1091,7 +1151,7 @@ TransceiverManager::TransceiverStateMachineHelper::
 }
 
 void TransceiverManager::TransceiverStateMachineHelper::startThread() {
-  updateEventBase_ = std::make_unique<folly::EventBase>();
+  updateEventBase_ = std::make_unique<folly::EventBase>("update thread");
   updateThread_.reset(
       new std::thread([this] { updateEventBase_->loopForever(); }));
   auto heartbeatStatsFunc = [this](int /* delay */, int /* backLog */) {};
@@ -1253,7 +1313,8 @@ void TransceiverManager::triggerRemediateEvents(
       continue;
     }
     if (auto result = updateStateBlockingWithoutWait(
-            tcvrID, TransceiverStateMachineEvent::REMEDIATE_TRANSCEIVER)) {
+            tcvrID,
+            TransceiverStateMachineEvent::TCVR_EV_REMEDIATE_TRANSCEIVER)) {
       results.push_back(result);
     }
   }
@@ -1389,6 +1450,7 @@ void TransceiverManager::setWarmBootState() {
   steady_clock::time_point begin = steady_clock::now();
   if (phyManager_) {
     qsfpServiceState[kPhyStateKey] = phyManager_->getWarmbootState();
+    phyManager_->gracefulExit();
   }
 
   folly::dynamic agentConfigAppliedWbState = folly::dynamic::object;
@@ -1435,15 +1497,15 @@ void TransceiverManager::restoreWarmBootPhyState() {
 }
 
 namespace {
-phy::Side prbsComponentToPhySide(phy::PrbsComponent component) {
+phy::Side prbsComponentToPhySide(phy::PortComponent component) {
   switch (component) {
-    case phy::PrbsComponent::ASIC:
+    case phy::PortComponent::ASIC:
       throw FbossError("qsfp_service doesn't support program ASIC prbs");
-    case phy::PrbsComponent::GB_SYSTEM:
-    case phy::PrbsComponent::TRANSCEIVER_SYSTEM:
+    case phy::PortComponent::GB_SYSTEM:
+    case phy::PortComponent::TRANSCEIVER_SYSTEM:
       return phy::Side::SYSTEM;
-    case phy::PrbsComponent::GB_LINE:
-    case phy::PrbsComponent::TRANSCEIVER_LINE:
+    case phy::PortComponent::GB_LINE:
+    case phy::PortComponent::TRANSCEIVER_LINE:
       return phy::Side::LINE;
   };
   throw FbossError(
@@ -1454,7 +1516,7 @@ phy::Side prbsComponentToPhySide(phy::PrbsComponent component) {
 
 void TransceiverManager::setInterfacePrbs(
     std::string portName,
-    phy::PrbsComponent component,
+    phy::PortComponent component,
     const prbs::InterfacePrbsState& state) {
   // Get the port ID first
   auto portId = getPortIDByPortName(portName);
@@ -1468,8 +1530,8 @@ void TransceiverManager::setInterfacePrbs(
     throw FbossError("Neither generator or checker specified for PRBS setting");
   }
 
-  if (component == phy::PrbsComponent::TRANSCEIVER_SYSTEM ||
-      component == phy::PrbsComponent::TRANSCEIVER_LINE) {
+  if (component == phy::PortComponent::TRANSCEIVER_SYSTEM ||
+      component == phy::PortComponent::TRANSCEIVER_LINE) {
     if (auto tcvrID = getTransceiverID(portId.value())) {
       phy::Side side = prbsComponentToPhySide(component);
       auto lockedTransceivers = transceivers_.rlock();
@@ -1501,10 +1563,10 @@ void TransceiverManager::setInterfacePrbs(
 
 phy::PrbsStats TransceiverManager::getPortPrbsStats(
     PortID portId,
-    phy::PrbsComponent component) {
+    phy::PortComponent component) {
   phy::Side side = prbsComponentToPhySide(component);
-  if (component == phy::PrbsComponent::TRANSCEIVER_SYSTEM ||
-      component == phy::PrbsComponent::TRANSCEIVER_LINE) {
+  if (component == phy::PortComponent::TRANSCEIVER_SYSTEM ||
+      component == phy::PortComponent::TRANSCEIVER_LINE) {
     auto lockedTransceivers = transceivers_.rlock();
     if (auto tcvrID = getTransceiverID(portId)) {
       if (auto it = lockedTransceivers->find(*tcvrID);
@@ -1530,10 +1592,10 @@ phy::PrbsStats TransceiverManager::getPortPrbsStats(
 
 void TransceiverManager::clearPortPrbsStats(
     PortID portId,
-    phy::PrbsComponent component) {
+    phy::PortComponent component) {
   phy::Side side = prbsComponentToPhySide(component);
-  if (component == phy::PrbsComponent::TRANSCEIVER_SYSTEM ||
-      component == phy::PrbsComponent::TRANSCEIVER_LINE) {
+  if (component == phy::PortComponent::TRANSCEIVER_SYSTEM ||
+      component == phy::PortComponent::TRANSCEIVER_LINE) {
     auto lockedTransceivers = transceivers_.rlock();
     if (auto tcvrID = getTransceiverID(portId)) {
       if (auto it = lockedTransceivers->find(*tcvrID);
@@ -1567,10 +1629,10 @@ TransceiverManager::getTransceiverPrbsCapabilities(
 void TransceiverManager::getSupportedPrbsPolynomials(
     std::vector<prbs::PrbsPolynomial>& prbsCapabilities,
     std::string portName,
-    phy::PrbsComponent component) {
+    phy::PortComponent component) {
   phy::Side side = prbsComponentToPhySide(component);
-  if (component == phy::PrbsComponent::TRANSCEIVER_SYSTEM ||
-      component == phy::PrbsComponent::TRANSCEIVER_LINE) {
+  if (component == phy::PortComponent::TRANSCEIVER_SYSTEM ||
+      component == phy::PortComponent::TRANSCEIVER_LINE) {
     if (portNameToModule_.find(portName) == portNameToModule_.end()) {
       throw FbossError("Can't find transceiver module for port ", portName);
     }
@@ -1586,7 +1648,7 @@ void TransceiverManager::getSupportedPrbsPolynomials(
 
 void TransceiverManager::setPortPrbs(
     PortID portId,
-    phy::PrbsComponent component,
+    phy::PortComponent component,
     const phy::PortPrbsState& state) {
   auto portName = getPortNameByPortId(portId);
   if (!portName.has_value()) {
@@ -1603,10 +1665,10 @@ void TransceiverManager::setPortPrbs(
 void TransceiverManager::getInterfacePrbsState(
     prbs::InterfacePrbsState& prbsState,
     std::string portName,
-    phy::PrbsComponent component) {
+    phy::PortComponent component) {
   if (auto portID = getPortIDByPortName(portName)) {
-    if (component == phy::PrbsComponent::TRANSCEIVER_SYSTEM ||
-        component == phy::PrbsComponent::TRANSCEIVER_LINE) {
+    if (component == phy::PortComponent::TRANSCEIVER_SYSTEM ||
+        component == phy::PortComponent::TRANSCEIVER_LINE) {
       if (auto tcvrID = getTransceiverID(*portID)) {
         phy::Side side = prbsComponentToPhySide(component);
         auto lockedTransceivers = transceivers_.rlock();
@@ -1632,7 +1694,7 @@ void TransceiverManager::getInterfacePrbsState(
 
 phy::PrbsStats TransceiverManager::getInterfacePrbsStats(
     std::string portName,
-    phy::PrbsComponent component) {
+    phy::PortComponent component) {
   if (auto portID = getPortIDByPortName(portName)) {
     return getPortPrbsStats(*portID, component);
   }
@@ -1641,7 +1703,7 @@ phy::PrbsStats TransceiverManager::getInterfacePrbsStats(
 
 void TransceiverManager::clearInterfacePrbsStats(
     std::string portName,
-    phy::PrbsComponent component) {
+    phy::PortComponent component) {
   if (auto portID = getPortIDByPortName(portName)) {
     clearPortPrbsStats(*portID, component);
   } else {
@@ -1692,23 +1754,31 @@ std::vector<TransceiverID> TransceiverManager::refreshTransceivers(
   std::vector<TransceiverID> transceiverIds;
   std::vector<folly::Future<folly::Unit>> futs;
 
-  auto lockedTransceivers = transceivers_.rlock();
-  auto nTransceivers =
-      transceivers.empty() ? lockedTransceivers->size() : transceivers.size();
-  XLOG(INFO) << "Start refreshing " << nTransceivers << " transceivers...";
+  {
+    auto lockedTransceivers = transceivers_.rlock();
+    auto nTransceivers =
+        transceivers.empty() ? lockedTransceivers->size() : transceivers.size();
+    XLOG(INFO) << "Start refreshing " << nTransceivers << " transceivers...";
 
-  for (const auto& transceiver : *lockedTransceivers) {
-    TransceiverID id = TransceiverID(transceiver.second->getID());
-    if (!transceivers.empty() && transceivers.find(id) == transceivers.end()) {
-      continue;
+    for (const auto& transceiver : *lockedTransceivers) {
+      TransceiverID id = TransceiverID(transceiver.second->getID());
+      // If we're trying to refresh a subset and this transceiver is not in that
+      // subset, skip it.
+      if (!transceivers.empty() &&
+          transceivers.find(id) == transceivers.end()) {
+        continue;
+      }
+      XLOG(DBG3) << "Fired to refresh TransceiverID=" << id;
+      transceiverIds.push_back(id);
+      futs.push_back(transceiver.second->futureRefresh());
     }
-    XLOG(DBG3) << "Fired to refresh TransceiverID=" << id;
-    transceiverIds.push_back(id);
-    futs.push_back(transceiver.second->futureRefresh());
+
+    folly::collectAll(futs.begin(), futs.end()).wait();
+    XLOG(INFO) << "Finished refreshing " << nTransceivers << " transceivers";
   }
 
-  folly::collectAll(futs.begin(), futs.end()).wait();
-  XLOG(INFO) << "Finished refreshing " << nTransceivers << " transceivers";
+  publishTransceiversToFsdb(transceiverIds);
+
   return transceiverIds;
 }
 
@@ -1756,6 +1826,98 @@ void TransceiverManager::getPauseRemediationUntil(
       }
     }
   }
+}
+
+void TransceiverManager::setPortLoopbackState(
+    std::string portName,
+    phy::PortComponent component,
+    bool setLoopback) {
+  auto swPort = getPortIDByPortName(portName);
+  if (!swPort.has_value()) {
+    throw FbossError(
+        folly::sformat("setPortLoopbackState: Invalid port {}", portName));
+  }
+  if (component != phy::PortComponent::GB_SYSTEM &&
+      component != phy::PortComponent::GB_LINE) {
+    XLOG(INFO)
+        << " TransceiverManager::setPortLoopbackState - component not supported "
+        << static_cast<int>(component);
+    return;
+  }
+
+  XLOG(INFO) << " TransceiverManager::setPortLoopbackState Port "
+             << static_cast<int>(swPort.value());
+  getPhyManager()->setPortLoopbackState(
+      PortID(swPort.value()), component, setLoopback);
+}
+
+void TransceiverManager::setPortAdminState(
+    std::string portName,
+    phy::PortComponent component,
+    bool setAdminUp) {
+  auto swPort = getPortIDByPortName(portName);
+  if (!swPort.has_value()) {
+    throw FbossError(
+        folly::sformat("setPortAdminState: Invalid port {}", portName));
+  }
+  if (component != phy::PortComponent::GB_SYSTEM &&
+      component != phy::PortComponent::GB_LINE) {
+    XLOG(INFO)
+        << " TransceiverManager::setPortAdminState - component not supported "
+        << static_cast<int>(component);
+    return;
+  }
+
+  XLOG(INFO) << " TransceiverManager::setPortAdminState Port "
+             << static_cast<int>(swPort.value());
+  getPhyManager()->setPortAdminState(
+      PortID(swPort.value()), component, setAdminUp);
+}
+
+/*
+ * getAllPortPhyInfo
+ *
+ * Get the map of software port id to PortPhyInfo in the system. This function
+ * mainly for debugging
+ */
+std::map<uint32_t, phy::PhyIDInfo> TransceiverManager::getAllPortPhyInfo() {
+  std::map<uint32_t, phy::PhyIDInfo> resultMap;
+
+  auto allPlatformPortsIt = platformMapping_->getPlatformPorts();
+  for (auto platformPortIt : allPlatformPortsIt) {
+    auto portId = platformPortIt.first;
+    GlobalXphyID xphyId;
+    try {
+      xphyId = phyManager_->getGlobalXphyIDbyPortID(PortID(portId));
+    } catch (FbossError& ex) {
+      continue;
+    }
+    phy::PhyIDInfo phyIdInfo = phyManager_->getPhyIDInfo(xphyId);
+    resultMap[portId] = phyIdInfo;
+  }
+
+  return resultMap;
+}
+
+/*
+ * getPhyInfo
+ *
+ * Returns the phy line params for a port
+ */
+phy::PhyInfo TransceiverManager::getPhyInfo(const std::string& portName) {
+  auto swPort = getPortIDByPortName(portName);
+  if (!swPort.has_value()) {
+    throw FbossError(folly::sformat("getPhyInfo: Invalid port {}", portName));
+  }
+  return getPhyManager()->getPhyInfo(PortID(swPort.value()));
+}
+
+std::string TransceiverManager::getPortInfo(std::string portName) {
+  auto swPort = getPortIDByPortName(portName);
+  if (!swPort.has_value()) {
+    throw FbossError(folly::sformat("getPortInfo: Invalid port {}", portName));
+  }
+  return getPhyManager()->getPortInfoStr(PortID(swPort.value()));
 }
 
 } // namespace facebook::fboss

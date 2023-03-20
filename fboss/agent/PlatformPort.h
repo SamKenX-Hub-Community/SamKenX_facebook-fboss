@@ -42,7 +42,11 @@ class PlatformPort {
     return platform_;
   }
 
+  virtual std::optional<int> getAttachedCoreId() const;
+  virtual std::optional<int> getCorePortIndex() const;
+
   const cfg::PlatformPortEntry& getPlatformPortEntry() const;
+  cfg::PortType getPortType() const;
 
   std::optional<std::vector<phy::PinConfig>> getTransceiverPinConfigs(
       cfg::PortProfileID profileID) const;

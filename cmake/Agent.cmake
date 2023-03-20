@@ -72,7 +72,7 @@ add_library(utils
 target_link_libraries(utils
   error
   ctrl_cpp2
-  switch_state_cpp2
+  state
   Folly::folly
 )
 
@@ -108,8 +108,10 @@ add_library(core
   fboss/agent/ArpHandler.cpp
   fboss/agent/DHCPv4Handler.cpp
   fboss/agent/DHCPv6Handler.cpp
+  fboss/agent/DsfSubscriber.cpp
+  fboss/agent/FabricReachabilityManager.cpp
+  fboss/agent/EncapIndexAllocator.cpp
   fboss/agent/FibHelpers.cpp
-  fboss/agent/FsdbSyncer.cpp
   fboss/agent/HwSwitch.cpp
   fboss/agent/IPHeaderV4.cpp
   fboss/agent/IPv4Handler.cpp
@@ -154,7 +156,7 @@ add_library(core
   fboss/agent/oss/PacketLogger.cpp
   fboss/agent/oss/RouteUpdateLogger.cpp
   fboss/agent/oss/SwSwitch.cpp
-  fboss/agent/oss/FsdbStateDeltaConverter.cpp
+  fboss/agent/oss/DsfSubscriber.cpp
   fboss/agent/oss/FsdbSyncer.cpp
 )
 
@@ -280,4 +282,14 @@ add_library(sflow_shim_utils
 
 target_link_libraries(sflow_shim_utils
   Folly::folly
+)
+
+
+add_library(fsdb_helper
+  fboss/agent/oss/FsdbHelper.cpp
+)
+
+target_link_libraries(fsdb_helper
+  fsdb_oper_cpp2
+  state
 )

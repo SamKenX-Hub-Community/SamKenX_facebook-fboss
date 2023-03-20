@@ -14,6 +14,8 @@
 
 namespace facebook::fboss {
 
+USE_THRIFT_COW(NdpEntry);
+
 /*
  * NdpEntry represents an entry in our IPv6 neighbor table.
  *
@@ -23,7 +25,8 @@ namespace facebook::fboss {
  */
 class NdpEntry : public NeighborEntry<folly::IPAddressV6, NdpEntry> {
  public:
-  using NeighborEntry::NeighborEntry;
+  using Base = NeighborEntry<folly::IPAddressV6, NdpEntry>;
+  using Base::Base;
 };
 
 } // namespace facebook::fboss

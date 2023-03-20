@@ -245,6 +245,167 @@ void aclEntryFieldMacAttr(
   }
 }
 
+void systemPortConfigAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    std::vector<std::string>& attrLines) {
+  string prefix = to<string>("s_a", "[", i, "].value.sysportconfig.");
+  attrLines.push_back(
+      to<string>(prefix, "port_id=", attr_list[i].value.sysportconfig.port_id));
+  attrLines.push_back(to<string>(
+      prefix,
+      "attached_switch_id=",
+      attr_list[i].value.sysportconfig.attached_switch_id));
+  attrLines.push_back(to<string>(
+      prefix,
+      "attached_core_index=",
+      attr_list[i].value.sysportconfig.attached_core_index));
+
+  attrLines.push_back(to<string>(
+      prefix,
+      "attached_core_port_index=",
+      attr_list[i].value.sysportconfig.attached_core_port_index));
+  attrLines.push_back(
+      to<string>(prefix, "speed=", attr_list[i].value.sysportconfig.speed));
+  attrLines.push_back(
+      to<string>(prefix, "num_voq=", attr_list[i].value.sysportconfig.num_voq));
+}
+
+void systemPortConfigListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    vector<string>& attrLines) {
+  // First make sure we have enough lists for use
+  uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
+      listIndex + 1,
+      sizeof(sai_uint32_t),
+      attr_list[i].value.sysportconfiglist.count);
+
+  string prefix = to<string>("s_a", "[", i, "].value.sysportconfiglist.");
+  attrLines.push_back(
+      to<string>(prefix, "count=", attr_list[i].value.sysportconfiglist.count));
+  if (attr_list[i].value.sysportconfiglist.list) {
+    attrLines.push_back(to<string>(
+        prefix, "list=(sai_system_port_config_t*)(list_", listIndex, ")"));
+    for (int j = 0;
+         j < std::min(attr_list[i].value.sysportconfiglist.count, listLimit);
+         ++j) {
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "port_id=",
+          attr_list[i].value.sysportconfiglist.list[j].port_id));
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "attached_switch_id=",
+          attr_list[i].value.sysportconfiglist.list[j].attached_switch_id));
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "attached_core_index=",
+          attr_list[i].value.sysportconfiglist.list[j].attached_core_index));
+
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "attached_core_port_index=",
+          attr_list[i]
+              .value.sysportconfiglist.list[j]
+              .attached_core_port_index));
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "speed=",
+          attr_list[i].value.sysportconfiglist.list[j].speed));
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "num_voq=",
+          attr_list[i].value.sysportconfiglist.list[j].num_voq));
+    }
+  } else {
+    attrLines.push_back(to<string>(prefix, "list=NULL"));
+  }
+}
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 3) || defined(TAJO_SDK_VERSION_1_42_8)
+void latchStatusAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    std::vector<std::string>& attrLines) {
+  string prefix = to<string>("s_a", "[", i, "].value.latchstatus.");
+  attrLines.push_back(to<string>(
+      prefix,
+      "current_status=",
+      attr_list[i].value.latchstatus.current_status));
+  attrLines.push_back(
+      to<string>(prefix, "changed=", attr_list[i].value.latchstatus.changed));
+}
+
+void portLaneLatchStatusListAttr(
+    const sai_attribute_t* attr_list,
+    int i,
+    uint32_t listIndex,
+    vector<string>& attrLines) {
+  // First make sure we have enough lists for use
+  uint32_t listLimit = SaiTracer::getInstance()->checkListCount(
+      listIndex + 1,
+      sizeof(sai_uint32_t),
+      attr_list[i].value.portlanelatchstatuslist.count);
+
+  string prefix = to<string>("s_a", "[", i, "].value.portlanelatchstatuslist.");
+  attrLines.push_back(to<string>(
+      prefix, "count=", attr_list[i].value.portlanelatchstatuslist.count));
+  if (attr_list[i].value.portlanelatchstatuslist.list) {
+    attrLines.push_back(to<string>(
+        prefix, "list=(sai_port_lane_latch_status_t*)(list_", listIndex, ")"));
+    for (int j = 0; j <
+         std::min(attr_list[i].value.portlanelatchstatuslist.count, listLimit);
+         ++j) {
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "lane=",
+          attr_list[i].value.portlanelatchstatuslist.list[j].lane));
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "current_status=",
+          attr_list[i]
+              .value.portlanelatchstatuslist.list[j]
+              .value.current_status));
+      attrLines.push_back(to<string>(
+          prefix,
+          "list[",
+          j,
+          "].",
+          "changed=",
+          attr_list[i].value.portlanelatchstatuslist.list[j].value.changed));
+    }
+  } else {
+    attrLines.push_back(to<string>(prefix, "list=NULL"));
+  }
+}
+#endif
+
 std::string boolAttr(const sai_attribute_t* attr_list, int i) {
   return to<string>(
       "s_a[",
@@ -365,8 +526,10 @@ void s32RangeAttr(
     int i,
     std::vector<std::string>& attrLines) {
   string prefix = to<string>("s_a", "[", i, "].value.s32range.");
-  attrLines.push_back(to<string>("min=", attr_list[i].value.s32range.min));
-  attrLines.push_back(to<string>("max=", attr_list[i].value.s32range.max));
+  attrLines.push_back(
+      to<string>(prefix, "min=", attr_list[i].value.s32range.min));
+  attrLines.push_back(
+      to<string>(prefix, "max=", attr_list[i].value.s32range.max));
 }
 
 void u32RangeAttr(
@@ -374,8 +537,10 @@ void u32RangeAttr(
     int i,
     std::vector<std::string>& attrLines) {
   string prefix = to<string>("s_a", "[", i, "].value.u32range.");
-  attrLines.push_back(to<string>("min=", attr_list[i].value.u32range.min));
-  attrLines.push_back(to<string>("max=", attr_list[i].value.u32range.max));
+  attrLines.push_back(
+      to<string>(prefix, "min=", attr_list[i].value.u32range.min));
+  attrLines.push_back(
+      to<string>(prefix, "max=", attr_list[i].value.u32range.max));
 }
 
 void qosMapListAttr(

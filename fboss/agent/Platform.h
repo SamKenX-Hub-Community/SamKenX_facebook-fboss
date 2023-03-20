@@ -20,7 +20,7 @@
 #include "fboss/agent/types.h"
 #include "fboss/lib/phy/gen-cpp2/phy_types.h"
 
-DECLARE_bool(skip_xphy_programming);
+DECLARE_bool(hide_fabric_ports);
 
 namespace facebook::fboss {
 
@@ -53,7 +53,7 @@ enum class PlatformMode : char;
  */
 class Platform {
  public:
-  explicit Platform(
+  Platform(
       std::unique_ptr<PlatformProductInfo> productInfo,
       std::unique_ptr<PlatformMapping> platformMapping,
       folly::MacAddress localMac);
@@ -86,6 +86,8 @@ class Platform {
   const AgentConfig* config();
   const AgentConfig* reloadConfig();
   void setConfig(std::unique_ptr<AgentConfig> config);
+  std::optional<std::string> getPlatformAttribute(
+      cfg::PlatformAttributes platformAttribute) const;
 
   const std::map<int32_t, cfg::PlatformPortEntry>& getPlatformPorts() const;
 
@@ -240,6 +242,10 @@ class Platform {
    */
   std::string getCrashSwitchStateFile() const;
   /*
+   * Get filename for where we dump thrift switch state on crash
+   */
+  std::string getCrashThriftSwitchStateFile() const;
+  /*
    * For a specific logical port, return the transceiver and channel
    * it represents if available
    */
@@ -305,6 +311,10 @@ class Platform {
    * creates the HwSwitch instance it must serve back to SwSwitch.
    */
   virtual void initImpl(uint32_t hwFeaturesDesired) = 0;
+  virtual void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) = 0;
 
   std::unique_ptr<AgentConfig> config_;
 
@@ -314,7 +324,7 @@ class Platform {
 
   const std::unique_ptr<PlatformProductInfo> productInfo_;
   const std::unique_ptr<PlatformMapping> platformMapping_;
-  const folly::MacAddress localMac_;
+  folly::MacAddress localMac_;
 
   // The map of override version of TransceiverInfo.
   // This is to be used only for HwTests under test environment,

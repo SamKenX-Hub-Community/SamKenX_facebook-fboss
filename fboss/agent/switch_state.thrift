@@ -13,6 +13,7 @@ include "fboss/agent/if/common.thrift"
 include "fboss/qsfp_service/if/transceiver.thrift"
 include "common/network/if/Address.thrift"
 include "fboss/agent/if/ctrl.thrift"
+include "fboss/mka_service/if/mka_structs.thrift"
 
 struct VlanInfo {
   1: bool tagged;
@@ -35,31 +36,14 @@ struct PortPgFields {
   8: optional BufferPoolFields bufferPoolConfig;
 }
 
-// Port queueing configuration
-struct PortQueueFields {
-  1: i16 id;
-  2: i32 weight;
-  3: optional i32 reserved;
-  // TODO: replace with switch_config.MMUScalingFactor?
-  4: optional string scalingFactor;
-  // TODO: replace with switch_config.QueueScheduling?
-  5: string scheduling;
-  // TODO: replace with switch_config.StreamType?
-  6: string streamType;
-  7: optional list<switch_config.ActiveQueueManagement> aqms;
-  8: optional string name;
-  /*
-  * Refer PortQueueRate which is a generalized version and allows configuring
-  * pps as well as kbps.
-  */
-  10: optional i32 packetsPerSec_DEPRECATED;
-  11: optional i32 sharedBytes;
-  12: optional switch_config.PortQueueRate portQueueRate;
+struct MKASakKey {
+  1: mka_structs.MKASci sci;
+  2: i32 associationNum;
+}
 
-  13: optional i32 bandwidthBurstMinKbits;
-  14: optional i32 bandwidthBurstMaxKbits;
-  15: optional i16 trafficClass;
-  16: optional list<i16> pfcPriorities;
+struct RxSak {
+  1: MKASakKey sakKey;
+  2: mka_structs.MKASak sak;
 }
 
 // Port configuration and oper state fields
@@ -69,48 +53,64 @@ struct PortFields {
   2: required string portName;
   3: string portDescription;
   // TODO: use switch_config.PortState?
-  4: string portState;
-  5: bool portOperState;
+  4: string portState = "DISABLED";
+  5: bool portOperState = false;
   6: i32 ingressVlan;
   // TODO: use switch_config.PortSpeed?
-  7: string portSpeed;
+  7: string portSpeed = "DEFAULT";
   // TODO: use switch_config.PortPause?
   10: bool rxPause;
   11: bool txPause;
   12: map<string, VlanInfo> vlanMemberShips;
   13: i32 sFlowIngressRate;
   14: i32 sFlowEgressRate;
-  15: list<PortQueueFields> queues;
-  16: string portLoopbackMode;
+  15: list<ctrl.PortQueueFields> queues;
+  16: string portLoopbackMode = "NONE";
   17: optional string ingressMirror;
   18: optional string egressMirror;
   19: optional string qosPolicy;
   20: optional string sampleDest;
   // TODO: this will deprecate port speed and port fec
-  21: string portProfileID;
+  21: string portProfileID = "PROFILE_DEFAULT";
   22: list<switch_config.AclLookupClass> lookupClassesToDistrubuteTrafficOn;
   23: i32 maxFrameSize = switch_config.DEFAULT_PORT_MTU;
   24: optional switch_config.PortPfc pfc;
   25: optional list<PortPgFields> pgConfigs;
   // TODO: Current warmboot state doesn't have such field yet
-  26: optional phy.ProfileSideConfig profileConfig;
-  27: optional list<phy.PinConfig> pinConfigs;
+  26: phy.ProfileSideConfig profileConfig;
+  27: list<phy.PinConfig> pinConfigs;
   28: optional phy.ProfileSideConfig lineProfileConfig;
   29: optional list<phy.PinConfig> linePinConfigs;
   30: switch_config.PortType portType = switch_config.PortType.INTERFACE_PORT;
+  31: optional phy.LinkFaultStatus iPhyLinkFaultStatus;
+  32: phy.PortPrbsState asicPrbs;
+  33: phy.PortPrbsState gbSystemPrbs;
+  34: phy.PortPrbsState gbLinePrbs;
+  35: optional list<i16> pfcPriorities;
+  36: map<switch_config.LLDPTag, string> expectedLLDPValues;
+  37: list<RxSak> rxSecureAssociationKeys;
+  38: optional mka_structs.MKASak txSecureAssociationKey;
+  39: bool macsecDesired = false;
+  40: bool dropUnencrypted = false;
+  // List of interfaces for given port:
+  //
+  // For the systems with VLAN based RIFs (non-VOQ/non-FABRIC):
+  //   - A port could be part of multiple VLANs.
+  //   - every VLAN corresponds to an interface.
+  //   - interfaceIDs contains the list of interfaces for VLANs the port is
+  //     part of.
+  //   - In practice, a port is only part of single VLAN, so this vector always
+  //     has size of 1.
+  //
+  // For the systems with Port based RIFs (VOQ/FABRIC switches):
+  //   - interfaceIDs contains single element viz. the interface corresponding
+  //     to this port.
+  41: list<i32> interfaceIDs;
+  42: list<switch_config.PortNeighbor> expectedNeighborReachability;
+  43: switch_config.PortDrainState drainState = switch_config.PortDrainState.UNDRAINED;
 }
 
-struct SystemPortFields {
-  1: i64 portId;
-  2: i64 switchId;
-  3: string portName; // switchId::portName
-  4: i64 coreIndex;
-  5: i64 corePortIndex;
-  6: i64 speedMbps;
-  7: i64 numVoqs;
-  9: bool enabled;
-  10: optional string qosPolicy;
-}
+typedef ctrl.SystemPortThrift SystemPortFields
 
 struct TransceiverSpecFields {
   1: required i16 id;
@@ -184,14 +184,16 @@ enum NeighborState {
 
 struct NeighborEntryFields {
   1: string ipaddress;
-  2: string mac;
+  2: string mac = "ff:ff:ff:ff:ff:ff";
   3: switch_config.PortDescriptor portId;
   4: i32 interfaceId;
-  5: NeighborState state;
+  5: NeighborState state = NeighborState.Reachable;
   6: optional switch_config.AclLookupClass classID;
   7: optional i64 encapIndex;
   8: bool isLocal = true;
 }
+
+typedef map<string, NeighborEntryFields> NeighborEntries
 
 enum MacEntryType {
   DYNAMIC_ENTRY = 0,
@@ -202,7 +204,7 @@ struct MacEntryFields {
   1: string mac;
   2: switch_config.PortDescriptor portId;
   3: optional switch_config.AclLookupClass classID;
-  4: MacEntryType type;
+  4: MacEntryType type = MacEntryType.DYNAMIC_ENTRY;
 }
 
 struct NeighborResponseEntryFields {
@@ -212,17 +214,17 @@ struct NeighborResponseEntryFields {
 }
 
 struct VlanFields {
-  1: i16 vlanId;
+  1: i16 vlanId = 0;
   2: string vlanName;
-  3: i32 intfID;
-  4: string dhcpV4Relay;
-  5: string dhcpV6Relay;
+  3: i32 intfID = 0;
+  4: string dhcpV4Relay = "0.0.0.0";
+  5: string dhcpV6Relay = "::";
   6: map<string, string> dhcpRelayOverridesV4;
   7: map<string, string> dhcpRelayOverridesV6;
   8: map<i16, bool> ports;
-  9: map<string, NeighborEntryFields> arpTable;
+  9: NeighborEntries arpTable;
   10: map<string, NeighborResponseEntryFields> arpResponseTable;
-  11: map<string, NeighborEntryFields> ndpTable;
+  11: NeighborEntries ndpTable;
   12: map<string, NeighborResponseEntryFields> ndpResponseTable;
   13: map<string, MacEntryFields> macTable;
 }
@@ -235,6 +237,7 @@ struct LoadBalancerFields {
   5: set<switch_config.IPv6Field> v6Fields;
   6: set<switch_config.TransportField> transportFields;
   7: set<switch_config.MPLSField> mplsFields;
+  8: list<string> udfGroups = [];
 }
 
 struct MirrorTunnel {
@@ -262,7 +265,7 @@ struct MirrorFields {
 }
 
 struct ControlPlaneFields {
-  1: list<PortQueueFields> queues;
+  1: list<ctrl.PortQueueFields> queues;
   2: list<switch_config.PacketRxReasonToQueue> rxReasonToQueue;
   3: optional string defaultQosPolicy;
 }
@@ -278,17 +281,33 @@ struct BlockedMacAddress {
 }
 
 struct SwitchSettingsFields {
-  1: switch_config.L2LearningMode l2LearningMode;
-  2: bool qcmEnable;
-  3: bool ptpTcEnable;
-  4: i32 l2AgeTimerSeconds;
-  5: i32 maxRouteCounterIDs;
+  1: switch_config.L2LearningMode l2LearningMode = switch_config.L2LearningMode.HARDWARE;
+  2: bool qcmEnable = false;
+  3: bool ptpTcEnable = false;
+  4: i32 l2AgeTimerSeconds = 300;
+  5: i32 maxRouteCounterIDs = 0;
   6: list<BlockedNeighbor> blockNeighbors;
   7: list<BlockedMacAddress> macAddrsToBlock;
   // Switch type
   8: switch_config.SwitchType switchType = switch_config.SwitchType.NPU;
   // Switch id (only applicable for VOQ based systems)
   9: optional i64 switchId;
+  10: list<switch_config.ExactMatchTableConfig> exactMatchTableConfigs;
+  11: optional switch_config.Range64 systemPortRange;
+  12: optional i16 defaultVlan;
+  13: optional i64 arpTimeout;
+  14: optional i64 ndpTimeout;
+  15: optional i32 arpAgerInterval;
+  16: optional i32 maxNeighborProbes;
+  17: optional i64 staleEntryInterval;
+  18: optional Address.BinaryAddress dhcpV4RelaySrc;
+  19: optional Address.BinaryAddress dhcpV6RelaySrc;
+  20: optional Address.BinaryAddress dhcpV4ReplySrc;
+  21: optional Address.BinaryAddress dhcpV6ReplySrc;
+  23: optional QcmCfgFields qcmCfg;
+  24: optional QosPolicyFields defaultDataPlaneQosPolicy;
+  25: optional switch_config.UdfConfig udfConfig;
+  26: optional switch_config.FlowletSwitchingConfig flowletSwitchingConfig;
 }
 
 struct RoutePrefix {
@@ -385,7 +404,7 @@ struct SflowCollectorFields {
 struct InterfaceFields {
   1: i32 interfaceId;
   2: i32 routerId;
-  3: i32 vlanId;
+  3: optional i32 vlanId;
   4: string name;
   // network byte order
   5: i64 mac (cpp2.type = "std::uint64_t");
@@ -395,6 +414,9 @@ struct InterfaceFields {
   8: i32 mtu;
   9: bool isVirtual = false;
   10: bool isStateSyncDisabled = false;
+  11: switch_config.InterfaceType type = switch_config.InterfaceType.VLAN;
+  12: NeighborEntries arpTable;
+  13: NeighborEntries ndpTable;
 }
 
 enum LacpState {
@@ -419,11 +441,11 @@ struct ParticipantInfo {
 }
 
 struct Subport {
-  1: i32 id;
-  2: i32 priority;
-  3: switch_config.LacpPortRate lacpPortRate;
-  4: switch_config.LacpPortActivity lacpPortActivity;
-  5: i32 holdTimerMultiplier;
+  1: i32 id = 0;
+  2: i32 priority = 0;
+  3: switch_config.LacpPortRate lacpPortRate = switch_config.LacpPortRate.SLOW;
+  4: switch_config.LacpPortActivity lacpPortActivity = switch_config.LacpPortActivity.PASSIVE;
+  5: i32 holdTimerMultiplier = switch_config.DEFAULT_LACP_HOLD_TIMER_MULTIPLIER;
 }
 
 struct AggregatePortFields {
@@ -449,6 +471,44 @@ struct TeFlowEntryFields {
   6: optional ctrl.TeCounterID counterID;
 }
 
+struct AclTableFields {
+  1: string id;
+  2: i32 priority;
+  3: optional map<string, AclEntryFields> aclMap;
+  4: list<switch_config.AclTableActionType> actionTypes;
+  5: list<switch_config.AclTableQualifier> qualifiers;
+}
+
+struct AclTableGroupFields {
+  1: switch_config.AclStage stage;
+  2: string name;
+  3: optional map<string, AclTableFields> aclTableMap;
+}
+
+struct QcmCfgFields {
+  1: i32 agingIntervalInMsecs = switch_config.DEFAULT_QCM_AGING_INTERVAL_MSECS;
+  2: i32 numFlowSamplesPerView = switch_config.DEFAULT_QCM_FLOWS_PER_VIEW;
+  3: i32 flowLimit = switch_config.DEFAULT_QCM_FLOW_LIMIT;
+  4: i32 numFlowsClear = switch_config.DEFAULT_QCM_NUM_FLOWS_TO_CLEAR;
+  5: i32 scanIntervalInUsecs = switch_config.DEFAULT_QCM_SCAN_INTERVAL_USECS;
+  6: i32 exportThreshold = switch_config.DEFAULT_QCM_EXPORT_THRESHOLD;
+  7: bool monitorQcmCfgPortsOnly = false;
+  8: map<i32, i32> flowWeights;
+  // srcIp and dstIp need to be in CIDRNetwork format
+  9: ctrl.IpPrefix collectorSrcIp;
+  10: ctrl.IpPrefix collectorDstIp;
+  11: i16 collectorSrcPort;
+  12: i16 collectorDstPort;
+  13: optional byte collectorDscp;
+  14: optional i32 ppsToQcm;
+  15: list<i32> monitorQcmPortList;
+  16: map<i32, set<i32>> port2QosQueueIds;
+}
+
+// String encoding SwitchId list for indexing multi switch tables.
+// eg: "Id:124,125,130" indicates a table applicable to SwitchIds 124, 125 and 130
+typedef string SwitchIdList
+
 struct SwitchState {
   1: map<i16, PortFields> portMap;
   2: map<i16, VlanFields> vlanMap;
@@ -458,12 +518,12 @@ struct SwitchState {
   6: map<string, MirrorFields> mirrorMap;
   7: ControlPlaneFields controlPlane;
   8: SwitchSettingsFields switchSettings;
-  9: i16 defaultVlan;
-  10: i64 arpTimeout;
-  11: i64 ndpTimeout;
-  12: i32 arpAgerInterval;
-  13: i32 maxNeighborProbes;
-  14: i64 staleEntryInterval;
+  9: i16 defaultVlan = 0;
+  10: i64 arpTimeout = 60;
+  11: i64 ndpTimeout = 60;
+  12: i32 arpAgerInterval = 5;
+  13: i32 maxNeighborProbes = 300;
+  14: i64 staleEntryInterval = 10;
   15: Address.BinaryAddress dhcpV4RelaySrc;
   16: Address.BinaryAddress dhcpV6RelaySrc;
   17: Address.BinaryAddress dhcpV4ReplySrc;
@@ -478,4 +538,60 @@ struct SwitchState {
   26: map<string, TeFlowEntryFields> teFlowTable;
   27: map<i16, AggregatePortFields> aggregatePortMap;
   28: map<switch_config.LoadBalancerID, LoadBalancerFields> loadBalancerMap;
+  29: optional map<
+    switch_config.AclStage,
+    AclTableGroupFields
+  > aclTableGroupMap;
+  30: map<i32, InterfaceFields> interfaceMap;
+  31: optional QcmCfgFields qcmCfg;
+  32: optional QosPolicyFields defaultDataPlaneQosPolicy;
+  33: map<i64, switch_config.DsfNode> dsfNodes;
+  34: switch_config.UdfConfig udfConfig;
+  35: optional switch_config.FlowletSwitchingConfig flowletSwitchingConfig;
+  // Remote objects
+  500: map<i64, SystemPortFields> remoteSystemPortMap;
+  501: map<i32, InterfaceFields> remoteInterfaceMap;
+
+  // Multi NPU table definitions
+  100: map<SwitchIdList, map<i16, PortFields>> portMaps;
+  101: map<SwitchIdList, map<i16, VlanFields>> vlanMaps;
+  102: map<SwitchIdList, map<string, AclEntryFields>> aclMaps;
+  103: map<SwitchIdList, map<i16, TransceiverSpecFields>> transceiverMaps;
+  104: map<SwitchIdList, map<string, BufferPoolFields>> bufferPoolCfgMaps;
+  105: map<SwitchIdList, map<string, MirrorFields>> mirrorMaps;
+  106: map<SwitchIdList, ControlPlaneFields> controlPlaneMap;
+  107: map<SwitchIdList, SwitchSettingsFields> switchSettingsMap;
+  108: map<SwitchIdList, map<i64, SystemPortFields>> systemPortMaps;
+  109: map<SwitchIdList, map<i16, FibContainerFields>> fibsMap;
+  110: map<SwitchIdList, map<i32, LabelForwardingEntryFields>> labelFibMap;
+  111: map<SwitchIdList, map<string, QosPolicyFields>> qosPolicyMaps;
+  112: map<SwitchIdList, map<string, SflowCollectorFields>> sflowCollectorMaps;
+  113: map<SwitchIdList, map<string, IpTunnelFields>> ipTunnelMaps;
+  114: map<SwitchIdList, map<string, TeFlowEntryFields>> teFlowTables;
+  115: map<SwitchIdList, map<i16, AggregatePortFields>> aggregatePortMaps;
+  116: map<
+    SwitchIdList,
+    map<switch_config.LoadBalancerID, LoadBalancerFields>
+  > loadBalancerMaps;
+  117: map<
+    SwitchIdList,
+    map<switch_config.AclStage, AclTableGroupFields>
+  > aclTableGroupMaps;
+  118: map<SwitchIdList, map<i32, InterfaceFields>> interfaceMaps;
+  119: map<SwitchIdList, map<i64, switch_config.DsfNode>> dsfNodesMap;
+  // Remote object maps
+  600: map<SwitchIdList, map<i64, SystemPortFields>> remoteSystemPortMaps;
+  601: map<SwitchIdList, map<i32, InterfaceFields>> remoteInterfaceMaps;
+} (thriftpath.root)
+
+struct RouteTableFields {
+  1: map<string, RouteFields> v4NetworkToRoute;
+  2: map<string, RouteFields> v6NetworkToRoute;
+  3: map<i32, LabelForwardingEntryFields> labelToRoute;
+}
+
+struct WarmbootState {
+  1: SwitchState swSwitchState;
+  2: map<i32, RouteTableFields> routeTables;
+// TODO: Extend for hwSwitchState
 }

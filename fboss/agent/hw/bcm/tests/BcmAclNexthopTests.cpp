@@ -47,7 +47,7 @@ class BcmAclNexthopTest : public BcmTest {
     for (int i = 0; i < ports.size(); ++i) {
       ports[i] = masterLogicalPortIds()[i];
     }
-    return utility::onePortPerVlanConfig(getHwSwitch(), ports);
+    return utility::onePortPerInterfaceConfig(getHwSwitch(), ports);
   }
 
   cfg::SwitchConfig testConfig(std::string vipIp, std::string nexthopIp) const {
@@ -81,7 +81,9 @@ class BcmAclNexthopTest : public BcmTest {
     auto newState = getProgrammedState()->clone();
     auto origAclEntry = newState->getAcls()->getEntry(name);
     auto newAclEntry = origAclEntry->modify(&newState);
-    MatchAction action = newAclEntry->getAclAction().value();
+    // THRIFT_COPY
+    MatchAction action =
+        MatchAction::fromThrift(newAclEntry->getAclAction()->toThrift());
     const auto& redirect = action.getRedirectToNextHop();
     action.setRedirectToNextHop(
         std::make_pair(redirect.value().first, nexthops));

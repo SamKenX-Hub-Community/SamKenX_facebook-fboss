@@ -98,14 +98,20 @@ BcmStatUpdater::BcmStatUpdater(BcmSwitch* hw)
 void BcmStatUpdater::toBeAddedAclStat(
     BcmAclStatHandle handle,
     const std::string& aclStatName,
-    const std::vector<cfg::CounterType>& counterTypes) {
+    const std::vector<cfg::CounterType>& counterTypes,
+    BcmAclStatActionIndex actionIndex) {
   for (auto type : counterTypes) {
-    toBeAddedAclStats_.emplace(BcmAclStatDescriptor(handle, aclStatName), type);
+    toBeUpdatedAclStats_.emplace(
+        BcmAclStatDescriptor(handle, aclStatName, actionIndex, true), type);
   }
 }
 
-void BcmStatUpdater::toBeRemovedAclStat(BcmAclStatHandle handle) {
-  toBeRemovedAclStats_.emplace(handle);
+void BcmStatUpdater::toBeRemovedAclStat(
+    BcmAclStatHandle handle,
+    BcmAclStatActionIndex actionIndex) {
+  toBeUpdatedAclStats_.emplace(
+      BcmAclStatDescriptor(handle, "", actionIndex, false),
+      cfg::CounterType::BYTES);
 }
 
 void BcmStatUpdater::toBeAddedRouteCounter(
@@ -141,7 +147,8 @@ void BcmStatUpdater::updateAclStats() {
     for (auto& counterItr : entry.second) {
       counters.push_back(counterItr.first);
     }
-    for (auto& stat : getAclTrafficStats(entry.first, counters)) {
+    for (auto& stat :
+         getAclTrafficStats(entry.first.first, entry.first.second, counters)) {
       entry.second[stat.first]->updateValue(now, stat.second);
     }
   }
@@ -313,9 +320,11 @@ size_t BcmStatUpdater::getAclStatCounterCount() const {
 
 MonotonicCounter* FOLLY_NULLABLE BcmStatUpdater::getAclStatCounterIf(
     BcmAclStatHandle handle,
-    cfg::CounterType counterType) {
+    cfg::CounterType counterType,
+    BcmAclStatActionIndex actionIndex) {
   auto lockedAclStats = aclStats_.rlock();
-  if (auto iter = lockedAclStats->find(handle); iter != lockedAclStats->end()) {
+  if (auto iter = lockedAclStats->find({handle, actionIndex});
+      iter != lockedAclStats->end()) {
     auto counterIter = iter->second.find(counterType);
     return counterIter != iter->second.end() ? counterIter->second.get()
                                              : nullptr;
@@ -324,12 +333,12 @@ MonotonicCounter* FOLLY_NULLABLE BcmStatUpdater::getAclStatCounterIf(
 }
 
 std::vector<cfg::CounterType> BcmStatUpdater::getAclStatCounterType(
-    BcmAclStatHandle handle) const {
+    BcmAclStatHandle handle,
+    BcmAclStatActionIndex actionIndex) const {
   std::vector<cfg::CounterType> counterTypes;
-
   auto lockedAclStats = aclStats_.rlock();
   for (auto& iter : *lockedAclStats) {
-    if (iter.first == handle) {
+    if (iter.first.first == handle && iter.first.second == actionIndex) {
       for (auto& innerIter : iter.second) {
         counterTypes.push_back(innerIter.first);
       }
@@ -389,53 +398,53 @@ void BcmStatUpdater::refreshHwTableStats(const StateDelta& delta) {
 }
 
 void BcmStatUpdater::refreshAclStats() {
-  if (toBeRemovedAclStats_.empty() && toBeAddedAclStats_.empty()) {
+  if (toBeUpdatedAclStats_.empty()) {
     return;
   }
 
   auto lockedAclStats = aclStats_.wlock();
 
-  while (!toBeRemovedAclStats_.empty()) {
-    auto handle = toBeRemovedAclStats_.front();
-    auto itr = lockedAclStats->begin();
-    while (itr != lockedAclStats->end()) {
-      if (itr->first == handle) {
-        lockedAclStats->erase(itr++);
+  while (!toBeUpdatedAclStats_.empty()) {
+    auto handle = toBeUpdatedAclStats_.front().first.handle;
+    const auto& aclStatName = toBeUpdatedAclStats_.front().first.aclStatName;
+    auto toAdd = toBeUpdatedAclStats_.front().first.addStat;
+    auto actionIndex = toBeUpdatedAclStats_.front().first.actionIndex;
+    auto counterType = toBeUpdatedAclStats_.front().second;
+    if (!toAdd) {
+      auto itr = lockedAclStats->find({handle, actionIndex});
+      if (itr != lockedAclStats->end()) {
+        lockedAclStats->erase(itr);
       } else {
-        ++itr;
+        XLOG(ERR) << "Cannot find ACL stat to delete, handle=" << handle;
       }
-    }
-    toBeRemovedAclStats_.pop();
-  }
-
-  while (!toBeAddedAclStats_.empty()) {
-    // Check whether acl stat already exists
-    auto handle = toBeAddedAclStats_.front().first.handle;
-    const auto& aclStatName = toBeAddedAclStats_.front().first.aclStatName;
-    auto counterType = toBeAddedAclStats_.front().second;
-    auto itr = lockedAclStats->find(handle);
-    if (itr != lockedAclStats->end()) {
-      auto counterItr = itr->second.find(counterType);
-      if (counterItr != itr->second.end()) {
-        throw FbossError(
-            "Duplicate ACL stat, handle=",
-            handle,
-            ", type=",
-            apache::thrift::util::enumNameSafe(counterType));
-      }
-      // counter name exists, but counter type doesn't
-      itr->second[counterType] = std::make_unique<MonotonicCounter>(
-          utility::statNameFromCounterType(aclStatName, counterType),
-          fb303::SUM,
-          fb303::RATE);
     } else {
-      lockedAclStats->operator[](handle)[counterType] =
-          std::make_unique<MonotonicCounter>(
-              utility::statNameFromCounterType(aclStatName, counterType),
-              fb303::SUM,
-              fb303::RATE);
+      // Check whether acl stat already exists
+      auto itr = lockedAclStats->find({handle, actionIndex});
+      if (itr != lockedAclStats->end()) {
+        auto counterItr = itr->second.find(counterType);
+        if (counterItr != itr->second.end()) {
+          throw FbossError(
+              "Duplicate ACL stat, handle=",
+              handle,
+              ", action index=",
+              actionIndex,
+              ", type=",
+              apache::thrift::util::enumNameSafe(counterType));
+        }
+        // counter name exists, but counter type doesn't
+        itr->second[counterType] = std::make_unique<MonotonicCounter>(
+            utility::statNameFromCounterType(aclStatName, counterType),
+            fb303::SUM,
+            fb303::RATE);
+      } else {
+        lockedAclStats->operator[]({handle, actionIndex})[counterType] =
+            std::make_unique<MonotonicCounter>(
+                utility::statNameFromCounterType(aclStatName, counterType),
+                fb303::SUM,
+                fb303::RATE);
+      }
     }
-    toBeAddedAclStats_.pop();
+    toBeUpdatedAclStats_.pop();
   }
 }
 
@@ -506,11 +515,12 @@ void BcmStatUpdater::refreshPrbsStats(const StateDelta& delta) {
 
 BcmTrafficCounterStats BcmStatUpdater::getAclTrafficStats(
     BcmAclStatHandle handle,
+    int actionIndex,
     const std::vector<cfg::CounterType>& counters) {
   if (hw_->getPlatform()->getAsic()->isSupported(
           HwAsic::Feature::INGRESS_FIELD_PROCESSOR_FLEX_COUNTER)) {
     return BcmIngressFieldProcessorFlexCounter::getAclTrafficFlexCounterStats(
-        hw_->getUnit(), handle, counters);
+        hw_->getUnit(), handle, actionIndex, counters);
   }
   BcmTrafficCounterStats stats;
   for (auto counterType : counters) {

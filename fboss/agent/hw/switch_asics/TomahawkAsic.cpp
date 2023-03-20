@@ -12,7 +12,6 @@ bool TomahawkAsic::isSupported(Feature feature) const {
     case HwAsic::Feature::MPLS:
     case HwAsic::Feature::MPLS_ECMP:
     case HwAsic::Feature::HASH_FIELDS_CUSTOMIZATION:
-    case HwAsic::Feature::QUEUE:
     case HwAsic::Feature::ECN:
     case HwAsic::Feature::L3_QOS:
     case HwAsic::Feature::QCM:
@@ -56,12 +55,21 @@ bool TomahawkAsic::isSupported(Feature feature) const {
     case HwAsic::Feature::ECMP_HASH_V4:
     case HwAsic::Feature::ECMP_HASH_V6:
     case HwAsic::Feature::FEC_CORRECTED_BITS:
+    case HwAsic::Feature::MEDIA_TYPE:
+    case HwAsic::Feature::FEC:
+    case HwAsic::Feature::RX_FREQUENCY_PPM:
+    case HwAsic::Feature::ECMP_MEMBER_WIDTH_INTROSPECTION:
+    case HwAsic::Feature::SAI_MPLS_QOS:
+    case HwAsic::Feature::QOS_MAP_GLOBAL:
+    case HwAsic::Feature::ROUTE_METADATA:
+    case HwAsic::Feature::IN_PAUSE_INCREMENTS_DISCARDS:
+    case HwAsic::Feature::WARMBOOT:
+    case HwAsic::Feature::UDF_HASH_FIELD_QUERY:
+    case HwAsic::Feature::SAI_SAMPLEPACKET_TRAP:
       return true;
 
-    case HwAsic::Feature::HOSTTABLE_FOR_HOSTROUTES:
     case HwAsic::Feature::ERSPANv6:
     case HwAsic::Feature::SFLOWv6:
-    case HwAsic::Feature::QOS_MAP_GLOBAL:
     case HwAsic::Feature::SMAC_EQUALS_DMAC_CHECK_ENABLED:
     case HwAsic::Feature::PORT_TTL_DECREMENT_DISABLE:
     case HwAsic::Feature::WEIGHTED_NEXTHOPGROUP_MEMBER:
@@ -83,7 +91,6 @@ bool TomahawkAsic::isSupported(Feature feature) const {
     case HwAsic::Feature::SAI_PORT_SPEED_CHANGE:
     case HwAsic::Feature::SFLOW_SHIM_VERSION_FIELD:
     case HwAsic::Feature::MACSEC:
-    case HwAsic::Feature::SAI_MPLS_QOS:
     case HwAsic::Feature::EMPTY_ACL_MATCHER:
     case HwAsic::Feature::SAI_PORT_SERDES_FIELDS_RESET:
     case HwAsic::Feature::ROUTE_COUNTERS:
@@ -94,9 +101,31 @@ bool TomahawkAsic::isSupported(Feature feature) const {
     case HwAsic::Feature::SAI_MPLS_LABEL_LOOKUP_FAIL_COUNTER:
     case HwAsic::Feature::PMD_RX_LOCK_STATUS:
     case HwAsic::Feature::PMD_RX_SIGNAL_DETECT:
-    case HwAsic::Feature::VOQ_MODE:
-    case HwAsic::Feature::FABRIC_MODE:
     case HwAsic::Feature::EXACT_MATCH:
+    case HwAsic::Feature::FABRIC_PORTS:
+    case HwAsic::Feature::FABRIC_PORT_MTU:
+    case HwAsic::Feature::SAI_FIRMWARE_PATH:
+    case HwAsic::Feature::EXTENDED_FEC:
+    case HwAsic::Feature::LINK_TRAINING:
+    case HwAsic::Feature::SAI_RX_REASON_COUNTER:
+    case HwAsic::Feature::SAI_MPLS_INSEGMENT:
+    case HwAsic::Feature::RESERVED_ENCAP_INDEX_RANGE:
+    case HwAsic::Feature::VOQ:
+    case HwAsic::Feature::RECYCLE_PORTS:
+    case HwAsic::Feature::XPHY_PORT_STATE_TOGGLE:
+    case HwAsic::Feature::SAI_PORT_GET_PMD_LANES:
+    case HwAsic::Feature::FABRIC_TX_QUEUES:
+    case HwAsic::Feature::SAI_PORT_VCO_CHANGE:
+    case HwAsic::Feature::SAI_TTL0_PACKET_FORWARD_ENABLE:
+    case HwAsic::Feature::SHARED_INGRESS_EGRESS_BUFFER_POOL:
+    case HwAsic::Feature::DLB:
+    case HwAsic::Feature::P4_WARMBOOT:
+    case HwAsic::Feature::FEC_AM_LOCK_STATUS:
+    case HwAsic::Feature::PCS_RX_LINK_STATUS:
+    case HwAsic::Feature::TC_TO_QUEUE_QOS_MAP_ON_SYSTEM_PORT:
+    case HwAsic::Feature::SAI_CONFIGURE_SIX_TAP:
+    case HwAsic::Feature::PORT_FABRIC_ISOLATE:
+    case HwAsic::Feature::QUEUE_ECN_COUNTER:
       return false;
   }
   return false;
@@ -114,6 +143,7 @@ int TomahawkAsic::getDefaultNumPortQueues(cfg::StreamType streamType, bool cpu)
       // CPU on TH has 48 queues, but we restrict ourselves to first 10
       return 10;
     case cfg::StreamType::ALL:
+    case cfg::StreamType::FABRIC_TX:
       break;
   }
   throw FbossError(

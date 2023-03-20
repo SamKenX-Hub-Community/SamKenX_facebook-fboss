@@ -20,25 +20,23 @@
 
 namespace facebook::fboss {
 
-using QosPolicyMapTraits = NodeMapTraits<std::string, QosPolicy>;
+using QosPolicyMapLegacyTraits = NodeMapTraits<std::string, QosPolicy>;
 
-struct QosPolicyMapThriftTraits
-    : public ThriftyNodeMapTraits<std::string, state::QosPolicyFields> {
-  static inline const std::string& getThriftKeyName() {
-    static const std::string _key = "name";
-    return _key;
-  }
+using QosPolicyMapTypeClass = apache::thrift::type_class::map<
+    apache::thrift::type_class::string,
+    apache::thrift::type_class::structure>;
+using QosPolicyMapThriftType = std::map<std::string, state::QosPolicyFields>;
+class QosPolicyMap;
+using QosPolicyMapTraits = ThriftMapNodeTraits<
+    QosPolicyMap,
+    QosPolicyMapTypeClass,
+    QosPolicyMapThriftType,
+    QosPolicy>;
 
-  static const KeyType parseKey(const folly::dynamic& key) {
-    return key.asString();
-  }
-};
-
-class QosPolicyMap : public ThriftyNodeMapT<
-                         QosPolicyMap,
-                         QosPolicyMapTraits,
-                         QosPolicyMapThriftTraits> {
+class QosPolicyMap : public ThriftMapNode<QosPolicyMap, QosPolicyMapTraits> {
  public:
+  using BaseT = ThriftMapNode<QosPolicyMap, QosPolicyMapTraits>;
+  using BaseT::modify;
   QosPolicyMap();
   ~QosPolicyMap() override;
 
@@ -50,10 +48,10 @@ class QosPolicyMap : public ThriftyNodeMapT<
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyNodeMapT::ThriftyNodeMapT;
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 
-using QosPolicyMapDelta = NodeMapDelta<QosPolicyMap>;
+using QosPolicyMapDelta = thrift_cow::ThriftMapDelta<QosPolicyMap>;
 
 } // namespace facebook::fboss

@@ -8,9 +8,25 @@
 namespace facebook::fboss {
 
 class EbroAsic : public TajoAsic {
-  bool isSupported(Feature) const override;
-  AsicType getAsicType() const override {
-    return AsicType::ASIC_TYPE_EBRO;
+ public:
+  EbroAsic(
+      cfg::SwitchType type,
+      std::optional<int64_t> id,
+      std::optional<cfg::Range64> systemPortRange)
+      : TajoAsic(
+            type,
+            id,
+            systemPortRange,
+            {cfg::SwitchType::NPU,
+             cfg::SwitchType::VOQ,
+             cfg::SwitchType::FABRIC}) {}
+  bool isSupported(Feature feature) const override {
+    return getSwitchType() != cfg::SwitchType::FABRIC
+        ? isSupportedNonFabric(feature)
+        : isSupportedFabric(feature);
+  }
+  cfg::AsicType getAsicType() const override {
+    return cfg::AsicType::ASIC_TYPE_EBRO;
   }
   phy::DataPlanePhyChipType getDataPlanePhyChipType() const override {
     return phy::DataPlanePhyChipType::IPHY;
@@ -18,21 +34,10 @@ class EbroAsic : public TajoAsic {
   cfg::PortSpeed getMaxPortSpeed() const override {
     return cfg::PortSpeed::HUNDREDG;
   }
-  std::set<cfg::StreamType> getQueueStreamTypes(bool /* cpu */) const override {
-    return {cfg::StreamType::ALL};
-  }
+  std::set<cfg::StreamType> getQueueStreamTypes(
+      cfg::PortType portType) const override;
   int getDefaultNumPortQueues(cfg::StreamType streamType, bool /*cpu*/)
-      const override {
-    switch (streamType) {
-      case cfg::StreamType::UNICAST:
-      case cfg::StreamType::MULTICAST:
-        throw FbossError("no queue exist for this stream type");
-      case cfg::StreamType::ALL:
-        return 8;
-    }
-
-    throw FbossError("Unknown streamType", streamType);
-  }
+      const override;
   uint32_t getMaxLabelStackDepth() const override {
     return 3;
   }
@@ -94,6 +99,14 @@ class EbroAsic : public TajoAsic {
   uint32_t getStaticQueueLimitBytes() const override {
     return 16000 * getPacketBufferUnitSize();
   }
+  uint32_t getNumMemoryBuffers() const override {
+    return 1;
+  }
+  cfg::Range64 getReservedEncapIndexRange() const override;
+
+ private:
+  bool isSupportedFabric(Feature feature) const;
+  bool isSupportedNonFabric(Feature feature) const;
 };
 
 } // namespace facebook::fboss

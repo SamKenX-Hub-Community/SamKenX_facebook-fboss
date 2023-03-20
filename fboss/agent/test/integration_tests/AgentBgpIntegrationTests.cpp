@@ -10,12 +10,15 @@
 
 #include <fb303/ServiceData.h>
 #include <folly/Subprocess.h>
+#include <memory>
 #include "configerator/structs/neteng/fboss/bgp/if/gen-cpp2/bgp_attr_types.h"
 #include "fboss/agent/IPv6Handler.h"
 #include "fboss/agent/ThriftHandler.h"
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
+#include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
 #include "fboss/agent/state/SwitchState.h"
+#include "fboss/agent/test/RouteScaleGenerators.h"
 #include "fboss/agent/test/integration_tests/AgentIntegrationTest.h"
 #include "fboss/lib/CommonUtils.h"
 #include "neteng/fboss/bgp/cpp/BgpServiceUtil.h"
@@ -72,21 +75,24 @@ class BgpIntegrationTest : public AgentIntegrationTest {
         servicerouter::cpp2::getClientFactory()
             .getSRClientUnique<TBgpServiceAsyncClient>("", clientParams);
 
-    WITH_RETRIES_N(
-        {
-          std::vector<TBgpSession> sessions;
-          client->sync_getBgpSessions(sessions);
-          EXPECT_EQ(sessions.size(), kNumBgpSessions);
-          for (const auto& session : sessions) {
-            if (sessionsToCheck.count(session.my_addr().value())) {
-              EXPECT_EVENTUALLY_EQ(session.peer()->peer_state(), state)
-                  << "Peer never reached state "
-                  << apache::thrift::util::enumNameSafe(TBgpPeerState(state))
-                  << " for " << session.my_addr().value();
-            }
-          }
-        },
-        retries);
+    WITH_RETRIES_N(retries, {
+      std::vector<TBgpSession> sessions;
+      try {
+        client->sync_getBgpSessions(sessions);
+      } catch (const std::exception& e) {
+        XLOG(DBG3) << "checkBgpState: (transient) exception: " << e.what();
+        continue;
+      }
+      EXPECT_EQ(sessions.size(), kNumBgpSessions);
+      for (const auto& session : sessions) {
+        if (sessionsToCheck.count(session.my_addr().value())) {
+          EXPECT_EVENTUALLY_EQ(session.peer()->peer_state(), state)
+              << "Peer never reached state "
+              << apache::thrift::util::enumNameSafe(TBgpPeerState(state))
+              << " for " << session.my_addr().value();
+        }
+      }
+    });
   }
 
   void checkAgentState() {
@@ -145,18 +151,20 @@ class BgpIntegrationTest : public AgentIntegrationTest {
 
   void restartBgpService() {
     auto prevAliveSince = bgpAliveSince();
-    auto constexpr kBgpServiceKill = "sudo pkill bgpd";
+    auto constexpr kBgpServiceKill =
+        "sudo systemctl restart bgpd_service_for_testing";
     folly::Subprocess(kBgpServiceKill).waitChecked();
     auto aliveSince = bgpAliveSince();
     EXPECT_NE(aliveSince, 0);
     EXPECT_NE(aliveSince, prevAliveSince);
   }
 
-  void checkRoute(folly::IPAddressV6 prefix, uint8_t length, bool exists) {
+  template <typename TIpAddress>
+  void checkRoute(TIpAddress prefix, uint8_t length, bool exists) {
     WITH_RETRIES({
       const auto& fibContainer =
           sw()->getState()->getFibs()->getFibContainer(RouterID(0));
-      auto fib = fibContainer->template getFib<folly::IPAddressV6>();
+      auto fib = fibContainer->template getFib<TIpAddress>();
       auto testRoute = fib->getRouteIf({prefix, length});
       if (exists) {
         EXPECT_EVENTUALLY_NE(testRoute, nullptr);
@@ -178,6 +186,74 @@ class BgpIntegrationTest : public AgentIntegrationTest {
     return tprefix;
   }
 
+  void addBgpUnicastRoutes(std::vector<facebook::fboss::UnicastRoute> toAdd) {
+    auto clientParams = servicerouter::ClientParams();
+    clientParams.setSingleHost("::1", kBgpThriftPort);
+
+    std::chrono::milliseconds processingTimeout{60000};
+    clientParams.setProcessingTimeoutMs(processingTimeout);
+    clientParams.setOverallTimeoutMs(processingTimeout);
+
+    auto client = servicerouter::cpp2::getClientFactory()
+                      .getSRClientUnique<apache::thrift::Client<TBgpService>>(
+                          "", clientParams);
+
+    auto nhPrefix = makePrefix(folly::IPAddress("2::"), 128);
+    std::map<TIpPrefix, TBgpAttributes> networks;
+    for (const auto& rt : toAdd) {
+      TBgpAttributes attributes;
+      attributes.communities() = std::vector<TBgpCommunity>();
+      attributes.nexthop() = nhPrefix;
+      attributes.install_to_fib() = true;
+
+      auto tPrefix = makePrefix(
+          facebook::network::toIPAddress(*rt.dest()->ip()),
+          *rt.dest()->prefixLength());
+
+      networks[tPrefix] = attributes;
+    }
+    client->sync_addNetworks(std::move(networks));
+  }
+
+  template <typename RouteScaleGeneratorT>
+  void runRouteScaleTest() {
+    auto swstate = sw()->getState();
+    utility::RouteDistributionGenerator::ThriftRouteChunks routeChunks;
+    auto routeDistributionGen = RouteScaleGeneratorT(swstate);
+    routeChunks = routeDistributionGen.getThriftRoutes();
+
+    auto setup = [&]() {
+      checkBgpState(TBgpPeerState::ESTABLISHED, {"1::", "2::"});
+      checkAgentState();
+      int total = 0;
+      XLOG(DBG2) << "routeScaleTest: route add: start";
+      for (const auto& routeChunk : routeChunks) {
+        addBgpUnicastRoutes(routeChunk);
+        total += routeChunk.size();
+      }
+      XLOG(DBG2) << "routeScaleTest: route add: done, total routes: " << total;
+    };
+    auto verify = [&]() {
+      XLOG(DBG2) << "routeScaleTest: verify: start";
+      for (const auto& routeChunk : routeChunks) {
+        std::for_each(
+            routeChunk.begin(), routeChunk.end(), [&](const auto& route) {
+              auto ip = *route.dest()->ip();
+              auto addr = folly::IPAddress::fromBinary(folly::ByteRange(
+                  reinterpret_cast<const unsigned char*>(ip.addr()->data()),
+                  ip.addr()->size()));
+              if (addr.isV6()) {
+                checkRoute(addr.asV6(), *route.dest()->prefixLength(), true);
+              } else {
+                checkRoute(addr.asV4(), *route.dest()->prefixLength(), true);
+              }
+            });
+      }
+      XLOG(DBG2) << "routeScaleTest: verify: done";
+    };
+    verifyAcrossWarmBoots(setup, verify);
+  }
+
   void addBgpRoutes(std::vector<std::pair<folly::IPAddress, uint8_t>> toAdd) {
     auto clientParams = servicerouter::ClientParams();
     clientParams.setSingleHost("::1", kBgpThriftPort);
@@ -190,7 +266,7 @@ class BgpIntegrationTest : public AgentIntegrationTest {
       auto tPrefix = makePrefix(entry.first, entry.second);
       TBgpAttributes attributes;
       auto tBgpCommunities = std::vector<TBgpCommunity>();
-      attributes.nexthop() = std::move(nhPrefix);
+      attributes.nexthop() = nhPrefix;
       attributes.communities() = tBgpCommunities;
       attributes.install_to_fib() = true;
       networks[tPrefix] = attributes;
@@ -252,7 +328,26 @@ TEST_F(BgpIntegrationTest, bgpRestart) {
   verifyAcrossWarmBoots(verify);
 }
 
-// TODO - Change this to a 100k route test
+TEST_F(BgpIntegrationTest, routeScaleTest) {
+  Platform* platform = sw()->getPlatform();
+  auto hw = platform->getAsic();
+  auto npu = hw->getAsicType();
+  switch (npu) {
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK:
+      runRouteScaleTest<utility::FSWRouteScaleGenerator>();
+      break;
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK3:
+    case cfg::AsicType::ASIC_TYPE_TOMAHAWK4:
+      runRouteScaleTest<utility::HgridUuRouteScaleGenerator>();
+      break;
+    case cfg::AsicType::ASIC_TYPE_TRIDENT2:
+      runRouteScaleTest<utility::RSWRouteScaleGenerator>();
+      break;
+    default:
+      break;
+  }
+}
+
 TEST_F(BgpIntegrationTest, addBgpRoute) {
   auto setup = [&]() {
     checkBgpState(TBgpPeerState::ESTABLISHED, {"1::", "2::"});

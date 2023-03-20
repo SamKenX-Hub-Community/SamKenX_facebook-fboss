@@ -8,6 +8,7 @@
  *
  */
 
+#include "fboss/agent/hw/sai/tracer/AclApiTracer.h"
 #include <typeindex>
 #include <utility>
 
@@ -49,6 +50,7 @@ std::map<int32_t, std::pair<std::string, std::size_t>> _AclTableMap{
     SAI_ATTR_MAP(AclTable, AvailableEntry),
     SAI_ATTR_MAP(AclTable, AvailableCounter),
     SAI_ATTR_MAP(AclTable, FieldEthertype),
+    SAI_ATTR_MAP(AclTable, FieldOuterVlanId),
 };
 
 std::map<int32_t, std::pair<std::string, std::size_t>> _AclCounterMap {

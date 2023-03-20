@@ -28,6 +28,7 @@
 #include <boost/filesystem/operations.hpp>
 #include <thrift/lib/cpp/util/EnumUtils.h>
 
+#include <re2/re2.h>
 #include <chrono>
 #include <iostream>
 
@@ -39,6 +40,10 @@ using std::chrono::steady_clock;
 
 DEFINE_string(mac, "", "The local MAC address for this switch");
 DEFINE_string(mgmt_if, "eth0", "name of management interface");
+DEFINE_uint64(
+    ingress_egress_buffer_pool_size,
+    0,
+    "Common ingress/egress buffer pool size override");
 
 namespace facebook::fboss {
 
@@ -54,6 +59,24 @@ UnicastRoute makeUnicastRouteHelper(
   nr.adminDistance() = admin;
   return nr;
 }
+
+template <typename AddrT>
+AddrT getIPAddress(InterfaceID intfID, const Interface::AddressesType addrs) {
+  for (auto iter : std::as_const(*addrs)) {
+    auto address = folly::IPAddress(iter.first);
+    if constexpr (std::is_same_v<AddrT, IPAddressV4>) {
+      if (address.isV4()) {
+        return address.asV4();
+      }
+    } else {
+      if (address.isV6()) {
+        return address.asV6();
+      }
+    }
+  }
+  throw FbossError("Cannot find IP address for interface ", intfID);
+}
+
 } // namespace
 void utilCreateDir(folly::StringPiece path) {
   try {
@@ -63,32 +86,67 @@ void utilCreateDir(folly::StringPiece path) {
   }
 }
 
+IPAddressV4 getAnyIntfIP(const std::shared_ptr<SwitchState>& state) {
+  IPAddressV4 intfIp;
+  for (auto intfIter : std::as_const(*state->getInterfaces())) {
+    const auto& intf = intfIter.second;
+    for (auto iter : std::as_const(*intf->getAddresses())) {
+      auto address = folly::IPAddress(iter.first);
+      if (address.isV4()) {
+        return address.asV4();
+      }
+    }
+  }
+  throw FbossError("Cannot find IPv4 address on any interface");
+}
+
+IPAddressV6 getAnyIntfIPv6(const std::shared_ptr<SwitchState>& state) {
+  IPAddressV6 intfIp;
+  for (auto intfIter : std::as_const(*state->getInterfaces())) {
+    const auto& intf = intfIter.second;
+    for (auto iter : std::as_const(*intf->getAddresses())) {
+      auto address = folly::IPAddress(iter.first);
+      if (address.isV6()) {
+        return address.asV6();
+      }
+    }
+  }
+  throw FbossError("Cannot find IPv6 address on any interface");
+}
+
 IPAddressV4 getSwitchVlanIP(
     const std::shared_ptr<SwitchState>& state,
     VlanID vlan) {
   IPAddressV4 switchIp;
   auto vlanInterface = state->getInterfaces()->getInterfaceInVlan(vlan);
-  for (const auto& address : vlanInterface->getAddresses()) {
-    if (address.first.isV4()) {
-      switchIp = address.first.asV4();
-      return switchIp;
-    }
-  }
-  throw FbossError("Cannot find IP address for vlan", vlan);
+
+  return getIPAddress<IPAddressV4>(
+      vlanInterface->getID(), vlanInterface->getAddresses());
+}
+
+IPAddressV4 getSwitchIntfIP(
+    const std::shared_ptr<SwitchState>& state,
+    InterfaceID intfID) {
+  auto interface = state->getInterfaces()->getInterface(intfID);
+
+  return getIPAddress<IPAddressV4>(intfID, interface->getAddresses());
 }
 
 IPAddressV6 getSwitchVlanIPv6(
     const std::shared_ptr<SwitchState>& state,
     VlanID vlan) {
-  IPAddressV6 switchIp;
   auto vlanInterface = state->getInterfaces()->getInterfaceInVlan(vlan);
-  for (const auto& address : vlanInterface->getAddresses()) {
-    if (address.first.isV6()) {
-      switchIp = address.first.asV6();
-      return switchIp;
-    }
-  }
-  throw FbossError("Cannot find IPv6 address for vlan ", vlan);
+
+  return getIPAddress<IPAddressV6>(
+      vlanInterface->getID(), vlanInterface->getAddresses());
+}
+
+IPAddressV6 getSwitchIntfIPv6(
+    const std::shared_ptr<SwitchState>& state,
+    InterfaceID intfID) {
+  auto interface = state->getInterfaces()->getInterface(intfID);
+
+  return getIPAddress<IPAddressV6>(intfID, interface->getAddresses());
 }
 
 void incNiceValue(const uint32_t increment) {
@@ -115,6 +173,23 @@ void incNiceValue(const uint32_t increment) {
 
 bool dumpStateToFile(const std::string& filename, const folly::dynamic& json) {
   return folly::writeFile(folly::toPrettyJson(json), filename.c_str());
+}
+
+bool isValidThriftStateFile(
+    const std::string& follyStateFileName,
+    const std::string& thriftStateFileName) {
+  // Folly state is dumped before thrift state. Hence if folly state has a newer
+  // timestamp than thrift state, thrift state should be dumped by previous
+  // warmboot exits. This could happen during trunk->prod->trunk or
+  // prod->trunk->prod.
+  if (boost::filesystem::exists(thriftStateFileName) &&
+      boost::filesystem::last_write_time(thriftStateFileName) >=
+          boost::filesystem::last_write_time(follyStateFileName)) {
+    return true;
+  }
+  XLOG(DBG2) << "Thrift state file does not exist or has timestamp older "
+             << "than folly state. Using only folly file.";
+  return false;
 }
 
 std::string getLocalHostname() {
@@ -221,25 +296,72 @@ UnicastRoute makeUnicastRoute(
   return route;
 }
 
+PortID getPortID(
+    SystemPortID sysPortId,
+    const std::shared_ptr<SwitchState>& state) {
+  auto mySwitchId = state->getSwitchSettings()->getSwitchId();
+  CHECK(mySwitchId.has_value());
+  auto sysPortRange = state->getDsfNodes()
+                          ->getDsfNodeIf(SwitchID(*mySwitchId))
+                          ->getSystemPortRange();
+  CHECK(sysPortRange.has_value());
+  return PortID(static_cast<int64_t>(sysPortId) - *sysPortRange->minimum());
+}
+
+SystemPortID getSystemPortID(
+    const PortID& portId,
+    const std::shared_ptr<SwitchState>& state) {
+  assert(state->getSwitchSettings()->getSwitchType() == cfg::SwitchType::VOQ);
+  auto mySwitchId = state->getSwitchSettings()->getSwitchId();
+  CHECK(mySwitchId.has_value());
+  auto sysPortRange = state->getDsfNodes()
+                          ->getDsfNodeIf(SwitchID(*mySwitchId))
+                          ->getSystemPortRange();
+  CHECK(sysPortRange.has_value());
+  auto systemPortId = static_cast<int64_t>(portId) + *sysPortRange->minimum();
+  CHECK_LE(systemPortId, *sysPortRange->maximum());
+  return SystemPortID(systemPortId);
+}
+
+std::vector<PortID> getPortsForInterface(
+    InterfaceID intfId,
+    const std::shared_ptr<SwitchState>& state) {
+  auto intf = state->getInterfaces()->getInterfaceIf(intfId);
+  if (!intf) {
+    return {};
+  }
+  std::vector<PortID> ports;
+  switch (intf->getType()) {
+    case cfg::InterfaceType::VLAN: {
+      auto vlanId = intf->getVlanID();
+      auto vlan = state->getVlans()->getVlanIf(vlanId);
+      if (vlan) {
+        for (const auto& memberPort : vlan->getPorts()) {
+          ports.push_back(PortID(memberPort.first));
+        }
+      }
+    } break;
+    case cfg::InterfaceType::SYSTEM_PORT:
+      ports.push_back(getPortID(intf->getSystemPortID().value(), state));
+      break;
+  }
+  return ports;
+}
+
 bool isAnyInterfacePortInLoopbackMode(
     std::shared_ptr<SwitchState> swState,
     const std::shared_ptr<Interface> interface) {
-  auto vlanId = interface->getVlanID();
-  auto vlan = swState->getVlans()->getVlanIf(vlanId);
-  if (vlan) {
-    // walk all ports for the given interface and ensure that there are no
-    // loopbacks configured This is mostly for the agent tests for which we dont
-    // want to flood grat arp when we are in loopback resulting in these pkts
-    // getting looped back forever
-    for (const auto& memberPort : vlan->getPorts()) {
-      auto* port = swState->getPorts()->getPortIf(memberPort.first).get();
-      if (port) {
-        if (port->getLoopbackMode() != cfg::PortLoopbackMode::NONE) {
-          XLOG(DBG2) << "Port: " << port->getName()
-                     << " is in loopback mode for vlanId: " << (int)vlanId;
-          return true;
-        }
-      }
+  // walk all ports for the given interface and ensure that there are no
+  // loopbacks configured This is mostly for the agent tests for which we dont
+  // want to flood grat arp when we are in loopback resulting in these pkts
+  // getting looped back forever
+  for (auto portId : getPortsForInterface(interface->getID(), swState)) {
+    auto port = swState->getPorts()->getPortIf(portId);
+    if (port && port->getLoopbackMode() != cfg::PortLoopbackMode::NONE) {
+      XLOG(DBG2) << "Port: " << port->getName()
+                 << " in interface: " << interface->getID()
+                 << " is in loopback mode";
+      return true;
     }
   }
   return false;
@@ -258,7 +380,42 @@ StopWatch::~StopWatch() {
     time[*name_] = durationMillseconds;
     std::cout << time << std::endl;
   } else {
-    XLOG(INFO) << *name_ << " : " << durationMillseconds;
+    XLOG(DBG2) << *name_ << " : " << durationMillseconds;
+  }
+}
+
+void enableExactMatch(std::string& yamlCfg) {
+  std::string globalSt("global:\n");
+  std::string emSt("fpem_mem_entries:");
+  std::string emWidthSt("fpem_mem_entries_width:");
+  std::size_t glPos = yamlCfg.find(globalSt);
+  std::size_t emPos = yamlCfg.find(emSt);
+  std::size_t emWidthPos = yamlCfg.find(emWidthSt);
+  static const re2::RE2 emPattern(
+      "(fpem_mem_entries: )(0x[0-9a-fA-F]+|[0-9]+)(\n)");
+  static const re2::RE2 emWidthPattern(
+      "(fpem_mem_entries_width: )(0x[0-9a-fA-F]+|[0-9]+)(\n)");
+  if (glPos != std::string::npos) {
+    if (emPos == std::string::npos && emWidthPos == std::string::npos) {
+      yamlCfg.replace(
+          glPos,
+          globalSt.length(),
+          "global:\n      fpem_mem_entries_width: 1\n      fpem_mem_entries: 65536\n");
+    } else if (emPos != std::string::npos && emWidthPos == std::string::npos) {
+      yamlCfg.replace(
+          glPos,
+          globalSt.length(),
+          "global:\n      fpem_mem_entries_width: 1\n");
+      re2::RE2::Replace(&yamlCfg, emPattern, "fpem_mem_entries: 65536\n");
+    } else {
+      if (emPos != std::string::npos) {
+        re2::RE2::Replace(&yamlCfg, emPattern, "fpem_mem_entries: 65536\n");
+      }
+      if (emWidthPos != std::string::npos) {
+        re2::RE2::Replace(
+            &yamlCfg, emWidthPattern, "fpem_mem_entries_width: 1\n");
+      }
+    }
   }
 }
 } // namespace facebook::fboss

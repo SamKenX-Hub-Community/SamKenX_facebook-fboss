@@ -10,6 +10,7 @@
 
 #include "fboss/agent/hw/sai/switch/SaiSwitch.h"
 
+#include "fboss/agent/FabricReachabilityManager.h"
 #include "fboss/agent/hw/HwResourceStatsPublisher.h"
 #include "fboss/agent/hw/sai/switch/ConcurrentIndices.h"
 #include "fboss/agent/hw/sai/switch/SaiAclTableManager.h"
@@ -18,6 +19,7 @@
 #include "fboss/agent/hw/sai/switch/SaiHostifManager.h"
 #include "fboss/agent/hw/sai/switch/SaiLagManager.h"
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
+#include "fboss/agent/hw/sai/switch/SaiSystemPortManager.h"
 
 namespace facebook::fboss {
 void SaiSwitch::updateStatsImpl(SwitchStats* /* switchStats */) {
@@ -35,8 +37,24 @@ void SaiSwitch::updateStatsImpl(SwitchStats* /* switchStats */) {
       std::lock_guard<std::mutex> locked(saiSwitchMutex_);
       managerTable_->portManager().updateStats(
           portsIter->second, updateWatermarks);
+      auto endpointOpt =
+          managerTable_->portManager().getFabricReachabilityForPort(
+              portsIter->second);
+      if (endpointOpt.has_value()) {
+        fabricReachabilityManager_->processReachabilityInfoForPort(
+            portsIter->second, *endpointOpt);
+      }
     }
     ++portsIter;
+  }
+  auto sysPortsIter = concurrentIndices_->sysPortIds.begin();
+  while (sysPortsIter != concurrentIndices_->sysPortIds.end()) {
+    {
+      std::lock_guard<std::mutex> locked(saiSwitchMutex_);
+      managerTable_->systemPortManager().updateStats(
+          sysPortsIter->second, updateWatermarks);
+    }
+    ++sysPortsIter;
   }
   auto lagsIter = concurrentIndices_->aggregatePortIds.begin();
   while (lagsIter != concurrentIndices_->aggregatePortIds.end()) {
@@ -46,10 +64,11 @@ void SaiSwitch::updateStatsImpl(SwitchStats* /* switchStats */) {
     }
     ++lagsIter;
   }
-  {
+  if (platform_->getAsic()->isSupported(HwAsic::Feature::CPU_PORT)) {
     std::lock_guard<std::mutex> locked(saiSwitchMutex_);
     managerTable_->hostifManager().updateStats(updateWatermarks);
   }
+
   {
     std::lock_guard<std::mutex> locked(saiSwitchMutex_);
     managerTable_->bufferManager().updateStats();

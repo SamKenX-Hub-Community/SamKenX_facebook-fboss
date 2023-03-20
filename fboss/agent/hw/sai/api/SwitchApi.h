@@ -406,6 +406,27 @@ struct SaiSwitchTraits {
     };
     using HwEccErrorInitiate =
         SaiExtensionAttribute<sai_uint16_t, HwEccErrorInitiateWrapper>;
+    struct AttributeDllPathWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using DllPath =
+        SaiExtensionAttribute<std::vector<int8_t>, AttributeDllPathWrapper>;
+    struct AttributeRestartIssuWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using RestartIssu =
+        SaiExtensionAttribute<bool, AttributeRestartIssuWrapper>;
+    struct AttributeForceTrafficOverFabricWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using ForceTrafficOverFabric =
+        SaiExtensionAttribute<bool, AttributeForceTrafficOverFabricWrapper>;
+    struct AttributeWarmBootTargetVersionWrapper {
+      std::optional<sai_attr_id_t> operator()();
+    };
+    using WarmBootTargetVersion = SaiExtensionAttribute<
+        std::vector<sai_int8_t>,
+        AttributeWarmBootTargetVersionWrapper>;
   };
   using AdapterKey = SwitchSaiId;
   using AdapterHostKey = std::monostate;
@@ -450,7 +471,9 @@ struct SaiSwitchTraits {
       std::optional<Attributes::MaxEcmpMemberCount>,
       std::optional<Attributes::EcmpMemberCount>
 #endif
-      >;
+      ,
+      std::optional<Attributes::DllPath>,
+      std::optional<Attributes::RestartIssu>>;
 };
 
 SAI_ATTRIBUTE_NAME(Switch, InitSwitch)
@@ -534,6 +557,10 @@ SAI_ATTRIBUTE_NAME(Switch, HwEccErrorInitiate)
 SAI_ATTRIBUTE_NAME(Switch, MaxEcmpMemberCount)
 SAI_ATTRIBUTE_NAME(Switch, EcmpMemberCount)
 #endif
+SAI_ATTRIBUTE_NAME(Switch, DllPath)
+SAI_ATTRIBUTE_NAME(Switch, RestartIssu)
+SAI_ATTRIBUTE_NAME(Switch, ForceTrafficOverFabric)
+SAI_ATTRIBUTE_NAME(Switch, WarmBootTargetVersion)
 
 class SwitchApi : public SaiApi<SwitchApi> {
  public:

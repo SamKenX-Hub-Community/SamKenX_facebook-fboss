@@ -27,7 +27,8 @@ extern "C" {
 namespace {
 using namespace facebook::fboss;
 constexpr sai_uint8_t kSectagOffset = 12;
-constexpr sai_int32_t kReplayProtectionWindow = 100;
+// Vendor recommended replay protection window size for 400Gbps link
+constexpr sai_int32_t kReplayProtectionWindow = 4096;
 
 static std::array<uint8_t, 12> kDefaultSaltValue{
     0x9d,
@@ -51,9 +52,13 @@ constexpr int kMacsecAclPriority = 3;
 constexpr int kMacsecLldpAclPriority = 2;
 constexpr int kMacsecMkaAclPriority = 1;
 
+std::shared_ptr<AclEntry> makeAclEntry(int priority, const std::string& name) {
+  return std::make_shared<AclEntry>(priority, name);
+}
+
 const std::shared_ptr<AclEntry> createMacsecAclEntry(
     int priority,
-    std::string entryName,
+    const std::string& entryName,
     MacsecFlowSaiId flowId,
     std::optional<folly::MacAddress> mac,
     std::optional<cfg::EtherType> etherType) {
@@ -77,7 +82,7 @@ const std::shared_ptr<AclEntry> createMacsecAclEntry(
 
 const std::shared_ptr<AclEntry> createMacsecControlAclEntry(
     int priority,
-    std::string entryName,
+    const std::string& entryName,
     std::optional<folly::MacAddress> mac,
     std::optional<cfg::EtherType> etherType) {
   auto entry = std::make_shared<AclEntry>(priority, entryName);
@@ -101,7 +106,7 @@ const std::shared_ptr<AclEntry> createMacsecControlAclEntry(
 
 const std::shared_ptr<AclEntry> createMacsecRxDefaultAclEntry(
     int priority,
-    std::string entryName,
+    const std::string& entryName,
     cfg::MacsecFlowPacketAction action) {
   auto entry = std::make_shared<AclEntry>(priority, entryName);
 
@@ -596,7 +601,7 @@ void SaiMacsecManager::removeMacsecSecureChannel(
   // Remove the SC from secureChannel map
   portHandle->secureChannels.erase(itr);
 
-  XLOG(INFO) << "removed macsec SC for linePort:secureChannelId:direction: "
+  XLOG(DBG2) << "removed macsec SC for linePort:secureChannelId:direction: "
              << linePort << ":" << secureChannelId << ":" << direction;
 }
 
@@ -666,6 +671,7 @@ MacsecSASaiId SaiMacsecManager::addMacsecSecureAssoc(
   auto saiObj = store.setObject(key, attributes);
 
   scHandle->secureAssocs.emplace(assocNum, std::move(saiObj));
+  scHandle->latestSaAn = assocNum;
   return scHandle->secureAssocs[assocNum]->adapterKey();
 }
 
@@ -926,7 +932,7 @@ void SaiMacsecManager::setMacsecState(
     setupMacsecState(linePort, dropUnencrypted, SAI_MACSEC_DIRECTION_INGRESS);
     setupMacsecState(linePort, dropUnencrypted, SAI_MACSEC_DIRECTION_EGRESS);
   }
-  XLOG(INFO) << "For Port " << linePort << "Basic Macsec state "
+  XLOG(DBG2) << "For Port " << linePort << "Basic Macsec state "
              << (macsecDesired ? "Setup" : "Deletion") << " Successfull";
 }
 
@@ -1024,8 +1030,11 @@ void SaiMacsecManager::setupAclTable(
   std::string aclName = getAclName(linePort, direction);
   auto aclTable = managerTable_->aclTableManager().getAclTableHandle(aclName);
   if (!aclTable) {
-    auto table = std::make_shared<AclTable>(
-        0, aclName); // TODO(saranicholas): set appropriate table priority
+    state::AclTableFields aclTableFields{};
+    aclTableFields.id() = aclName;
+    // TODO(saranicholas): set appropriate table priority
+    aclTableFields.priority() = 0;
+    auto table = std::make_shared<AclTable>(std::move(aclTableFields));
     auto aclTableId = managerTable_->aclTableManager().addAclTable(
         table,
         direction == SAI_MACSEC_DIRECTION_INGRESS
@@ -1106,8 +1115,7 @@ void SaiMacsecManager::setupDropUnencryptedRule(
         (pktAction.getData() == SAI_PACKET_ACTION_DROP && !dropUnencrypted)) {
       // Default data packet action needs to change soo first delete this
       // entry
-      auto aclEntry =
-          std::make_shared<AclEntry>(kMacsecDefaultAclPriority, aclName);
+      auto aclEntry = makeAclEntry(kMacsecDefaultAclPriority, aclName);
       managerTable_->aclTableManager().removeAclEntry(aclEntry, aclName);
       XLOG(DBG2) << "For linePort: " << linePort << ", direction "
                  << (direction == SAI_MACSEC_DIRECTION_INGRESS ? "Ingress"
@@ -1259,7 +1267,10 @@ void SaiMacsecManager::removeAclTable(
 
   if (aclTable) {
     // Finally delete the ACL table
-    auto table = std::make_shared<AclTable>(0, aclTableName);
+    state::AclTableFields aclTableFields{};
+    aclTableFields.priority() = 0;
+    aclTableFields.id() = aclTableName;
+    auto table = std::make_shared<AclTable>(std::move(aclTableFields));
     managerTable_->aclTableManager().removeAclTable(
         table,
         direction == SAI_MACSEC_DIRECTION_INGRESS
@@ -1289,8 +1300,7 @@ void SaiMacsecManager::removeAclControlPacketRules(
     auto aclEntryHandle = managerTable_->aclTableManager().getAclEntryHandle(
         aclTable, kMacsecLldpAclPriority);
     if (aclEntryHandle) {
-      auto aclEntry =
-          std::make_shared<AclEntry>(kMacsecLldpAclPriority, aclTableName);
+      auto aclEntry = makeAclEntry(kMacsecLldpAclPriority, aclTableName);
       managerTable_->aclTableManager().removeAclEntry(aclEntry, aclTableName);
       XLOG(DBG2) << "Removed LLDP ACL entry from ACL table " << aclTableName;
     }
@@ -1299,8 +1309,7 @@ void SaiMacsecManager::removeAclControlPacketRules(
     aclEntryHandle = managerTable_->aclTableManager().getAclEntryHandle(
         aclTable, kMacsecMkaAclPriority);
     if (aclEntryHandle) {
-      auto aclEntry =
-          std::make_shared<AclEntry>(kMacsecMkaAclPriority, aclTableName);
+      auto aclEntry = makeAclEntry(kMacsecMkaAclPriority, aclTableName);
       managerTable_->aclTableManager().removeAclEntry(aclEntry, aclTableName);
       XLOG(DBG2) << "Removed MKA ACL entry from ACL table " << aclTableName;
     }
@@ -1325,8 +1334,7 @@ void SaiMacsecManager::removeDropUnencryptedRule(
     auto aclEntryHandle = managerTable_->aclTableManager().getAclEntryHandle(
         aclTable, kMacsecDefaultAclPriority);
     if (aclEntryHandle) {
-      auto aclEntry =
-          std::make_shared<AclEntry>(kMacsecDefaultAclPriority, aclTableName);
+      auto aclEntry = makeAclEntry(kMacsecDefaultAclPriority, aclTableName);
       managerTable_->aclTableManager().removeAclEntry(aclEntry, aclTableName);
       XLOG(DBG2) << "Removed default packet ACL entry from ACL table "
                  << aclTableName;
@@ -1468,7 +1476,7 @@ void SaiMacsecManager::removeScAcls(
     auto aclEntryHandle = managerTable_->aclTableManager().getAclEntryHandle(
         aclTable, kMacsecAclPriority);
     if (aclEntryHandle) {
-      auto aclEntry = std::make_shared<AclEntry>(kMacsecAclPriority, aclName);
+      auto aclEntry = makeAclEntry(kMacsecAclPriority, aclName);
       managerTable_->aclTableManager().removeAclEntry(aclEntry, aclName);
       XLOG(DBG2) << "removeScAcls: Removed ACL entry from ACL table "
                  << aclName;
@@ -1581,8 +1589,9 @@ void SaiMacsecManager::updateStats(PortID port, HwPortStats& portStats) {
       for (const auto& macsecSa : macsecSc.second->secureAssocs) {
         macsecSa.second->updateStats<SaiMacsecSATraits>();
         mka::MKASecureAssociationId saId;
+        uint8_t assocNum = macsecSa.first;
         saId.sci() = sci;
-        saId.assocNum() = macsecSa.first;
+        saId.assocNum() = assocNum;
 
         // Find saStats for a given sa
         auto findSaStats = [](const std::vector<MacsecSaIdSaStats>& saStats,
@@ -1599,6 +1608,25 @@ void SaiMacsecManager::updateStats(PortID port, HwPortStats& portStats) {
         auto prevSaStats = findSaStats(saStats, saId);
         auto curSaStats = fillSaStats(macsecSa.second->getStats(), direction);
         updateMacsecPortStats(prevSaStats, curSaStats, macsecPortStats);
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 8, 1)
+        // Fill in the Current Packet Number for ingress and egress SA
+        // Roll up these XPN to port level stats. The port level XPN reflects
+        // latest installed SA's XPN
+        auto saHandle = macsecSa.second->adapterKey();
+        auto currXpn = SaiApiTable::getInstance()->macsecApi().getAttribute(
+            MacsecSASaiId(saHandle),
+            SaiMacsecSATraits::Attributes::CurrentXpn());
+        if (direction == SAI_MACSEC_DIRECTION_INGRESS) {
+          curSaStats.inCurrentXpn() = currXpn;
+          if (macsecSc.second->latestSaAn == assocNum) {
+            *macsecPortStats.inCurrentXpn() = currXpn;
+          }
+        } else {
+          curSaStats.outCurrentXpn() = currXpn;
+          *macsecPortStats.outCurrentXpn() = currXpn;
+        }
+#endif
 
         MacsecSaIdSaStats singleSaStats;
         singleSaStats.saId() = saId;

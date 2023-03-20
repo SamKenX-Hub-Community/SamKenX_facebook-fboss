@@ -6,9 +6,9 @@
 #include <list>
 
 #include <folly/IPAddress.h>
+#include <memory>
 #include <optional>
 #include "fboss/agent/AddressUtil.h"
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_config_constants.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/AclEntry.h"
@@ -136,109 +136,11 @@ struct MirrorTunnel {
   static MirrorTunnel fromFollyDynamic(const folly::dynamic& json);
 };
 
-struct MirrorFields : public ThriftyFields<MirrorFields, state::MirrorFields> {
-  MirrorFields(
-      const std::string& name,
-      const std::optional<PortID>& egressPort,
-      const std::optional<folly::IPAddress>& destinationIp,
-      const std::optional<folly::IPAddress>& srcIp = std::nullopt,
-      const std::optional<TunnelUdpPorts>& udpPorts = std::nullopt,
-      const uint8_t& dscp = cfg::switch_config_constants::DEFAULT_MIRROR_DSCP_,
-      const bool truncate = false) {
-    auto& data = writableData();
-    data.name() = name;
-    if (egressPort) {
-      data.egressPort() = *egressPort;
-      data.configHasEgressPort() = true;
-    }
-    if (destinationIp) {
-      data.destinationIp() = network::toBinaryAddress(*destinationIp);
-    }
-    if (srcIp) {
-      data.srcIp() = network::toBinaryAddress(*srcIp);
-    }
-    if (udpPorts) {
-      data.udpSrcPort() = udpPorts->udpSrcPort;
-      data.udpDstPort() = udpPorts->udpDstPort;
-    }
-    data.dscp() = dscp;
-    data.truncate() = truncate;
-  }
+USE_THRIFT_COW(Mirror);
 
-  explicit MirrorFields(const state::MirrorFields& data) {
-    writableData() = data;
-  }
-
-  bool operator==(const MirrorFields& other) const {
-    return (
-        name() == other.name() && egressPort() == other.egressPort() &&
-        destinationIp() == other.destinationIp() && srcIp() == other.srcIp() &&
-        udpPorts() == other.udpPorts() && dscp() == other.dscp() &&
-        truncate() == other.truncate() &&
-        resolvedTunnel() == other.resolvedTunnel() &&
-        configHasEgressPort() == other.configHasEgressPort());
-  }
-
-  template <typename Fn>
-  void forEachChild(Fn /* unused */) {}
-
-  std::string name() const {
-    return *data().name();
-  }
-  std::optional<PortID> egressPort() const {
-    if (auto port = data().egressPort()) {
-      return PortID(*port);
-    }
-    return std::nullopt;
-  }
-  std::optional<folly::IPAddress> destinationIp() const {
-    if (auto ip = data().destinationIp()) {
-      return network::toIPAddress(*ip);
-    }
-    return std::nullopt;
-  }
-  std::optional<folly::IPAddress> srcIp() const {
-    if (auto ip = data().srcIp()) {
-      return network::toIPAddress(*ip);
-    }
-    return std::nullopt;
-  }
-  std::optional<TunnelUdpPorts> udpPorts() const {
-    auto srcL4Port = data().udpSrcPort();
-    auto dstL4Port = data().udpDstPort();
-    if (srcL4Port && dstL4Port) {
-      return TunnelUdpPorts(*srcL4Port, *dstL4Port);
-    }
-    return std::nullopt;
-  }
-  uint8_t dscp() const {
-    return *data().dscp();
-  }
-  bool truncate() const {
-    return *data().truncate();
-  }
-  std::optional<MirrorTunnel> resolvedTunnel() const {
-    auto tunnel = data().tunnel();
-    if (!tunnel) {
-      return std::nullopt;
-    }
-    return MirrorTunnel::fromThrift(*tunnel);
-  }
-  bool configHasEgressPort() const {
-    return *data().configHasEgressPort();
-  }
-
-  folly::dynamic toFollyDynamicLegacy() const;
-  static MirrorFields fromFollyDynamicLegacy(const folly::dynamic& dyn);
-  state::MirrorFields toThrift() const override;
-  static MirrorFields fromThrift(state::MirrorFields const& fields);
-  static folly::dynamic migrateToThrifty(folly::dynamic const& dyn);
-  static void migrateFromThrifty(folly::dynamic& dyn);
-};
-
-class Mirror : public ThriftyBaseT<state::MirrorFields, Mirror, MirrorFields> {
+class Mirror : public ThriftStructNode<Mirror, state::MirrorFields> {
  public:
-  enum Type { SPAN = 1, ERSPAN = 2, SFLOW = 3 };
+  using BaseT = ThriftStructNode<Mirror, state::MirrorFields>;
   Mirror(
       std::string name,
       std::optional<PortID> egressPort,
@@ -247,6 +149,7 @@ class Mirror : public ThriftyBaseT<state::MirrorFields, Mirror, MirrorFields> {
       std::optional<TunnelUdpPorts> udpPorts = std::nullopt,
       uint8_t dscp = cfg::switch_config_constants::DEFAULT_MIRROR_DSCP_,
       bool truncate = false);
+  enum Type { SPAN = 1, ERSPAN = 2, SFLOW = 3 };
   std::string getID() const;
   std::optional<PortID> getEgressPort() const;
   std::optional<folly::IPAddress> getDestinationIp() const;
@@ -261,19 +164,15 @@ class Mirror : public ThriftyBaseT<state::MirrorFields, Mirror, MirrorFields> {
   bool configHasEgressPort() const;
   bool isResolved() const;
 
-  static std::shared_ptr<Mirror> fromFollyDynamicLegacy(
-      const folly::dynamic& json);
-  folly::dynamic toFollyDynamicLegacy() const;
-
-  bool operator==(const Mirror& rhs) const;
-  bool operator!=(const Mirror& rhs) const;
-
   Type type() const;
+
+  // TODO(pshaikh): make this private
+  void markResolved();
 
  private:
   // Inherit the constructors required for clone()
 
-  using ThriftyBaseT::ThriftyBaseT;
+  using BaseT::BaseT;
   friend class CloneAllocator;
 };
 

@@ -10,9 +10,11 @@
 
 // #include <folly/IPAddress.h>
 #include "fboss/agent/gen-cpp2/switch_config_types.h"
+#include "fboss/agent/state/AclTableGroupMap.h"
 #include "fboss/agent/state/AggregatePortMap.h"
 #include "fboss/agent/state/ArpResponseTable.h"
 #include "fboss/agent/state/BufferPoolConfig.h"
+#include "fboss/agent/state/InterfaceMap.h"
 #include "fboss/agent/state/PortDescriptor.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/state/Thrifty.h"
@@ -29,10 +31,6 @@ namespace {
 void verifySwitchStateSerialization(const SwitchState& state) {
   auto stateBack = SwitchState::fromThrift(state.toThrift());
   EXPECT_EQ(state, *stateBack);
-  stateBack = SwitchState::fromFollyDynamic(state.toFollyDynamic());
-  EXPECT_EQ(state, *stateBack);
-  // verify dynamic is still json serializable
-  EXPECT_NO_THROW(folly::toJson(state.toFollyDynamic()));
 }
 } // namespace
 
@@ -42,12 +40,19 @@ TEST(ThriftySwitchState, BasicTest) {
 }
 
 TEST(ThriftySwitchState, PortMap) {
-  auto port1 = std::make_shared<Port>(PortID(1), "eth2/1/1");
-  auto port2 = std::make_shared<Port>(PortID(2), "eth2/2/1");
+  state::PortFields portFields1;
+  portFields1.portId() = PortID(1);
+  portFields1.portName() = "eth2/1/1";
+  auto port1 = std::make_shared<Port>(std::move(portFields1));
+  state::PortFields portFields2;
+  portFields2.portId() = PortID(2);
+  portFields2.portName() = "eth2/2/1";
+  auto port2 = std::make_shared<Port>(std::move(portFields2));
+
   auto portMap = std::make_shared<PortMap>();
   portMap->addPort(port1);
   portMap->addPort(port2);
-  validateThriftyMigration(*portMap);
+  validateThriftMapMapSerialization(*portMap);
 
   auto state = SwitchState();
   state.resetPorts(portMap);
@@ -55,8 +60,8 @@ TEST(ThriftySwitchState, PortMap) {
 }
 
 TEST(ThriftySwitchState, VlanMap) {
-  auto vlan1 = std::make_shared<Vlan>(VlanID(1), "vlan1");
-  auto vlan2 = std::make_shared<Vlan>(VlanID(2), "vlan2");
+  auto vlan1 = std::make_shared<Vlan>(VlanID(1), std::string("vlan1"));
+  auto vlan2 = std::make_shared<Vlan>(VlanID(2), std::string("vlan2"));
 
   vlan1->setDhcpV4Relay(IPAddressV4("1.2.3.4"));
   vlan1->setDhcpV4RelayOverrides(
@@ -95,7 +100,7 @@ TEST(ThriftySwitchState, VlanMap) {
   auto macEntry = std::make_shared<MacEntry>(
       MacAddress("02:00:00:00:00:08"),
       PortDescriptor(PortID(4)),
-      cfg::AclLookupClass::CLASS_DROP);
+      std::optional<cfg::AclLookupClass>(cfg::AclLookupClass::CLASS_DROP));
   macTable->addEntry(macEntry);
 
   vlan2->setDhcpV6Relay(IPAddressV6("2401:db00:21:70cb:face:0:96:0"));
@@ -107,16 +112,14 @@ TEST(ThriftySwitchState, VlanMap) {
   vlanMap->addVlan(vlan1);
   vlanMap->addVlan(vlan2);
 
-  validateThriftyMigration(*vlanMap);
-
   auto state = SwitchState();
   state.resetVlans(vlanMap);
   verifySwitchStateSerialization(state);
 }
 
 TEST(ThriftySwitchState, AclMap) {
-  auto acl1 = std::make_shared<AclEntry>(1, "acl1");
-  auto acl2 = std::make_shared<AclEntry>(2, "acl2");
+  auto acl1 = std::make_shared<AclEntry>(1, std::string("acl1"));
+  auto acl2 = std::make_shared<AclEntry>(2, std::string("acl2"));
 
   auto aclMap = std::make_shared<AclMap>();
   aclMap->addEntry(acl1);
@@ -134,8 +137,6 @@ TEST(ThriftySwitchState, TransceiverMap) {
   auto transceiverMap = std::make_shared<TransceiverMap>();
   transceiverMap->addTransceiver(transceiver1);
   transceiverMap->addTransceiver(transceiver2);
-
-  validateThriftyMigration(*transceiverMap);
 
   auto state = SwitchState();
   state.resetTransceivers(transceiverMap);
@@ -156,7 +157,6 @@ TEST(ThriftySwitchState, BufferPoolCfgMap) {
 
   auto state = SwitchState();
   state.resetBufferPoolCfgs(map);
-  verifySwitchStateSerialization(state);
 }
 
 TEST(ThriftySwitchState, QosPolicyMap) {
@@ -175,8 +175,10 @@ TEST(ThriftySwitchState, QosPolicyMap) {
 }
 
 TEST(ThriftySwitchState, SflowCollectorMap) {
-  auto sflowCollector1 = std::make_shared<SflowCollector>("1.2.3.4", 8080);
-  auto sflowCollector2 = std::make_shared<SflowCollector>("2::3", 9090);
+  auto sflowCollector1 = std::make_shared<SflowCollector>(
+      std::string("1.2.3.4"), static_cast<uint16_t>(8080));
+  auto sflowCollector2 = std::make_shared<SflowCollector>(
+      std::string("2::3"), static_cast<uint16_t>(9090));
 
   auto map = std::make_shared<SflowCollectorMap>();
   map->addNode(sflowCollector1);
@@ -188,7 +190,7 @@ TEST(ThriftySwitchState, SflowCollectorMap) {
 }
 
 TEST(ThriftySwitchState, AggregatePortMap) {
-  MockPlatform platform;
+  auto platform = createMockPlatform();
   auto startState = testStateA();
   std::vector<int> memberPort1 = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
   std::vector<int> memberPort2 = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
@@ -213,12 +215,87 @@ TEST(ThriftySwitchState, AggregatePortMap) {
         memberPort2[i];
   }
 
-  auto endState = publishAndApplyConfig(startState, &config, &platform);
+  auto endState = publishAndApplyConfig(startState, &config, platform.get());
   ASSERT_NE(nullptr, endState);
   auto aggPorts = endState->getAggregatePorts();
 
   auto state = SwitchState();
   state.resetAggregatePorts(aggPorts);
+  verifySwitchStateSerialization(state);
+}
+
+TEST(ThriftySwitchState, AclTableGroupMap) {
+  MockPlatform platform;
+
+  const std::string kTable1 = "table1";
+  const std::string kTable2 = "table2";
+  const std::string kAcl1a = "acl1a";
+  const std::string kAcl1b = "acl1b";
+  const std::string kAcl2a = "acl2a";
+  const std::string kGroup1 = "group1";
+  int priority1 = AclTable::kDataplaneAclMaxPriority;
+  int priority2 = AclTable::kDataplaneAclMaxPriority;
+  const cfg::AclStage kAclStage1 = cfg::AclStage::INGRESS;
+
+  auto entry1a = std::make_shared<AclEntry>(priority1++, kAcl1a);
+  entry1a->setActionType(cfg::AclActionType::DENY);
+  auto entry1b = std::make_shared<AclEntry>(priority1++, kAcl1b);
+  entry1b->setActionType(cfg::AclActionType::DENY);
+  auto map1 = std::make_shared<AclMap>();
+  map1->addEntry(entry1a);
+  map1->addEntry(entry1b);
+  auto table1 = std::make_shared<AclTable>(1, kTable1);
+  table1->setAclMap(map1);
+
+  auto entry2a = std::make_shared<AclEntry>(priority2++, kAcl2a);
+  entry2a->setActionType(cfg::AclActionType::DENY);
+  auto map2 = std::make_shared<AclMap>();
+  map2->addEntry(entry2a);
+  auto table2 = std::make_shared<AclTable>(2, kTable2);
+  table2->setAclMap(map2);
+
+  auto tableMap = std::make_shared<AclTableMap>();
+  tableMap->addTable(table1);
+  tableMap->addTable(table2);
+  auto tableGroup = std::make_shared<AclTableGroup>(kAclStage1);
+  tableGroup->setAclTableMap(tableMap);
+  tableGroup->setName(kGroup1);
+
+  auto tableGroups = std::make_shared<AclTableGroupMap>();
+  tableGroups->addAclTableGroup(tableGroup);
+
+  auto state = SwitchState();
+  state.resetAclTableGroups(tableGroups);
+  verifySwitchStateSerialization(state);
+}
+
+TEST(ThriftySwitchState, InterfaceMap) {
+  auto platform = createMockPlatform();
+  auto startState = testStateA();
+
+  auto config = testConfigA();
+  config.vlans()->resize(2);
+  *config.vlans()[0].id() = 1;
+  config.vlans()[0].intfID() = 1;
+
+  *config.vlans()[1].id() = 55;
+  config.vlans()[1].intfID() = 55;
+
+  config.interfaces()->resize(2);
+  *config.interfaces()[0].intfID() = 1;
+  *config.interfaces()[0].vlanID() = 1;
+  config.interfaces()[0].mac() = "00:00:00:00:00:11";
+
+  *config.interfaces()[1].intfID() = 55;
+  *config.interfaces()[1].vlanID() = 55;
+  config.interfaces()[1].mac() = "00:00:00:00:00:55";
+
+  auto endState = publishAndApplyConfig(startState, &config, platform.get());
+  ASSERT_NE(nullptr, endState);
+  auto interfaces = endState->getInterfaces();
+
+  auto state = SwitchState();
+  state.resetIntfs(interfaces);
   verifySwitchStateSerialization(state);
 }
 
@@ -242,21 +319,4 @@ TEST(ThriftySwitchState, IpAddressConversion) {
     EXPECT_EQ(ip_0_dynamic, ip_1_dynamic);
     EXPECT_EQ(addr_0_dynamic, addr_1_dynamic);
   }
-}
-
-TEST(ThriftySwitchState, ExtraFields) {
-  SwitchStateFields fields{};
-  fields.defaultVlan = 0xfffe;
-  fields.arpTimeout = std::chrono::seconds(100);
-  fields.ndpTimeout = std::chrono::seconds(100);
-  fields.arpAgerInterval = std::chrono::seconds(100);
-  fields.maxNeighborProbes = 100;
-  fields.staleEntryInterval = std::chrono::seconds(100);
-  fields.dhcpV4RelaySrc = folly::IPAddressV4("101.10.1.1");
-  fields.dhcpV6RelaySrc = folly::IPAddressV6("101:10::1:1");
-  fields.dhcpV4ReplySrc = folly::IPAddressV4("101.10.1.1");
-  fields.dhcpV6ReplySrc = folly::IPAddressV6("101:10::1:1");
-  fields.pfcWatchdogRecoveryAction = cfg::PfcWatchdogRecoveryAction::DROP;
-
-  EXPECT_EQ(fields, SwitchStateFields::fromThrift(fields.toThrift()));
 }

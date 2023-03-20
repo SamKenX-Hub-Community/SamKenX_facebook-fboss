@@ -56,6 +56,24 @@ std::ostream& operator<<(std::ostream& os, PortLedExternalState lfs) {
   return os;
 }
 
+std::optional<int> PlatformPort::getAttachedCoreId() const {
+  const auto& mapping = getPlatformPortEntry().mapping();
+  std::optional<int> coreId;
+  if (mapping->attachedCoreId()) {
+    coreId = *mapping->attachedCoreId();
+  }
+  return coreId;
+}
+
+std::optional<int> PlatformPort::getCorePortIndex() const {
+  const auto& mapping = getPlatformPortEntry().mapping();
+  std::optional<int> corePortIndex;
+  if (mapping->attachedCorePortIndex()) {
+    corePortIndex = *mapping->attachedCorePortIndex();
+  }
+  return corePortIndex;
+}
+
 const cfg::PlatformPortEntry& PlatformPort::getPlatformPortEntry() const {
   const auto& platformPorts = platform_->getPlatformPorts();
   if (auto itPlatformPort = platformPorts.find(id_);
@@ -161,7 +179,7 @@ std::optional<cfg::PortProfileID> PlatformPort::getProfileIDBySpeedIf(
           apache::thrift::util::enumNameSafe(profileID));
     }
   }
-  XLOG(WARN) << "Can't find supported profile for port=" << getPortID()
+  XLOG(DBG2) << "Can't find supported profile for port=" << getPortID()
              << ", speed=" << apache::thrift::util::enumNameSafe(speed);
   return std::nullopt;
 }
@@ -257,6 +275,10 @@ std::vector<phy::PinID> PlatformPort::getTransceiverLanes(
     std::optional<cfg::PortProfileID> profileID) const {
   return utility::getTransceiverLanes(
       getPlatformPortEntry(), getPlatform()->getDataPlanePhyChips(), profileID);
+}
+
+cfg::PortType PlatformPort::getPortType() const {
+  return *getPlatformPortEntry().mapping()->portType();
 }
 
 namespace {

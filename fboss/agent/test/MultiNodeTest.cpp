@@ -16,7 +16,6 @@
 #include "fboss/agent/AgentConfig.h"
 #include "fboss/agent/SwSwitch.h"
 #include "fboss/agent/hw/test/ConfigFactory.h"
-#include "fboss/agent/platforms/wedge/WedgePlatformInit.h"
 #include "fboss/agent/state/Port.h"
 #include "fboss/agent/state/SwitchState.h"
 #include "fboss/agent/test/MultiNodeTest.h"
@@ -42,21 +41,27 @@ namespace facebook::fboss {
 // and sw configs from test utility and set config flag to
 // point to the test config
 void MultiNodeTest::setupConfigFlag() {
-  cfg::AgentConfig testConfig;
-  utility::setPortToDefaultProfileIDMap(
-      std::make_shared<PortMap>(), platform());
-  parseTestPorts(FLAGS_multiNodeTestPorts);
-  *testConfig.sw() = initialConfig();
   const auto& baseConfig = platform()->config();
-  *testConfig.platform() = *baseConfig->thrift.platform();
-  auto newcfg = AgentConfig(
-      testConfig,
-      apache::thrift::SimpleJSONSerializer::serialize<std::string>(testConfig));
+
+  // Fill in PortMap from baseConfig
+  auto pMap = std::make_shared<PortMap>();
+  const auto& swConfig = *baseConfig->thrift.sw();
+  for (const auto& portCfg : *swConfig.ports()) {
+    state::PortFields portFields;
+    portFields.portId() = *portCfg.logicalID();
+    portFields.portName() = portCfg.name().value_or({});
+    auto port = std::make_shared<Port>(portFields);
+    port->setSpeed(*portCfg.speed());
+    port->setProfileId(*portCfg.profileID());
+    pMap->addPort(port);
+  }
+  utility::setPortToDefaultProfileIDMap(pMap, platform());
+  parseTestPorts(FLAGS_multiNodeTestPorts);
   auto testConfigDir = platform()->getPersistentStateDir() + "/multinode_test/";
-  auto newCfgFile = testConfigDir + "/agent_multinode_test.conf";
-  utilCreateDir(testConfigDir);
-  newcfg.dumpConfig(newCfgFile);
-  FLAGS_config = newCfgFile;
+  auto newCfgFile = "agent_multinode_test.conf";
+
+  setupConfigFile(initialConfig(), testConfigDir, newCfgFile);
+
   // reload config so that test config is loaded
   platform()->reloadConfig();
 }
@@ -152,7 +157,7 @@ std::map<PortID, PortID> MultiNodeTest::localToRemotePort() const {
       }
       return localToRemote.size() == testPorts().size();
     } catch (const std::exception& ex) {
-      XLOG(INFO) << "Failed to get nbrs: " << ex.what();
+      XLOG(DBG2) << "Failed to get nbrs: " << ex.what();
       return false;
     }
   };

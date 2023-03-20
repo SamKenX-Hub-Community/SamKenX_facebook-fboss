@@ -89,7 +89,8 @@ TEST_F(SffTest, cwdm4TransceiverInfoTest) {
       {"Tx_Fault", {0, 0, 1, 1}},
       {"Tx_AdaptFault", {1, 1, 0, 1}},
   };
-  tests.verifyMediaLaneSignals(expectedMediaSignals, xcvr->numMediaLanes());
+  tests.verifyLaneSignals(
+      expectedMediaSignals, xcvr->numHostLanes(), xcvr->numMediaLanes());
 
   std::map<std::string, std::vector<bool>> expectedMediaLaneSettings = {
       {"TxDisable", {0, 1, 1, 1}},
@@ -363,6 +364,7 @@ TEST_F(SfpTest, sfp10GTransceiverInfoTest) {
       {"Rx_Los", {1}},
       {"Tx_Fault", {1}},
   };
+  // Only check media signals, we don't have any host signals on sfp10g
   tests.verifyMediaLaneSignals(expectedMediaSignals, xcvr->numMediaLanes());
 
   std::map<std::string, std::vector<bool>> expectedMediaLaneSettings = {
@@ -370,6 +372,37 @@ TEST_F(SfpTest, sfp10GTransceiverInfoTest) {
   };
   tests.verifyMediaLaneSettings(
       expectedMediaLaneSettings, xcvr->numMediaLanes());
+  tests.verifyVendorName("FACETEST");
+}
+
+TEST_F(SffTest, 200GCr4TransceiverInfoTest) {
+  auto xcvrID = TransceiverID(1);
+  auto xcvr = overrideSffModule<Sff200GCr4Transceiver>(xcvrID);
+
+  // Verify SffModule logic
+  EXPECT_EQ(xcvr->numHostLanes(), 4);
+  EXPECT_EQ(xcvr->numMediaLanes(), 4);
+
+  // Verify getTransceiverInfo() result
+  const auto& info = xcvr->getTransceiverInfo();
+  EXPECT_EQ(
+      *info.extendedSpecificationComplianceCode(),
+      ExtendedSpecComplianceCode::CR_50G_CHANNELS);
+  EXPECT_EQ(info.moduleMediaInterface(), MediaInterfaceCode::CR4_200G);
+  for (auto& media : *info.settings()->mediaInterface()) {
+    EXPECT_EQ(
+        media.media()->get_extendedSpecificationComplianceCode(),
+        ExtendedSpecComplianceCode::CR_50G_CHANNELS);
+    EXPECT_EQ(media.code(), MediaInterfaceCode::CR4_200G);
+  }
+
+  utility::HwTransceiverUtils::verifyDiagsCapability(
+      info,
+      transceiverManager_->getDiagsCapability(xcvrID),
+      false /* skipCheckingIndividualCapability */);
+
+  // Using TransceiverTestsHelper to verify TransceiverInfo
+  TransceiverTestsHelper tests(info);
   tests.verifyVendorName("FACETEST");
 }
 

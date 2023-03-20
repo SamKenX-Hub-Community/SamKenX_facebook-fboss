@@ -18,6 +18,8 @@
 namespace facebook::fboss {
 
 struct CmdSetInterfacePrbsStateTraits : public BaseCommandTraits {
+  static constexpr utils::ObjectArgTypeId ObjectArgTypeId =
+      utils::ObjectArgTypeId::OBJECT_ARG_TYPE_PRBS_STATE;
   using ParentCmd = CmdSetInterfacePrbs;
   using ObjectArgType = utils::PrbsState;
   using RetType = std::string;
@@ -53,12 +55,12 @@ class CmdSetInterfacePrbsState : public CmdHandler<
   void setPrbsState(
       const HostInfo& hostInfo,
       const std::string& interfaceName,
-      const phy::PrbsComponent& component,
+      const phy::PortComponent& component,
       const ObjectArgType& state) {
-    if (component == phy::PrbsComponent::TRANSCEIVER_LINE ||
-        component == phy::PrbsComponent::TRANSCEIVER_SYSTEM ||
-        component == phy::PrbsComponent::GB_LINE ||
-        component == phy::PrbsComponent::GB_SYSTEM) {
+    if (component == phy::PortComponent::TRANSCEIVER_LINE ||
+        component == phy::PortComponent::TRANSCEIVER_SYSTEM ||
+        component == phy::PortComponent::GB_LINE ||
+        component == phy::PortComponent::GB_SYSTEM) {
       auto qsfpClient = utils::createClient<QsfpServiceAsyncClient>(hostInfo);
       prbs::InterfacePrbsState prbsState;
       if (state.enabled) {
@@ -71,7 +73,7 @@ class CmdSetInterfacePrbsState : public CmdHandler<
         prbsState.checkerEnabled() = *state.checker;
       }
       qsfpClient->sync_setInterfacePrbs(interfaceName, component, prbsState);
-    } else if (component == phy::PrbsComponent::ASIC) {
+    } else if (component == phy::PortComponent::ASIC) {
       // Agent uses the setPortPrbs API currently, so handle it differently
       auto agentClient =
           utils::createClient<facebook::fboss::FbossCtrlAsyncClient>(hostInfo);

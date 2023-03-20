@@ -88,7 +88,7 @@ class HwMacLearningTest : public HwLinkStateDependentTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
   }
 
   static MacAddress kSourceMac() {
@@ -371,7 +371,7 @@ class HwMacLearningTest : public HwLinkStateDependentTest {
     auto state = getProgrammedState();
     auto vlan = state->getVlans()->getVlanIf(vlanID);
     auto* macTable = vlan->getMacTable().get();
-    return (shouldExist == (macTable->getNodeIf(mac) != nullptr));
+    return (shouldExist == (macTable->getMacIf(mac) != nullptr));
   }
   bool isInL2Table(
       const PortDescriptor& portDescr,
@@ -391,7 +391,7 @@ class HwMacSwLearningModeTest : public HwMacLearningTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
     cfg.switchSettings()->l2LearningMode() = cfg::L2LearningMode::SOFTWARE;
     return cfg;
   }
@@ -498,11 +498,14 @@ class HwMacLearningStaticEntriesTest : public HwMacLearningTest {
     auto vlan = newState->getVlans()->getVlanIf(kVlanID()).get();
     auto macTable = vlan->getMacTable().get();
     macTable = macTable->modify(&vlan, &newState);
-    if (macTable->getNodeIf(kSourceMac())) {
+    if (macTable->getMacIf(kSourceMac())) {
       macTable->updateEntry(kSourceMac(), physPortDescr(), std::nullopt, type);
     } else {
       auto macEntry = std::make_shared<MacEntry>(
-          kSourceMac(), physPortDescr(), std::nullopt, type);
+          kSourceMac(),
+          physPortDescr(),
+          std::optional<cfg::AclLookupClass>(std::nullopt),
+          type);
       macTable->addEntry(macEntry);
     }
     applyNewState(newState);
@@ -550,7 +553,8 @@ TEST_F(HwMacLearningStaticEntriesTest, VerifyStaticDynamicTransformations) {
 class HwMacLearningAndMyStationInteractionTest : public HwMacLearningTest {
  public:
   cfg::SwitchConfig initialConfig() const override {
-    return utility::onePortPerVlanConfig(getHwSwitch(), masterLogicalPortIds());
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
   }
   /*
    * Tests added in response to S234435. We hit a vendor SDK bug,
@@ -584,11 +588,12 @@ class HwMacLearningAndMyStationInteractionTest : public HwMacLearningTest {
                             ->first;
           auto intf =
               getProgrammedState()->getInterfaces()->getInterfaceInVlan(vlanID);
-          for (const auto& addrEntry : intf->getAddresses()) {
-            if (!addrEntry.first.isV4()) {
+          for (auto iter : std::as_const(*intf->getAddresses())) {
+            auto addrEntry = folly::IPAddress(iter.first);
+            if (!addrEntry.isV4()) {
               continue;
             }
-            auto v4Addr = addrEntry.first.asV4();
+            auto v4Addr = addrEntry.asV4();
             l2LearningObserver_.reset();
             auto arpPacket = utility::makeARPTxPacket(
                 getHwSwitch(),
@@ -602,6 +607,7 @@ class HwMacLearningAndMyStationInteractionTest : public HwMacLearningTest {
             getHwSwitch()->sendPacketOutOfPortSync(std::move(arpPacket), port);
           }
         }
+        l2LearningObserver_.waitForStateUpdate();
       };
       induceMacLearning();
       utility::setMacAgeTimerSeconds(getHwSwitchEnsemble(), kMinAgeInSecs());
@@ -637,7 +643,7 @@ class HwMacLearningAndMyStationInteractionTest : public HwMacLearningTest {
                 portStatsAfter.find(masterLogicalPortIds()[0])->second;
             auto oldOutBytes = *oldPortStats.outBytes_();
             auto newOutBytes = *newPortStats.outBytes_();
-            XLOG(INFO) << " Port Id: " << masterLogicalPortIds()[0]
+            XLOG(DBG2) << " Port Id: " << masterLogicalPortIds()[0]
                        << " Old out bytes: " << oldOutBytes
                        << " New out bytes: " << newOutBytes
                        << " Delta : " << (newOutBytes - oldOutBytes);
@@ -732,7 +738,7 @@ TEST_F(HwMacSwLearningModeTest, VerifyCallbacksOnMacEntryChange) {
   auto setup = [this]() { bringDownPort(masterLogicalPortIds()[1]); };
   auto verify = [this]() {
     bool isTH3 = getPlatform()->getAsic()->getAsicType() ==
-        HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3;
+        cfg::AsicType::ASIC_TYPE_TOMAHAWK3;
     // Disable aging, so entry stays in L2 table when we verify.
     utility::setMacAgeTimerSeconds(getHwSwitchEnsemble(), 0);
     enum class MacOp { ASSOCIATE, DISSOASSOCIATE, DELETE };
@@ -742,19 +748,19 @@ TEST_F(HwMacSwLearningModeTest, VerifyCallbacksOnMacEntryChange) {
       auto numExpectedUpdates = 0;
       switch (op) {
         case MacOp::ASSOCIATE:
-          XLOG(INFO) << " Adding classs id to mac";
+          XLOG(DBG2) << " Adding classs id to mac";
           associateClassID();
           // TH3 generates a delete and add on class ID update
           numExpectedUpdates = isTH3 ? 2 : 0;
           break;
         case MacOp::DISSOASSOCIATE:
-          XLOG(INFO) << " Removing classs id from mac";
+          XLOG(DBG2) << " Removing classs id from mac";
           disassociateClassID();
           // TH3 generates a delete and add on class ID update
           numExpectedUpdates = isTH3 ? 2 : 0;
           break;
         case MacOp::DELETE:
-          XLOG(INFO) << " Removing mac";
+          XLOG(DBG2) << " Removing mac";
           // Force MAC aging to as fast as possible but min is still 1 second
           utility::setMacAgeTimerSeconds(
               getHwSwitchEnsemble(), kMinAgeInSecs());
@@ -774,7 +780,7 @@ TEST_F(HwMacSwLearningModeTest, VerifyCallbacksOnMacEntryChange) {
                                 ->getVlans()
                                 ->getVlanIf(kVlanID())
                                 ->getMacTable();
-            auto macEntry = macTable->getNodeIf(kSourceMac());
+            auto macEntry = macTable->getMacIf(kSourceMac());
             EXPECT_EQ(macEntry->getClassID(), lookupClass);
           };
       // Wait for arbitrarily large (100) extra updates or 5 seconds
@@ -810,7 +816,7 @@ class HwMacLearningMacMoveTest : public HwMacLearningTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
     cfg.switchSettings()->l2LearningMode() = cfg::L2LearningMode::SOFTWARE;
     return cfg;
   }
@@ -872,7 +878,7 @@ class HwMacLearningMacMoveTest : public HwMacLearningTest {
       // When MAC Moves from port1 to port2, we get DELETE on port1 and ADD on
       // port2
       if (getPlatform()->getAsic()->getAsicType() ==
-          HwAsic::AsicType::ASIC_TYPE_EBRO) {
+          cfg::AsicType::ASIC_TYPE_EBRO) {
         // TODO: Remove this once EbroAsic properly generates a
         // MAC move event.
         verifyL2TableCallback(
@@ -944,10 +950,10 @@ class HwMacLearningBatchEntriesTest : public HwMacLearningTest {
     // the cache because cache is full. TH3 cache size is 16 so we use 16 as
     // trunk size to maximize the speed. NOTE: There's an on-going investigation
     // why TH3 needs significant longer sleep time than TH4. (T83358080)
-    static const std::unordered_map<HwAsic::AsicType, std::pair<int, int>>
+    static const std::unordered_map<cfg::AsicType, std::pair<int, int>>
         kAsicToMacChunkSizeAndSleepUsecs = {
-            {HwAsic::AsicType::ASIC_TYPE_TOMAHAWK3, {16, 500000}},
-            {HwAsic::AsicType::ASIC_TYPE_TOMAHAWK4, {32, 10000}},
+            {cfg::AsicType::ASIC_TYPE_TOMAHAWK3, {16, 500000}},
+            {cfg::AsicType::ASIC_TYPE_TOMAHAWK4, {32, 10000}},
         };
     if (auto p =
             kAsicToMacChunkSizeAndSleepUsecs.find(getAsic()->getAsicType());

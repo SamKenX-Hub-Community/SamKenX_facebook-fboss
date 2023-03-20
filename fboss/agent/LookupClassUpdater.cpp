@@ -9,6 +9,8 @@
  */
 
 #include "fboss/agent/LookupClassUpdater.h"
+#include <type_traits>
+#include <utility>
 
 #include "fboss/agent/FibHelpers.h"
 #include "fboss/agent/MacTableUtils.h"
@@ -88,7 +90,9 @@ void LookupClassUpdater::removeClassIDForPortAndMac(
       return MacTableUtils::removeClassIDForEntry(state, vlan, removedEntry);
     };
 
-    sw_->updateState("remove classID: ", std::move(removeMacClassIDFn));
+    sw_->updateState(
+        "remove classID: " + removedEntry->str(),
+        std::move(removeMacClassIDFn));
   } else {
     auto updater = sw_->getNeighborUpdater();
     updater->updateEntryClassID(vlan, removedEntry->getIP());
@@ -210,7 +214,10 @@ void LookupClassUpdater::updateNeighborClassID(
         };
 
     sw_->updateState(
-        folly::to<std::string>("configure lookup classID: ", classID),
+        folly::to<std::string>(
+            "configure lookup classID: ",
+            classID,
+            " for entry " + newEntry->str()),
         std::move(updateMacClassIDFn));
   } else {
     auto updater = sw_->getNeighborUpdater();
@@ -220,7 +227,8 @@ void LookupClassUpdater::updateNeighborClassID(
 
 template <typename NeighborEntryT>
 bool LookupClassUpdater::shouldProcessNeighborEntry(
-    const std::shared_ptr<NeighborEntryT>& entry) const {
+    const std::shared_ptr<NeighborEntryT>& entry,
+    bool added) const {
   /*
    * At this point in time, queue-per-host fix is needed (and thus
    * supported) for physical link only.
@@ -229,8 +237,8 @@ bool LookupClassUpdater::shouldProcessNeighborEntry(
     return false;
   }
   /*
-   * If newEntry already has classID populated, don't process.
-   * This can happen in two cases:
+   * If newEntry already has classID populated
+   * This can happen in three cases, only process third case:
    *  o Warmboot: prior to warmboot, neighbor entries may have a classID
    *    associated with them. updateStateObserverLocalCache() consumes this
    *    info to populate its local cache, so do nothing here.
@@ -240,8 +248,16 @@ bool LookupClassUpdater::shouldProcessNeighborEntry(
    *    receive a stateDelta that contains classID assigned to new neighbor
    *    entry. Since this will be side-effect of state update that
    *    LookupClassUpdater triggered, there is nothing to do here.
+   *  o Racing scenarios: might happen when neighbor entry flaps.
+   *    LookupClassUpdater assigns class id to mac entry and trigger mac
+   *    entry state updateOrAdd(). However, this mac entry might be removed
+   *    shortly by StaticL2ForNeighborUpdate. As a result, another new mac
+   *    entry with class id is created when processing mac entry updateOrAdd().
+   *    We still need to process this new mac entry to keep track of refCnt,
+   *    although this entry woud be removed later.
    */
-  if (entry->getClassID().has_value()) {
+  if (entry->getClassID().has_value() &&
+      (!inited_ /* case 1 */ || !added /*case 2*/)) {
     return false;
   }
 
@@ -258,7 +274,7 @@ void LookupClassUpdater::processAdded(
     VlanID vlan,
     const std::shared_ptr<AddedNeighborEntryT>& addedEntry) {
   CHECK(addedEntry);
-  if (!shouldProcessNeighborEntry(addedEntry)) {
+  if (!shouldProcessNeighborEntry(addedEntry, true)) {
     return;
   }
   CHECK(addedEntry->getPort().isPhysicalPort());
@@ -298,7 +314,7 @@ void LookupClassUpdater::processChanged(
     const std::shared_ptr<ChangedNeighborEntryT>& newEntry) {
   CHECK(oldEntry);
   CHECK(newEntry);
-  if (!(shouldProcessNeighborEntry(newEntry) &&
+  if (!(shouldProcessNeighborEntry(newEntry, false) &&
         oldEntry->getPort().isPhysicalPort())) {
     // TODO - ideally we shouldn't care about whether
     // the old port was a non physical port (LAG) or not
@@ -354,8 +370,11 @@ void LookupClassUpdater::clearClassIdsForResolvedNeighbors(
       continue;
     }
 
-    for (const auto& entry :
-         *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan)) {
+    using EntryType = typename detail::EntryType<AddrT>::type;
+    for (auto iter : std::as_const(
+             *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan))) {
+      EntryType entry = nullptr;
+      entry = iter.second;
       /*
        * At this point in time, queue-per-host fix is needed (and thus
        * supported) for physical link only.
@@ -371,7 +390,8 @@ void LookupClassUpdater::clearClassIdsForResolvedNeighbors(
                     state, vlanID, entry);
               };
 
-          sw_->updateState("remove classID: ", std::move(removeMacClassIDFn));
+          sw_->updateState(
+              "remove classID: " + entry->str(), std::move(removeMacClassIDFn));
         } else {
           auto updater = sw_->getNeighborUpdater();
           updater->updateEntryClassID(vlanID, entry.get()->getIP());
@@ -393,8 +413,11 @@ void LookupClassUpdater::repopulateClassIdsForResolvedNeighbors(
       continue;
     }
 
-    for (const auto& entry :
-         *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan)) {
+    using EntryType = typename detail::EntryType<AddrT>::type;
+    for (auto iter : std::as_const(
+             *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan))) {
+      EntryType entry = nullptr;
+      entry = iter.second;
       /*
        * At this point in time, queue-per-host fix is needed (and thus
        * supported) for physical link only.
@@ -416,8 +439,11 @@ void LookupClassUpdater::validateRemovedPortEntries(
    * supported) for physical link only.
    */
 
-  for (const auto& entry :
-       *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan)) {
+  using EntryType = typename detail::EntryType<AddrT>::type;
+  for (auto iter :
+       std::as_const(*VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan))) {
+    EntryType entry = nullptr;
+    entry = iter.second;
     if (entry->getPort().isPhysicalPort()) {
       CHECK(entry->getPort().phyPortID() != portID);
     }
@@ -623,8 +649,11 @@ template <typename AddrT>
 void LookupClassUpdater::updateStateObserverLocalCacheHelper(
     const std::shared_ptr<Vlan>& vlan,
     const std::shared_ptr<Port>& port) {
-  for (const auto& entry :
-       *(VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan))) {
+  using EntryType = typename detail::EntryType<AddrT>::type;
+  for (auto iter : std::as_const(
+           *(VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan)))) {
+    EntryType entry = nullptr;
+    entry = iter.second;
     if (entry->getPort().isPhysicalPort() &&
         entry->getPort().phyPortID() == port->getID() &&
         entry->getClassID().has_value()) {
@@ -643,17 +672,20 @@ void LookupClassUpdater::updateStateObserverLocalCache(
     const std::shared_ptr<SwitchState>& switchState) {
   CHECK(!inited_);
 
-  for (auto port : *switchState->getPorts()) {
-    initPort(switchState, port);
-    for (auto vlanMember : port->getVlans()) {
+  for (auto port : std::as_const(*switchState->getPorts())) {
+    initPort(switchState, port.second);
+    // THRIFT_COPY
+    for (auto vlanMember : port.second->getVlans()) {
       auto vlanID = vlanMember.first;
       auto vlan = switchState->getVlans()->getVlanIf(vlanID);
       if (!vlan) {
         continue;
       }
-      updateStateObserverLocalCacheHelper<folly::MacAddress>(vlan, port);
-      updateStateObserverLocalCacheHelper<folly::IPAddressV6>(vlan, port);
-      updateStateObserverLocalCacheHelper<folly::IPAddressV4>(vlan, port);
+      updateStateObserverLocalCacheHelper<folly::MacAddress>(vlan, port.second);
+      updateStateObserverLocalCacheHelper<folly::IPAddressV6>(
+          vlan, port.second);
+      updateStateObserverLocalCacheHelper<folly::IPAddressV4>(
+          vlan, port.second);
     }
   }
 }
@@ -681,7 +713,7 @@ void LookupClassUpdater::processBlockNeighborUpdatesHelper(
 
   std::shared_ptr<MacEntry> macEntry = nullptr;
   if (neighborEntry->isReachable()) {
-    macEntry = vlan->getMacTable()->getNodeIf(neighborEntry->getMac());
+    macEntry = vlan->getMacTable()->getMacIf(neighborEntry->getMac());
     if (macEntry) {
       removeClassIDForPortAndMac(switchState, vlan->getID(), macEntry);
     }
@@ -746,8 +778,12 @@ void LookupClassUpdater::processBlockNeighborUpdates(
    */
 
   std::set<std::pair<VlanID, folly::IPAddress>> newBlockedNeighbors;
-  for (const auto& [vlanID, ipAddress] :
-       newState->getSwitchSettings()->getBlockNeighbors()) {
+  for (const auto& iter :
+       *(newState->getSwitchSettings()->getBlockNeighbors())) {
+    auto vlanID = VlanID(
+        iter->cref<switch_state_tags::blockNeighborVlanID>()->toThrift());
+    auto ipAddress = network::toIPAddress(
+        iter->cref<switch_state_tags::blockNeighborIP>()->toThrift());
     newBlockedNeighbors.insert(std::make_pair(vlanID, ipAddress));
   }
 
@@ -782,8 +818,9 @@ void LookupClassUpdater::updateClassIDForEveryNeighborForMac(
     const std::shared_ptr<SwitchState>& switchState,
     const std::shared_ptr<Vlan>& vlan,
     folly::MacAddress macAddress) {
-  for (const auto& neighborEntry :
-       *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan)) {
+  for (auto iter :
+       std::as_const(*VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan))) {
+    auto neighborEntry = iter.second;
     if (!isNoHostRoute(neighborEntry) && neighborEntry->isReachable() &&
         neighborEntry->getMac() == macAddress) {
       updateNeighborClassID(switchState, vlan->getID(), neighborEntry);
@@ -796,8 +833,9 @@ void LookupClassUpdater::removeClassIDForEveryNeighborForMac(
     const std::shared_ptr<SwitchState>& switchState,
     const std::shared_ptr<Vlan>& vlan,
     folly::MacAddress macAddress) {
-  for (const auto& neighborEntry :
-       *VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan)) {
+  for (auto iter :
+       std::as_const(*VlanTableDeltaCallbackGenerator::getTable<AddrT>(vlan))) {
+    auto neighborEntry = iter.second;
     if (!isNoHostRoute(neighborEntry) && neighborEntry->isReachable() &&
         neighborEntry->getMac() == macAddress) {
       removeClassIDForPortAndMac(switchState, vlan->getID(), neighborEntry);
@@ -837,10 +875,16 @@ void LookupClassUpdater::processMacAddrsToBlockUpdates(
    */
 
   std::set<std::pair<VlanID, folly::MacAddress>> newMacAddrsToBlock;
-  for (const auto& [vlanID, macAddress] :
-       newState->getSwitchSettings()->getMacAddrsToBlock()) {
+  for (const auto& iter :
+       *(newState->getSwitchSettings()->getMacAddrsToBlock())) {
+    auto macStr =
+        iter->cref<switch_state_tags::macAddrToBlockAddr>()->toThrift();
+    auto vlanID = VlanID(
+        iter->cref<switch_state_tags::macAddrToBlockVlanID>()->toThrift());
+    auto macAddress = folly::MacAddress(macStr);
+
     newMacAddrsToBlock.insert(std::make_pair(vlanID, macAddress));
-    XLOG(DBG2) << "New blocked mac address " << macAddress.toString();
+    XLOG(DBG2) << "New blocked mac address " << macStr;
   }
 
   std::vector<std::pair<VlanID, folly::MacAddress>> toBeUpdatedMacAddrsToBlock;
@@ -855,7 +899,7 @@ void LookupClassUpdater::processMacAddrsToBlockUpdates(
   macAddrsToBlock_ = newMacAddrsToBlock;
   for (const auto& [vlanID, macAddress] : toBeUpdatedMacAddrsToBlock) {
     auto vlan = newState->getVlans()->getVlanIf(vlanID);
-    XLOG(INFO) << "Starting to Processing mac address "
+    XLOG(DBG2) << "Starting to Processing mac address "
                << macAddress.toString();
     if (!vlan) {
       XLOG(DBG2) << "No vlan found for vlanID " << vlanID << " macAddress "
@@ -864,7 +908,7 @@ void LookupClassUpdater::processMacAddrsToBlockUpdates(
       continue;
     }
 
-    auto macEntry = vlan->getMacTable()->getNodeIf(macAddress);
+    auto macEntry = vlan->getMacTable()->getMacIf(macAddress);
     if (!macEntry) {
       XLOG(DBG2) << "No mac entry found for in mac table for vlanID " << vlanID
                  << " macAddress " << macAddress.toString()
@@ -889,13 +933,13 @@ void LookupClassUpdater::processMacAddrsToBlockUpdates(
 void LookupClassUpdater::stateUpdated(const StateDelta& stateDelta) {
   if (!inited_) {
     updateStateObserverLocalCache(stateDelta.newState());
-    inited_ = true;
   }
 
   VlanTableDeltaCallbackGenerator::genCallbacks(stateDelta, *this);
   processPortUpdates(stateDelta);
   processBlockNeighborUpdates(stateDelta);
   processMacAddrsToBlockUpdates(stateDelta);
+  inited_ = true;
 }
 
 } // namespace facebook::fboss

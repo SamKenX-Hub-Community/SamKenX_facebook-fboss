@@ -94,11 +94,13 @@ unique_ptr<HwTestHandle> setupTestHandle(
   handle->getSw()->updateState(
       " set timers", [arpTimeout, maxProbes, staleTimeout](auto inState) {
         inState = inState->clone();
+        auto switchSettings = make_shared<SwitchSettings>();
         if (arpTimeout.count() > 0) {
-          inState->setArpTimeout(arpTimeout);
+          switchSettings->setArpTimeout(arpTimeout);
+          switchSettings->setStaleEntryInterval(staleTimeout);
         }
-        inState->setMaxNeighborProbes(maxProbes);
-        inState->setStaleEntryInterval(staleTimeout);
+        switchSettings->setMaxNeighborProbes(maxProbes);
+        inState->resetSwitchSettings(switchSettings);
         inState->publish();
         return inState;
       });
@@ -362,7 +364,7 @@ TEST(ArpTest, TableUpdates) {
 
   // Check the new ArpTable does not have any entry
   auto arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
-  EXPECT_EQ(0, arpTable->getAllNodes().size());
+  EXPECT_EQ(0, arpTable->size());
 
   // Create an ARP request for 10.0.0.1
   auto hex = PktUtil::parseHexData(
@@ -410,7 +412,7 @@ TEST(ArpTest, TableUpdates) {
 
   // Check the new ArpTable contents
   arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
-  EXPECT_EQ(1, arpTable->getAllNodes().size());
+  EXPECT_EQ(1, arpTable->size());
   auto entry = arpTable->getEntry(IPAddressV4("10.0.0.15"));
   EXPECT_EQ(MacAddress("00:02:00:01:02:03"), entry->getMac());
   EXPECT_EQ(PortDescriptor(PortID(1)), entry->getPort());
@@ -532,7 +534,7 @@ TEST(ArpTest, TableUpdates) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.error.sum", 0);
 
   arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
-  EXPECT_EQ(1, arpTable->getAllNodes().size());
+  EXPECT_EQ(1, arpTable->size());
   entry = arpTable->getEntry(IPAddressV4("10.0.0.15"));
   EXPECT_EQ(MacAddress("00:02:00:01:02:08"), entry->getMac());
   EXPECT_EQ(PortDescriptor(PortID(2)), entry->getPort());
@@ -587,7 +589,7 @@ TEST(ArpTest, TableUpdates) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.error.sum", 0);
 
   arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
-  EXPECT_EQ(2, arpTable->getAllNodes().size());
+  EXPECT_EQ(2, arpTable->size());
   entry = arpTable->getEntry(IPAddressV4("10.0.0.15"));
   EXPECT_EQ(MacAddress("00:02:00:01:02:08"), entry->getMac());
   EXPECT_EQ(PortDescriptor(PortID(2)), entry->getPort());
@@ -646,7 +648,7 @@ TEST(ArpTest, TableUpdates) {
   counters.checkDelta(SwitchStats::kCounterPrefix + "trapped.error.sum", 0);
 
   arpTable = sw->getState()->getVlans()->getVlan(vlanID)->getArpTable();
-  EXPECT_EQ(3, arpTable->getAllNodes().size());
+  EXPECT_EQ(3, arpTable->size());
   entry = arpTable->getEntry(IPAddressV4("10.0.0.15"));
   EXPECT_EQ(MacAddress("00:02:00:01:02:08"), entry->getMac());
   EXPECT_EQ(PortDescriptor(PortID(2)), entry->getPort());
@@ -1013,8 +1015,8 @@ TEST(ArpTest, ArpTableSerialization) {
   EXPECT_NE(vlan, nullptr);
   auto arpTable = vlan->getArpTable();
   EXPECT_NE(arpTable, nullptr);
-  auto serializedArpTable = arpTable->toFollyDynamic();
-  auto unserializedArpTable = arpTable->fromFollyDynamic(serializedArpTable);
+  auto serializedArpTable = arpTable->toThrift();
+  auto unserializedArpTable = std::make_shared<ArpTable>(serializedArpTable);
 
   testSendArpRequest(sw, vlanID, senderIP, targetIP);
 
@@ -1023,8 +1025,8 @@ TEST(ArpTest, ArpTableSerialization) {
   EXPECT_NE(vlan, nullptr);
   arpTable = vlan->getArpTable();
   EXPECT_NE(arpTable, nullptr);
-  serializedArpTable = arpTable->toFollyDynamic();
-  unserializedArpTable = arpTable->fromFollyDynamic(serializedArpTable);
+  serializedArpTable = arpTable->toThrift();
+  unserializedArpTable = std::make_shared<ArpTable>(serializedArpTable);
 
   // Should also see a pending entry
   auto entry = getArpEntry(sw, targetIP, vlanID);

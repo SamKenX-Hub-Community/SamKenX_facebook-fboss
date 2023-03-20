@@ -17,6 +17,11 @@
 
 #include "fboss/agent/FbossError.h"
 
+DEFINE_string(
+    platform_mapping_override_path,
+    "",
+    "The path to the Platform Mapping JSON file");
+
 namespace {
 constexpr auto kFbossPortNameRegex = "eth(\\d+)/(\\d+)/(\\d+)";
 const re2::RE2 portNameRegex(kFbossPortNameRegex);
@@ -144,9 +149,15 @@ std::string PlatformPortProfileConfigMatcher::toString() const {
 }
 
 PlatformMapping::PlatformMapping(const std::string& jsonPlatformMappingStr) {
-  auto mapping =
-      apache::thrift::SimpleJSONSerializer::deserialize<cfg::PlatformMapping>(
-          jsonPlatformMappingStr);
+  init(apache::thrift::SimpleJSONSerializer::deserialize<cfg::PlatformMapping>(
+      jsonPlatformMappingStr));
+}
+
+PlatformMapping::PlatformMapping(const cfg::PlatformMapping& mapping) {
+  init(mapping);
+}
+
+void PlatformMapping::init(const cfg::PlatformMapping& mapping) {
   platformPorts_ = std::move(*mapping.ports());
   platformSupportedProfiles_ = std::move(*mapping.platformSupportedProfiles());
   for (auto chip : *mapping.chips()) {
@@ -575,6 +586,29 @@ const cfg::PlatformPortConfig& PlatformMapping::getPlatformPortConfig(
         id);
   }
   return platformPortConfig->second;
+}
+
+std::map<phy::DataPlanePhyChip, std::vector<phy::PinConfig>>
+PlatformMapping::getCorePinMapping(const std::vector<cfg::Port>& ports) const {
+  std::map<phy::DataPlanePhyChip, std::vector<phy::PinConfig>> corePinMapping;
+  const auto& platformPorts = getPlatformPorts();
+  for (auto& port : ports) {
+    auto portID = port.get_logicalID();
+    if (platformPorts.find(portID) == platformPorts.end()) {
+      throw FbossError("Could not find platform port with id ", portID);
+    }
+    auto& platformPortEntry = platformPorts.at(portID);
+    auto profileID = port.get_profileID();
+    if (portID != platformPortEntry.mapping()->get_controllingPort()) {
+      continue;
+    }
+    const auto& chip = getPortIphyChip(PortID(portID));
+    cfg::PlatformPortConfigOverrideFactor factor;
+    factor.chips() = {chip};
+    corePinMapping[chip] = getPortIphyPinConfigs(
+        PlatformPortProfileConfigMatcher(profileID, std::nullopt, factor));
+  }
+  return corePinMapping;
 }
 
 } // namespace fboss

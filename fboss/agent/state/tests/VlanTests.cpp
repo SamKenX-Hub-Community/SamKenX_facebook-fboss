@@ -53,8 +53,6 @@ TEST(Vlan, applyConfig) {
   auto stateV0 = make_shared<SwitchState>();
   auto vlanV0 = make_shared<Vlan>(VlanID(1234), kVlan1234);
 
-  validateThriftyMigration(*vlanV0);
-
   stateV0->addVlan(vlanV0);
   stateV0->registerPort(PortID(1), "port1");
   stateV0->registerPort(PortID(2), "port2");
@@ -90,9 +88,13 @@ TEST(Vlan, applyConfig) {
   config.vlanPorts()[1].vlanID() = 1234;
   config.vlanPorts()[1].emitTags() = true;
 
+  config.interfaces()->resize(1);
+  config.interfaces()[0].intfID() = 1234;
+  config.interfaces()[0].vlanID() = 1234;
+
   Vlan::MemberPorts expectedPorts;
-  expectedPorts.insert(make_pair(PortID(1), Vlan::PortInfo(false)));
-  expectedPorts.insert(make_pair(PortID(2), Vlan::PortInfo(true)));
+  expectedPorts.insert(std::make_pair(1, false));
+  expectedPorts.insert(std::make_pair(2, true));
 
   auto stateV1 = publishAndApplyConfig(stateV0, &config, platform.get());
   auto vlanV1 = stateV1->getVlans()->getVlan(VlanID(1234));
@@ -105,11 +107,8 @@ TEST(Vlan, applyConfig) {
   EXPECT_EQ(VlanID(1234), vlanV1->getID());
   EXPECT_EQ(kVlan1234, vlanV1->getName());
   EXPECT_EQ(expectedPorts, vlanV1->getPorts());
-  EXPECT_EQ(0, vlanV1->getArpResponseTable()->getTable().size());
+  EXPECT_EQ(0, vlanV1->getArpResponseTable()->size());
   EXPECT_EQ(InterfaceID(1), vlanV1->getInterfaceID());
-
-  validateThriftyMigration(*vlanV0);
-  validateThriftyMigration(*vlanV1);
 
   auto map4 = vlanV1->getDhcpV4RelayOverrides();
   EXPECT_EQ(
@@ -146,21 +145,21 @@ TEST(Vlan, applyConfig) {
   auto arpRespTable = vlanV2->getArpResponseTable();
   EXPECT_EQ(arpRespTable->size(), 1);
   validateRespEntry(
-      arpRespTable->getNodeIf(IPAddressV4("10.1.1.1")),
+      arpRespTable->getEntry(IPAddressV4("10.1.1.1")),
       MockPlatform::getMockLocalMac(),
       InterfaceID(1));
   // Check the NdpResponseTable
   auto ndpRespTable = vlanV2->getNdpResponseTable();
   EXPECT_EQ(ndpRespTable->size(), 2);
   validateRespEntry(
-      ndpRespTable->getNodeIf(IPAddressV6("2a03:2880:10:1f07:face:b00c:0:0")),
+      ndpRespTable->getEntry(IPAddressV6("2a03:2880:10:1f07:face:b00c:0:0")),
       MockPlatform::getMockLocalMac(),
       InterfaceID(1));
 
   // The link-local IPv6 address should also have been automatically added
   // to the NDP response table.
   validateRespEntry(
-      ndpRespTable->getNodeIf(MockPlatform::getMockLinkLocalIp6()),
+      ndpRespTable->getEntry(MockPlatform::getMockLinkLocalIp6()),
       MockPlatform::getMockLocalMac(),
       InterfaceID(1));
 
@@ -190,11 +189,11 @@ TEST(Vlan, applyConfig) {
   arpRespTable = vlanV3->getArpResponseTable();
   EXPECT_EQ(arpRespTable->size(), 2);
   validateRespEntry(
-      arpRespTable->getNodeIf(IPAddressV4("10.1.10.1")),
+      arpRespTable->getEntry(IPAddressV4("10.1.10.1")),
       intf2Mac,
       InterfaceID(2));
   validateRespEntry(
-      arpRespTable->getNodeIf(IPAddressV4("192.168.0.1")),
+      arpRespTable->getEntry(IPAddressV4("192.168.0.1")),
       intf2Mac,
       InterfaceID(2));
 
@@ -203,7 +202,7 @@ TEST(Vlan, applyConfig) {
   ndpRespTable = vlanV3->getNdpResponseTable();
   EXPECT_EQ(ndpRespTable->size(), 1);
   validateRespEntry(
-      ndpRespTable->getNodeIf(IPAddressV6("fe80::1:02ff:feab:cd78")),
+      ndpRespTable->getEntry(IPAddressV6("fe80::1:02ff:feab:cd78")),
       intf2Mac,
       InterfaceID(2));
 
@@ -233,11 +232,11 @@ TEST(Vlan, applyConfig) {
 
   EXPECT_EQ(vlan99->getArpResponseTable()->size(), 2);
   validateRespEntry(
-      vlan99->getArpResponseTable()->getNodeIf(IPAddressV4("1.2.3.4")),
+      vlan99->getArpResponseTable()->getEntry(IPAddressV4("1.2.3.4")),
       MockPlatform::getMockLocalMac(),
       InterfaceID(3));
   validateRespEntry(
-      vlan99->getArpResponseTable()->getNodeIf(IPAddressV4("10.0.0.1")),
+      vlan99->getArpResponseTable()->getEntry(IPAddressV4("10.0.0.1")),
       MockPlatform::getMockLocalMac(),
       InterfaceID(3));
 
@@ -295,8 +294,6 @@ void checkChangedVlans(
         EXPECT_TRUE(ret.second);
       });
 
-  validateThriftyMigration(*oldVlans);
-  validateThriftyMigration(*newVlans);
   EXPECT_EQ(changedIDs, foundChanged);
   EXPECT_EQ(addedIDs, foundAdded);
   EXPECT_EQ(removedIDs, foundRemoved);
@@ -367,10 +364,10 @@ TEST(VlanMap, applyConfig) {
   EXPECT_EQ(kVlan1234, vlan1234v0->getName());
   EXPECT_EQ(0, vlan1234v0->getGeneration());
   Vlan::MemberPorts ports1234v0;
-  ports1234v0.insert(make_pair(PortID(1), Vlan::PortInfo(false)));
-  ports1234v0.insert(make_pair(PortID(2), Vlan::PortInfo(false)));
-  ports1234v0.insert(make_pair(PortID(3), Vlan::PortInfo(false)));
-  ports1234v0.insert(make_pair(PortID(4), Vlan::PortInfo(false)));
+  ports1234v0.insert(make_pair(1, false));
+  ports1234v0.insert(make_pair(2, false));
+  ports1234v0.insert(make_pair(3, false));
+  ports1234v0.insert(make_pair(4, false));
   EXPECT_EQ(ports1234v0, vlan1234v0->getPorts());
 
   // Check the new settings for VLAN 99
@@ -384,9 +381,9 @@ TEST(VlanMap, applyConfig) {
   EXPECT_EQ(kVlan99, vlan99v0->getName());
   EXPECT_EQ(0, vlan99v0->getGeneration());
   Vlan::MemberPorts ports99v1;
-  ports99v1.insert(make_pair(PortID(9), Vlan::PortInfo(false)));
-  ports99v1.insert(make_pair(PortID(19), Vlan::PortInfo(false)));
-  ports99v1.insert(make_pair(PortID(29), Vlan::PortInfo(false)));
+  ports99v1.insert(make_pair(9, false));
+  ports99v1.insert(make_pair(19, false));
+  ports99v1.insert(make_pair(29, false));
   EXPECT_EQ(ports99v1, vlan99v0->getPorts());
 
   // getVlan() should throw on a non-existent VLAN
@@ -413,9 +410,9 @@ TEST(VlanMap, applyConfig) {
   EXPECT_NE(vlan1234v0, vlan1234v1);
   EXPECT_EQ(1, vlan1234v1->getGeneration());
   Vlan::MemberPorts ports1234v1;
-  ports1234v1.insert(make_pair(PortID(2), Vlan::PortInfo(false)));
-  ports1234v1.insert(make_pair(PortID(3), Vlan::PortInfo(false)));
-  ports1234v1.insert(make_pair(PortID(4), Vlan::PortInfo(false)));
+  ports1234v1.insert(make_pair(2, false));
+  ports1234v1.insert(make_pair(3, false));
+  ports1234v1.insert(make_pair(4, false));
   EXPECT_EQ(ports1234v1, vlan1234v1->getPorts());
 
   // VLAN 99 should not have changed

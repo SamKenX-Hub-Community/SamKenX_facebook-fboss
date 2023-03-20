@@ -165,6 +165,14 @@ struct ThriftListFields {
     return storage_.end();
   }
 
+  const_iterator begin() const {
+    return storage_.cbegin();
+  }
+
+  const_iterator end() const {
+    return storage_.cend();
+  }
+
   const_iterator cbegin() const {
     return storage_.cbegin();
   }
@@ -184,6 +192,10 @@ struct ThriftListFields {
         fn(child.get());
       }
     }
+  }
+
+  const StorageType& impl() const {
+    return storage_;
   }
 
  private:
@@ -262,6 +274,15 @@ class ThriftListNode : public NodeBaseT<
     return this->getFields()->cref(index);
   }
 
+  // prefer safe_ref/safe_cref for safe access
+  auto safe_ref(std::size_t index) {
+    return detail::ref(this->writableFields()->ref(index));
+  }
+
+  auto safe_cref(std::size_t index) const {
+    return detail::cref(this->getFields()->cref(index));
+  }
+
   template <typename... Args>
   typename Fields::iterator emplace(
       typename Fields::const_iterator pos,
@@ -282,6 +303,14 @@ class ThriftListNode : public NodeBaseT<
 
   typename Fields::iterator end() {
     return this->writableFields()->end();
+  }
+
+  typename Fields::const_iterator begin() const {
+    return this->getFields()->cbegin();
+  }
+
+  typename Fields::const_iterator end() const {
+    return this->getFields()->cend();
   }
 
   typename Fields::const_iterator cbegin() const {
@@ -331,6 +360,10 @@ class ThriftListNode : public NodeBaseT<
     }
   }
 
+  bool empty() const {
+    return cbegin() == cend();
+  }
+
   static void modify(std::shared_ptr<Self>* node, const std::string& token) {
     auto newNode = ((*node)->isPublished()) ? (*node)->clone() : *node;
     newNode->modify(token);
@@ -360,6 +393,10 @@ class ThriftListNode : public NodeBaseT<
       const {
     return PathVisitor<TypeClass>::visit(
         *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
+  }
+
+  const auto& impl() const {
+    return this->getFields()->impl();
   }
 
  private:

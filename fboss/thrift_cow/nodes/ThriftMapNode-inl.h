@@ -19,6 +19,8 @@
 #include "fboss/thrift_cow/nodes/Serializer.h"
 #include "fboss/thrift_cow/nodes/Types.h"
 
+#include "fboss/agent/state/MapDelta.h"
+
 namespace facebook::fboss::thrift_cow {
 
 namespace map_helpers {
@@ -37,9 +39,11 @@ struct ExtractTypeClass<
 
 } // namespace map_helpers
 
-template <typename TypeClass, typename TType>
+template <typename Traits>
 struct ThriftMapFields {
-  using Self = ThriftMapFields<TypeClass, TType>;
+  using TypeClass = typename Traits::TC;
+  using TType = typename Traits::Type;
+  using Self = ThriftMapFields<Traits>;
   using CowType = FieldsType;
   using ThriftType = TType;
   using KeyTypeClass =
@@ -47,10 +51,12 @@ struct ThriftMapFields {
   using ValueTypeClass =
       typename map_helpers::ExtractTypeClass<TypeClass>::value_type;
   using ValueTType = typename TType::mapped_type;
-  using ValueTraits = ConvertToNodeTraits<ValueTypeClass, ValueTType>;
+  using ValueTraits =
+      typename Traits::template ConvertToNodeTraits<ValueTypeClass, ValueTType>;
   using key_type = typename TType::key_type;
   using value_type = typename ValueTraits::type;
-  using StorageType = std::unordered_map<key_type, value_type>;
+  using StorageType =
+      std::map<key_type, value_type, typename Traits::KeyCompare>;
   using iterator = typename StorageType::iterator;
   using const_iterator = typename StorageType::const_iterator;
 
@@ -68,6 +74,13 @@ struct ThriftMapFields {
   explicit ThriftMapFields(T&& thrift) {
     fromThrift(std::forward<T>(thrift));
   }
+
+  /* implicit */ ThriftMapFields(StorageType storage)
+      : storage_(std::move(storage)) {}
+
+  // TODO(pshaikh): fix this redunant constructor
+  ThriftMapFields(const ThriftMapFields&, StorageType storage)
+      : storage_(std::move(storage)) {}
 
   TType toThrift() const {
     TType thrift;
@@ -117,6 +130,10 @@ struct ThriftMapFields {
     return storage_.at(key);
   }
 
+  value_type& operator[](key_type key) {
+    return storage_[key];
+  }
+
   value_type& ref(key_type key) {
     return storage_.at(key);
   }
@@ -129,9 +146,18 @@ struct ThriftMapFields {
     return storage_.at(key);
   }
 
+  std::pair<iterator, bool> insert(key_type key, value_type&& val) {
+    return storage_.insert({key, val});
+  }
+
   template <typename... Args>
   std::pair<iterator, bool> emplace(key_type key, Args&&... args) {
     return storage_.emplace(key, childFactory(std::forward<Args>(args)...));
+  }
+
+  template <typename... Args>
+  std::pair<iterator, bool> try_emplace(key_type key, Args&&... args) {
+    return storage_.try_emplace(key, childFactory(std::forward<Args>(args)...));
   }
 
   bool remove(const std::string& token) {
@@ -164,6 +190,10 @@ struct ThriftMapFields {
           apache::thrift::type_class::string>,
       bool> {
     return storage_.erase(key);
+  }
+
+  auto erase(iterator it) {
+    return storage_.erase(it);
   }
   // iterators
 
@@ -212,6 +242,18 @@ struct ThriftMapFields {
     }
   }
 
+  bool operator==(const Self& that) const {
+    return storage_ == that.storage_;
+  }
+
+  bool operator!=(const Self& that) const {
+    return !(*this == that);
+  }
+
+  void clear() {
+    storage_.clear();
+  }
+
  private:
   template <typename... Args>
   value_type childFactory(Args&&... args) {
@@ -227,19 +269,24 @@ struct ThriftMapFields {
   StorageType storage_;
 };
 
-template <typename TypeClass, typename TType>
-class ThriftMapNode : public NodeBaseT<
-                          ThriftMapNode<TypeClass, TType>,
-                          ThriftMapFields<TypeClass, TType>> {
+template <typename Traits, typename Resolver = ThriftMapResolver<Traits>>
+class ThriftMapNode
+    : public NodeBaseT<typename Resolver::type, ThriftMapFields<Traits>> {
  public:
-  using Self = ThriftMapNode<TypeClass, TType>;
-  using Fields = ThriftMapFields<TypeClass, TType>;
+  using TypeClass = typename Traits::TC;
+  using TType = typename Traits::Type;
+
+  using Self = ThriftMapNode<Traits, Resolver>;
+  using Fields = ThriftMapFields<Traits>;
   using ThriftType = typename Fields::ThriftType;
-  using BaseT = NodeBaseT<ThriftMapNode<TypeClass, TType>, Fields>;
+  using Derived = typename Resolver::type;
+  using BaseT = NodeBaseT<Derived, Fields>;
   using CowType = NodeType;
   using key_type = typename Fields::key_type;
   using value_type = typename Fields::value_type;
   using PathIter = typename std::vector<std::string>::const_iterator;
+  using mapped_type = value_type;
+  using const_iterator = typename Fields::const_iterator;
 
   using BaseT::BaseT;
 
@@ -277,16 +324,35 @@ class ThriftMapNode : public NodeBaseT<
     return this->getFields()->at(key);
   }
 
+  value_type& operator[](key_type key) {
+    return this->writableFields()->operator[](key);
+  }
+
   value_type& ref(key_type key) {
     return this->writableFields()->ref(key);
   }
 
   const value_type& ref(key_type key) const {
-    return this->writableFields()->ref(key);
+    return this->getFields()->ref(key);
   }
 
   const value_type& cref(key_type key) const {
     return this->getFields()->cref(key);
+  }
+
+  // prefer safe_ref/safe_cref for safe access
+  auto safe_ref(key_type key) {
+    return detail::ref(this->writableFields()->ref(key));
+  }
+
+  auto safe_cref(key_type key) const {
+    return detail::cref(this->getFields()->cref(key));
+  }
+
+  std::pair<typename Fields::iterator, bool> insert(
+      key_type key,
+      value_type&& val) {
+    return this->writableFields()->insert(key, std::move(val));
   }
 
   template <typename... Args>
@@ -294,6 +360,14 @@ class ThriftMapNode : public NodeBaseT<
       key_type key,
       Args&&... args) {
     return this->writableFields()->emplace(key, std::forward<Args>(args)...);
+  }
+
+  template <typename... Args>
+  typename std::pair<typename Fields::iterator, bool> try_emplace(
+      key_type key,
+      Args&&... args) {
+    return this->writableFields()->try_emplace(
+        key, std::forward<Args>(args)...);
   }
 
   bool remove(const std::string& token) {
@@ -309,6 +383,10 @@ class ThriftMapNode : public NodeBaseT<
     return this->writableFields()->remove(key);
   }
 
+  auto erase(typename Fields::iterator it) {
+    return this->writableFields()->erase(it);
+  }
+
   // iterators
 
   typename Fields::iterator begin() {
@@ -321,6 +399,10 @@ class ThriftMapNode : public NodeBaseT<
 
   typename Fields::iterator end() {
     return this->writableFields()->end();
+  }
+
+  typename Fields::const_iterator end() const {
+    return this->getFields()->end();
   }
 
   typename Fields::const_iterator cbegin() const {
@@ -341,6 +423,10 @@ class ThriftMapNode : public NodeBaseT<
 
   std::size_t size() const {
     return this->getFields()->size();
+  }
+
+  bool empty() const {
+    return size() == 0;
   }
 
   void modify(const std::string& token) {
@@ -412,8 +498,65 @@ class ThriftMapNode : public NodeBaseT<
         *this, begin, end, PathVisitMode::LEAF, std::forward<Func>(f));
   }
 
+  bool operator==(const Self& that) const {
+    return *this->getFields() == *that.getFields();
+  }
+  bool operator!=(const Self& that) const {
+    return !(*this == that);
+  }
+
+  void clear() {
+    this->writableFields()->clear();
+  }
+
  private:
   friend class CloneAllocator;
+};
+
+namespace {
+template <typename T>
+struct IsSharedPtr {
+  static constexpr bool value = false;
+};
+
+template <typename T>
+struct IsSharedPtr<std::shared_ptr<T>> {
+  static constexpr bool value = true;
+};
+} // namespace
+
+template <typename MAP>
+struct ThriftMapNodeExtractor {
+  using key_type = typename MAP::key_type;
+  using mapped_type = typename MAP::mapped_type;
+  using value_type = std::conditional_t<
+      IsSharedPtr<mapped_type>::value,
+      mapped_type,
+      const mapped_type*>;
+
+  static const key_type& getKey(typename MAP::const_iterator i) {
+    return i->first;
+  }
+  static value_type getValue(typename MAP::const_iterator i) {
+    if constexpr (IsSharedPtr<mapped_type>::value) {
+      return i->second;
+    } else {
+      return &i->second;
+    }
+  }
+};
+
+template <typename MAP>
+struct ThriftMapNodeDeltaTraits {
+  using mapped_type = typename MAP::mapped_type;
+  using ExtractorT = ThriftMapNodeExtractor<MAP>;
+  using DeltaValueT = DeltaValue<mapped_type, typename ExtractorT::value_type>;
+};
+
+template <typename MAP>
+struct ThriftMapDelta : MapDelta<MAP, ThriftMapNodeDeltaTraits> {
+  using Base = MapDelta<MAP, ThriftMapNodeDeltaTraits>;
+  ThriftMapDelta(const MAP* oldMap, const MAP* newMap) : Base(oldMap, newMap) {}
 };
 
 } // namespace facebook::fboss::thrift_cow

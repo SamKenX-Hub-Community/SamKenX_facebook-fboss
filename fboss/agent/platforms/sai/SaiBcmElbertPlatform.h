@@ -18,7 +18,8 @@ class SaiBcmElbertPlatform : public SaiBcmPlatform {
  public:
   explicit SaiBcmElbertPlatform(
       std::unique_ptr<PlatformProductInfo> productInfo,
-      folly::MacAddress localMac);
+      folly::MacAddress localMac,
+      const std::string& platformMappingStr);
   ~SaiBcmElbertPlatform() override;
   HwAsic* getAsic() const override;
   uint32_t numLanesPerCore() const override {
@@ -31,7 +32,15 @@ class SaiBcmElbertPlatform : public SaiBcmPlatform {
 
   void initLEDs() override {}
 
+  bool supportsDynamicBcmConfig() const override {
+    return true;
+  }
+
  private:
+  void setupAsic(
+      cfg::SwitchType switchType,
+      std::optional<int64_t> switchId,
+      std::optional<cfg::Range64> systemPortRange) override;
   std::unique_ptr<Tomahawk4Asic> asic_;
 };
 

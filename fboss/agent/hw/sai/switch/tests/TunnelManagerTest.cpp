@@ -14,16 +14,16 @@
 using namespace facebook::fboss;
 
 std::shared_ptr<IpTunnel> makeTunnel(
-    std::string tunnelId = "tunnel0",
+    const std::string& tunnelId = "tunnel0",
     uint32_t intfID = 0,
     cfg::IpTunnelMode mode = cfg::IpTunnelMode::PIPE) {
   auto tunnel = std::make_shared<IpTunnel>(tunnelId);
-  tunnel->setType(IPINIP);
+  tunnel->setType(cfg::TunnelType::IP_IN_IP);
   tunnel->setUnderlayIntfId(InterfaceID(intfID));
   tunnel->setTTLMode(mode);
   tunnel->setDscpMode(mode);
   tunnel->setEcnMode(mode);
-  tunnel->setTunnelTermType(P2MP);
+  tunnel->setTunnelTermType(cfg::TunnelTerminationType::P2MP);
   tunnel->setSrcIP(folly::IPAddressV6("2401:db00:11c:8202:0:0:0:100"));
   tunnel->setDstIP(folly::IPAddressV6("::"));
   tunnel->setDstIPMask(
@@ -57,7 +57,7 @@ class TunnelManagerTest : public ManagerTestBase {
     SaiRouterInterfaceHandle* intfHandle =
         saiManagerTable->routerInterfaceManager().getRouterInterfaceHandle(
             InterfaceID(intf0.id));
-    RouterInterfaceSaiId saiIntfId{intfHandle->routerInterface->adapterKey()};
+    RouterInterfaceSaiId saiIntfId{intfHandle->adapterKey()};
     auto underlay = saiApiTable->tunnelApi().getAttribute(
         saiId, SaiTunnelTraits::Attributes::UnderlayInterface());
     EXPECT_EQ(underlay, saiIntfId);
@@ -79,20 +79,19 @@ class TunnelManagerTest : public ManagerTestBase {
             RouterID(0));
     VirtualRouterSaiId saiVirtualRouterId{
         virtualRouterHandle->virtualRouter->adapterKey()};
+    auto tunnelTerm = handle->getP2MPTunnelTermHandle();
     EXPECT_EQ(
-        GET_ATTR(TunnelTerm, VrId, handle->tunnelTerm->attributes()),
+        GET_ATTR(P2MPTunnelTerm, VrId, tunnelTerm->attributes()),
         saiVirtualRouterId);
     EXPECT_EQ(
-        GET_ATTR(TunnelTerm, Type, handle->tunnelTerm->attributes()),
-        expTermType);
+        GET_ATTR(P2MPTunnelTerm, Type, tunnelTerm->attributes()), expTermType);
     EXPECT_EQ(
-        GET_ATTR(TunnelTerm, TunnelType, handle->tunnelTerm->attributes()),
+        GET_ATTR(P2MPTunnelTerm, TunnelType, tunnelTerm->attributes()),
         expType);
     EXPECT_EQ(
-        GET_ATTR(TunnelTerm, DstIp, handle->tunnelTerm->attributes()),
-        expSrcIp);
+        GET_ATTR(P2MPTunnelTerm, DstIp, tunnelTerm->attributes()), expSrcIp);
     EXPECT_EQ(
-        GET_ATTR(TunnelTerm, ActionTunnelId, handle->tunnelTerm->attributes()),
+        GET_ATTR(P2MPTunnelTerm, ActionTunnelId, tunnelTerm->attributes()),
         saiId);
   }
 
@@ -160,8 +159,9 @@ TEST_F(TunnelManagerTest, changeTunnel) {
   EXPECT_EQ(
       GET_OPT_ATTR(Tunnel, DecapTtlMode, handle->tunnel->attributes()), 0);
   // Term obj has reversed semantics of src and dst
+  auto tunnelTerm = handle->getP2MPTunnelTermHandle();
   EXPECT_EQ(
-      GET_ATTR(TunnelTerm, DstIp, handle->tunnelTerm->attributes()),
+      GET_ATTR(P2MPTunnelTerm, DstIp, tunnelTerm->attributes()),
       folly::IPAddressV6("2001:db8:3333:4444:5555:6666:7777:8888"));
   SaiVirtualRouterHandle* virtualRouterHandle =
       saiManagerTable->virtualRouterManager().getVirtualRouterHandle(
@@ -169,7 +169,7 @@ TEST_F(TunnelManagerTest, changeTunnel) {
   VirtualRouterSaiId saiVirtualRouterId{
       virtualRouterHandle->virtualRouter->adapterKey()};
   EXPECT_EQ(
-      GET_ATTR(TunnelTerm, VrId, handle->tunnelTerm->attributes()),
+      GET_ATTR(P2MPTunnelTerm, VrId, tunnelTerm->attributes()),
       saiVirtualRouterId);
 }
 

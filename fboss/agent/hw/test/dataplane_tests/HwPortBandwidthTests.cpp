@@ -25,11 +25,16 @@ namespace facebook::fboss {
 class HwPortBandwidthTest : public HwLinkStateDependentTest {
   cfg::SwitchConfig initialConfig() const override {
     auto cfg = utility::oneL3IntfConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], cfg::PortLoopbackMode::MAC);
+        getHwSwitch(),
+        masterLogicalPortIds()[0],
+        getAsic()->desiredLoopbackMode());
 
     if (isSupported(HwAsic::Feature::L3_QOS)) {
       auto streamType =
-          *(getPlatform()->getAsic()->getQueueStreamTypes(false).begin());
+          *(getPlatform()
+                ->getAsic()
+                ->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT)
+                .begin());
       utility::addOlympicQueueConfig(
           &cfg, streamType, getPlatform()->getAsic());
       utility::addOlympicQosMaps(cfg);
@@ -63,8 +68,7 @@ class HwPortBandwidthTest : public HwLinkStateDependentTest {
   }
 
   MacAddress dstMac() const {
-    auto vlanId = utility::firstVlanID(initialConfig());
-    return utility::getInterfaceMac(getProgrammedState(), vlanId);
+    return utility::getFirstInterfaceMac(initialConfig());
   }
 
   void sendUdpPkt(uint8_t dscpVal, int payloadLen) {
@@ -178,7 +182,7 @@ class HwPortBandwidthTest : public HwLinkStateDependentTest {
       if (rateIsCorrect) {
         break;
       }
-      XLOG(INFO) << " Retrying ...";
+      XLOG(DBG2) << " Retrying ...";
       sleep(5);
     }
 
@@ -209,7 +213,11 @@ class HwPortBandwidthTest : public HwLinkStateDependentTest {
       GetQueueOutCntT getQueueOutCntFunc);
 
   void verifyQueueShaper();
+  void verifyPortRateTraffic(cfg::PortSpeed portSpeed);
 };
+class HwPortBandwidthParamTest
+    : public HwPortBandwidthTest,
+      public testing::WithParamInterface<cfg::PortSpeed> {};
 
 template <typename GetQueueOutCntT>
 void HwPortBandwidthTest::verifyRate(
@@ -338,6 +346,32 @@ void HwPortBandwidthTest::verifyQueueShaper() {
   verifyAcrossWarmBoots(setup, verify);
 }
 
+void HwPortBandwidthTest::verifyPortRateTraffic(cfg::PortSpeed portSpeed) {
+  auto setup = [&]() {
+    auto newCfg{initialConfig()};
+    utility::configurePortGroup(
+        *(getHwSwitchEnsemble()->getHwSwitch()),
+        newCfg,
+        portSpeed,
+        getAllPortsInGroup(masterLogicalPortIds()[0]));
+    XLOG(DBG0) << "Port " << masterLogicalPortIds()[0] << " speed set to "
+               << static_cast<int>(portSpeed) << " bps";
+    applyNewConfig(newCfg);
+    setupHelper();
+
+    auto pktsToSend =
+        getHwSwitchEnsemble()->getMinPktsForLineRate(masterLogicalPortIds()[0]);
+    sendUdpPkts(kQueueId0Dscp(), pktsToSend);
+  };
+
+  auto verify = [&]() {
+    EXPECT_NO_THROW(getHwSwitchEnsemble()->waitForLineRateOnPort(
+        masterLogicalPortIds()[0]));
+  };
+
+  verifyAcrossWarmBoots(setup, verify);
+}
+
 TEST_F(HwPortBandwidthTest, VerifyPps) {
   if (!isSupported(HwAsic::Feature::SCHEDULER_PPS)) {
     return;
@@ -393,4 +427,27 @@ TEST_F(HwPortBandwidthTest, VerifyQueueShaper) {
 
   verifyQueueShaper();
 }
+
+TEST_P(HwPortBandwidthParamTest, VerifyPortRateTraffic) {
+  cfg::PortSpeed portSpeed = static_cast<cfg::PortSpeed>(GetParam());
+  auto platformPort =
+      getHwSwitch()->getPlatform()->getPlatformPort(masterLogicalPortIds()[0]);
+  auto profileID = platformPort->getProfileIDBySpeedIf(portSpeed);
+  if (!profileID.has_value()) {
+    XLOG(DBG0) << "No profile supporting speed " << static_cast<int>(portSpeed)
+               << " for the this platform, skipping test!";
+#if defined(GTEST_SKIP)
+    GTEST_SKIP();
+#endif
+    return;
+  }
+  verifyPortRateTraffic(portSpeed);
+}
+INSTANTIATE_TEST_CASE_P(
+    HwPortBandwidthTest,
+    HwPortBandwidthParamTest,
+    ::testing::Values(
+        cfg::PortSpeed::FORTYG,
+        cfg::PortSpeed::HUNDREDG,
+        cfg::PortSpeed::TWOHUNDREDG));
 } // namespace facebook::fboss

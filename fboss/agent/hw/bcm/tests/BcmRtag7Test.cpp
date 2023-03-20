@@ -12,12 +12,18 @@
 #include "fboss/agent/hw/bcm/BcmSwitch.h"
 #include "fboss/agent/hw/bcm/tests/BcmTest.h"
 #include "fboss/agent/hw/bcm/tests/BcmTestUtils.h"
+#include "fboss/agent/hw/test/LoadBalancerUtils.h"
 #include "fboss/agent/state/LoadBalancer.h"
 #include "fboss/agent/state/LoadBalancerMap.h"
 
 #include <memory>
 
 using namespace facebook::fboss;
+
+namespace {
+// udf is applied on srcmod/srcport fields
+constexpr int kUdfHashFields = BCM_HASH_FIELD_SRCMOD | BCM_HASH_FIELD_SRCPORT;
+} // unnamed namespace
 
 namespace facebook::fboss {
 
@@ -37,7 +43,8 @@ class BcmRtag7Test : public BcmTest {
         kV4Fields_,
         kV6FieldsNoFlowLabel_,
         kTransportFields_,
-        std::move(noMplsFields));
+        std::move(noMplsFields),
+        kNoUdfGroupIds_);
   }
 
   std::shared_ptr<SwitchState> setupHalfTrunkHash() {
@@ -48,12 +55,57 @@ class BcmRtag7Test : public BcmTest {
         kV4Fields_,
         kV6FieldsNoFlowLabel_,
         std::move(noTransportFields),
-        std::move(noMplsFields));
+        std::move(noMplsFields),
+        kNoUdfGroupIds_);
   }
 
   std::shared_ptr<SwitchState> setupHashWithAllFields(LoadBalancerID id) {
     return setupHash(
-        id, kV4Fields_, kV6Fields_, kTransportFields_, kMplsFields_);
+        id,
+        kV4Fields_,
+        kV6Fields_,
+        kTransportFields_,
+        kMplsFields_,
+        kNoUdfGroupIds_);
+  }
+
+  std::shared_ptr<SwitchState> setupFullEcmpUdfHash() {
+    auto noMplsFields = LoadBalancer::MPLSFields{};
+    return setupHashWithUdf(
+        LoadBalancerID::ECMP,
+        kV4Fields_,
+        kV6FieldsNoFlowLabel_,
+        kTransportFields_,
+        std::move(noMplsFields),
+        kUdfGroupIds_);
+  }
+
+  std::shared_ptr<SwitchState> setupHashWithUdf(
+      LoadBalancerID id,
+      const LoadBalancer::IPv4Fields& v4Fields,
+      const LoadBalancer::IPv6Fields& v6Fields,
+      const LoadBalancer::TransportFields& transportFields,
+      const LoadBalancer::MPLSFields& mplsFields,
+      const LoadBalancer::UdfGroupIds& udfGroupIds) {
+    auto loadBalancer = makeLoadBalancer(
+        id, v4Fields, v6Fields, transportFields, mplsFields, udfGroupIds);
+
+    auto loadBalancers = getProgrammedState()->getLoadBalancers()->clone();
+    if (!loadBalancers->getNodeIf(id)) {
+      loadBalancers->addNode(std::move(loadBalancer));
+    } else {
+      loadBalancers->updateNode(std::move(loadBalancer));
+    }
+
+    auto udfConfigState = std::make_shared<UdfConfig>();
+    auto udfConfig = utility::addUdfConfig();
+    udfConfigState->fromThrift(udfConfig);
+
+    auto state = getProgrammedState();
+    state->modify(&state);
+    state->resetUdfConfig(udfConfigState);
+    state->resetLoadBalancers(std::move(loadBalancers));
+    return state;
   }
 
   std::shared_ptr<SwitchState> setupHash(
@@ -61,9 +113,10 @@ class BcmRtag7Test : public BcmTest {
       const LoadBalancer::IPv4Fields& v4Fields,
       const LoadBalancer::IPv6Fields& v6Fields,
       const LoadBalancer::TransportFields& transportFields,
-      const LoadBalancer::MPLSFields& mplsFields) {
-    auto loadBalancer =
-        makeLoadBalancer(id, v4Fields, v6Fields, transportFields, mplsFields);
+      const LoadBalancer::MPLSFields& mplsFields,
+      const LoadBalancer::UdfGroupIds& udfGroupIds) {
+    auto loadBalancer = makeLoadBalancer(
+        id, v4Fields, v6Fields, transportFields, mplsFields, udfGroupIds);
 
     auto loadBalancers = getProgrammedState()->getLoadBalancers()->clone();
     if (!loadBalancers->getNodeIf(id)) {
@@ -82,7 +135,8 @@ class BcmRtag7Test : public BcmTest {
       const LoadBalancer::IPv4Fields& v4Fields,
       const LoadBalancer::IPv6Fields& v6Fields,
       const LoadBalancer::TransportFields& transportFields,
-      const LoadBalancer::MPLSFields& mplsFields) {
+      const LoadBalancer::MPLSFields& mplsFields,
+      const LoadBalancer::UdfGroupIds& udfGroupIds) {
     return std::make_unique<LoadBalancer>(
         id,
         cfg::HashingAlgorithm::CRC16_CCITT,
@@ -90,7 +144,8 @@ class BcmRtag7Test : public BcmTest {
         v4Fields,
         v6Fields,
         transportFields,
-        mplsFields);
+        mplsFields,
+        udfGroupIds);
   }
 
   uint32_t getDefaultHashSubFieldSelectorsForL3MPLSForward() {
@@ -133,8 +188,77 @@ class BcmRtag7Test : public BcmTest {
       LoadBalancer::MPLSField::SECOND_LABEL,
       LoadBalancer::MPLSField::THIRD_LABEL};
 
+  const LoadBalancer::UdfGroupIds kNoUdfGroupIds_{};
+  const LoadBalancer::UdfGroupIds kUdfGroupIds_{"dstQueuePair"};
   static constexpr auto kEcmpSeed = 0x7E57EDA;
   static constexpr auto kTrunkSeed = 0x7E57EDB;
+};
+
+TEST_F(BcmRtag7Test, programUdfLoadBalancerMap) {
+  auto setupUdfLoadBalancers = [=]() { applyNewState(setupFullEcmpUdfHash()); };
+  auto verifyUdfLoadBalancers = [=]() {
+    const int v4HalfHash = BCM_HASH_FIELD_IP4SRC_LO | BCM_HASH_FIELD_IP4SRC_HI |
+        BCM_HASH_FIELD_IP4DST_LO | BCM_HASH_FIELD_IP4DST_HI;
+    const int v4FullHash =
+        v4HalfHash | BCM_HASH_FIELD_SRCL4 | BCM_HASH_FIELD_DSTL4;
+    const int udfV4FullHash = v4FullHash | kUdfHashFields;
+
+    const int v6HalfHash = BCM_HASH_FIELD_IP6SRC_LO | BCM_HASH_FIELD_IP6SRC_HI |
+        BCM_HASH_FIELD_IP6DST_LO | BCM_HASH_FIELD_IP6DST_HI;
+    const int v6FullHash =
+        v6HalfHash | BCM_HASH_FIELD_SRCL4 | BCM_HASH_FIELD_DSTL4;
+    const int udfV6FullHash = v6FullHash | kUdfHashFields;
+
+    utility::assertSwitchControl(
+        bcmSwitchHashIP4TcpUdpPortsEqualField0, udfV4FullHash);
+    utility::assertSwitchControl(bcmSwitchHashIP6Field0, udfV6FullHash);
+    utility::assertSwitchControl(bcmSwitchHashIP4TcpUdpField0, udfV4FullHash);
+    utility::assertSwitchControl(bcmSwitchHashIP6TcpUdpField0, udfV6FullHash);
+    utility::assertSwitchControl(
+        bcmSwitchHashIP4TcpUdpPortsEqualField0, udfV4FullHash);
+    utility::assertSwitchControl(
+        bcmSwitchHashIP6TcpUdpPortsEqualField0, udfV6FullHash);
+    // ensure udf hash is enabled
+    utility::assertSwitchControl(
+        bcmSwitchUdfHashEnable, BCM_HASH_FIELD0_ENABLE_UDFHASH);
+  };
+
+  setupUdfLoadBalancers();
+  verifyUdfLoadBalancers();
+};
+
+TEST_F(BcmRtag7Test, unprogramUdfLoadBalancerMap) {
+  auto setupUndoUdfLoadBalancers = [=]() {
+    applyNewState(setupFullEcmpUdfHash());
+    // undo udf hashing
+    applyNewState(setupFullEcmpHash());
+  };
+  auto verifyUndoUdfLoadBalancers = [=]() {
+    const int v4HalfHash = BCM_HASH_FIELD_IP4SRC_LO | BCM_HASH_FIELD_IP4SRC_HI |
+        BCM_HASH_FIELD_IP4DST_LO | BCM_HASH_FIELD_IP4DST_HI;
+    const int v4FullHash =
+        v4HalfHash | BCM_HASH_FIELD_SRCL4 | BCM_HASH_FIELD_DSTL4;
+
+    const int v6HalfHash = BCM_HASH_FIELD_IP6SRC_LO | BCM_HASH_FIELD_IP6SRC_HI |
+        BCM_HASH_FIELD_IP6DST_LO | BCM_HASH_FIELD_IP6DST_HI;
+    const int v6FullHash =
+        v6HalfHash | BCM_HASH_FIELD_SRCL4 | BCM_HASH_FIELD_DSTL4;
+
+    utility::assertSwitchControl(
+        bcmSwitchHashIP4TcpUdpPortsEqualField0, v4FullHash);
+    utility::assertSwitchControl(bcmSwitchHashIP6Field0, v6FullHash);
+    utility::assertSwitchControl(bcmSwitchHashIP4TcpUdpField0, v4FullHash);
+    utility::assertSwitchControl(bcmSwitchHashIP6TcpUdpField0, v6FullHash);
+    utility::assertSwitchControl(
+        bcmSwitchHashIP4TcpUdpPortsEqualField0, v4FullHash);
+    utility::assertSwitchControl(
+        bcmSwitchHashIP6TcpUdpPortsEqualField0, v6FullHash);
+    // ensure udf hash is disabled
+    utility::assertSwitchControl(bcmSwitchUdfHashEnable, 0);
+  };
+
+  setupUndoUdfLoadBalancers();
+  verifyUndoUdfLoadBalancers();
 };
 
 TEST_F(BcmRtag7Test, programLoadBalancerMap) {

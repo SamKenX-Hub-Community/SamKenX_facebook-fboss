@@ -8,6 +8,7 @@
  *
  */
 
+#include "fboss/agent/hw/sai/tracer/NeighborApiTracer.h"
 #include <typeindex>
 #include <utility>
 
@@ -21,6 +22,8 @@ namespace {
 std::map<int32_t, std::pair<std::string, std::size_t>> _NeighborEntryMap{
     SAI_ATTR_MAP(Neighbor, DstMac),
     SAI_ATTR_MAP(Neighbor, Metadata),
+    SAI_ATTR_MAP(Neighbor, EncapIndex),
+    SAI_ATTR_MAP(Neighbor, IsLocal),
 };
 } // namespace
 

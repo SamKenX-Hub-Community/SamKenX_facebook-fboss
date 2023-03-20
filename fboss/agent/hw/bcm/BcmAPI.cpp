@@ -188,7 +188,18 @@ const char* FOLLY_NULLABLE BcmAPI::getConfigValue(StringPiece name) {
 
 BcmMmuState BcmAPI::getMmuState() {
   if (BcmAPI::isHwUsingHSDK()) {
-    return getHwYamlConfig().getMmuState();
+    auto mode = getHwYamlConfig().getMmuState();
+    if (mode) {
+      XLOG(DBG2) << "MMU state is " << *mode;
+      if (*mode == "LOSSY") {
+        return BcmMmuState::MMU_LOSSY;
+      } else if (*mode == "LOSSLESS") {
+        return BcmMmuState::MMU_LOSSLESS;
+      } else if (*mode == "LOSSY_AND_LOSSLESS") {
+        return BcmMmuState::MMU_LOSSY_AND_LOSSLESS;
+      }
+    }
+    return BcmMmuState::UNKNOWN;
   } else {
     auto lossless = BcmAPI::getConfigValue(kSDK6MMUStateKey);
     if (!lossless) {
@@ -302,7 +313,7 @@ void BcmAPI::bdeCreate() {
     rv = linux_bde_create(&bus, &bde);
     bcmCheckError(rv, "failed to initialize BDE");
   } else {
-    XLOG(INFO) << "Bcm running in SIM mode";
+    XLOG(DBG2) << "Bcm running in SIM mode";
     bdeCreateSim();
   }
 }

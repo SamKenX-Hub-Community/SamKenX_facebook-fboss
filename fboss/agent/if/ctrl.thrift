@@ -10,15 +10,18 @@ include "common/fb303/if/fb303.thrift"
 include "common/network/if/Address.thrift"
 include "fboss/agent/if/mpls.thrift"
 include "fboss/agent/if/common.thrift"
+include "fboss/agent/if/product_info.thrift"
 include "fboss/qsfp_service/if/transceiver.thrift"
 include "fboss/agent/switch_config.thrift"
 include "fboss/agent/platform_config.thrift"
 include "fboss/lib/phy/phy.thrift"
+include "fboss/agent/hw/hardware_stats.thrift"
 
 typedef binary (cpp2.type = "::folly::fbstring") fbbinary
 typedef string (cpp2.type = "::folly::fbstring") fbstring
 
 const i32 DEFAULT_CTRL_PORT = 5909;
+const i32 NO_VLAN = -1;
 
 // Using the defaults from here:
 // https://en.wikipedia.org/wiki/Administrative_distance
@@ -136,10 +139,13 @@ struct ArpEntryThrift {
   2: i32 port;
   3: string vlanName;
   4: Address.BinaryAddress ip;
-  5: i32 vlanID;
+  // VlanId populated only for interfaces of type VLAN
+  5: i32 vlanID = NO_VLAN;
   6: string state;
   7: i32 ttl;
   8: i32 classID;
+  9: bool isLocal = true;
+  10: optional i64 switchId;
 }
 
 enum L2EntryType {
@@ -216,36 +222,12 @@ struct LacpPartnerPair {
 struct InterfaceDetail {
   1: string interfaceName;
   2: i32 interfaceId;
-  3: i32 vlanId;
+  // VlanId populated only for interfaces of type VLAN
+  3: i32 vlanId = NO_VLAN;
   4: i32 routerId;
   5: string mac;
   6: list<IpPrefix> address;
   7: i32 mtu;
-}
-
-struct ProductInfo {
-  1: string oem;
-  2: string product;
-  3: string serial;
-  4: string macRangeStart;
-  5: i16 macRangeSize;
-  6: string mfgDate;
-  7: string systemPartNumber;
-  8: string assembledAt;
-  9: string pcbManufacturer;
-  10: string assetTag;
-  11: string partNumber;
-  12: string odmPcbaPartNumber;
-  13: string odmPcbaSerial;
-  14: string fbPcbPartNumber;
-  15: i16 version;
-  16: i16 subVersion;
-  17: i16 productionState;
-  18: i16 productVersion;
-  19: string bmcMac;
-  20: string mgmtMac;
-  21: string fabricLocation;
-  22: string fbPcbaPartNumber;
 }
 
 /*
@@ -365,6 +347,47 @@ struct PortInfoThrift {
   21: optional PortHardwareDetails hw;
   22: optional TransceiverIdxThrift transceiverIdx;
   23: optional i32 hwLogicalPortId;
+  24: bool isDrained;
+}
+
+// Port queueing configuration
+struct PortQueueFields {
+  1: i16 id = 0;
+  2: i32 weight = 1;
+  3: optional i32 reserved;
+  // TODO: replace with switch_config.MMUScalingFactor?
+  4: optional string scalingFactor;
+  // TODO: replace with switch_config.QueueScheduling?
+  5: string scheduling = "WEIGHTED_ROUND_ROBIN";
+  // TODO: replace with switch_config.StreamType?
+  6: string streamType = "UNICAST";
+  7: optional list<switch_config.ActiveQueueManagement> aqms;
+  8: optional string name;
+  /*
+  * Refer PortQueueRate which is a generalized version and allows configuring
+  * pps as well as kbps.
+  */
+  10: optional i32 packetsPerSec_DEPRECATED;
+  11: optional i32 sharedBytes;
+  12: optional switch_config.PortQueueRate portQueueRate;
+
+  13: optional i32 bandwidthBurstMinKbits;
+  14: optional i32 bandwidthBurstMaxKbits;
+  15: optional i16 trafficClass;
+  16: optional list<i16> pfcPriorities;
+}
+
+struct SystemPortThrift {
+  1: i64 portId;
+  2: i64 switchId;
+  3: string portName; // switchId::portName
+  4: i64 coreIndex;
+  5: i64 corePortIndex;
+  6: i64 speedMbps;
+  7: i64 numVoqs;
+  9: bool enabled;
+  10: optional string qosPolicy;
+  11: list<PortQueueFields> queues;
 }
 
 struct PortHardwareDetails {
@@ -379,10 +402,13 @@ struct NdpEntryThrift {
   2: string mac;
   3: i32 port;
   4: string vlanName;
-  5: i32 vlanID;
+  // VlanId populated only for interfaces of type VLAN
+  5: i32 vlanID = NO_VLAN;
   6: string state;
   7: i32 ttl;
   8: i32 classID;
+  9: bool isLocal = true;
+  10: optional i64 switchId;
 }
 
 enum BootType {
@@ -404,6 +430,7 @@ struct PortStatus {
   4: optional TransceiverIdxThrift transceiverIdx;
   5: i64 speedMbps; // TODO: i32 (someone is optimistic about port speeds)
   6: string profileID;
+  7: bool drained;
 }
 
 enum CaptureDirection {
@@ -622,6 +649,32 @@ safe stateful server exception FbossTeUpdateError {
   2: list<TeFlow> failedDeleteFlows;
 }
 
+struct TeFlowDetails {
+  1: TeFlow flow;
+  3: list<common.NextHopThrift> nexthops;
+  4: list<common.NextHopThrift> resolvedNexthops;
+  // Enabled tracks state of flow rule. If there are
+  // no valid nexthops, agent will disable the rule
+  5: bool enabled;
+  6: optional ctrl.TeCounterID counterID;
+}
+
+struct FabricEndpoint {
+  1: i64 switchId;
+  2: optional string switchName;
+  3: i32 portId;
+  4: optional string portName;
+  // Is the port attached to anything on the
+  // other side. All other fields are relevant
+  // only when isAttached == true
+  5: bool isAttached;
+  6: switch_config.SwitchType switchType;
+  7: optional i64 expectedSwitchId;
+  8: optional i32 expectedPortId;
+  9: optional string expectedPortName;
+  10: optional string expectedSwitchName;
+}
+
 service FbossCtrl extends phy.FbossCommonPhyCtrl {
   /*
    * Retrieve up-to-date counters from the hardware, and publish all
@@ -783,6 +836,7 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
   map<i32, InterfaceDetail> getAllInterfaces() throws (
     1: fboss.FbossBaseError error,
   );
+  // DEPRECATED: API will no longer work in agent
   void registerForNeighborChanged() throws (1: fboss.FbossBaseError error) (
     thread = 'eb',
   );
@@ -856,6 +910,13 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
   );
 
   /*
+   * Set drain state for a port
+   */
+  void setPortDrainState(1: i32 portId, 2: bool drain) throws (
+    1: fboss.FbossBaseError error,
+  );
+
+  /*
    * Set loopback mode for a port. Primarily used by tests
    */
   void setPortLoopbackMode(1: i32 portId, 2: PortLoopbackMode mode) throws (
@@ -880,7 +941,7 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
    */
   void setPortPrbs(
     1: i32 portId,
-    2: phy.PrbsComponent component,
+    2: phy.PortComponent component,
     3: bool enable,
     4: i32 polynominal,
   ) throws (1: fboss.FbossBaseError error);
@@ -891,7 +952,7 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
    */
   phy.PrbsStats getPortPrbsStats(
     1: i32 portId,
-    2: phy.PrbsComponent component,
+    2: phy.PortComponent component,
   ) throws (1: fboss.FbossBaseError error);
 
   /*
@@ -908,7 +969,7 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
    */
   void clearPortPrbsStats(
     1: i32 portId,
-    2: phy.PrbsComponent component,
+    2: phy.PortComponent component,
   ) throws (1: fboss.FbossBaseError error);
 
   /*
@@ -933,6 +994,12 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
     1: fboss.FbossBaseError error,
   );
   map<i32, PortInfoThrift> getAllPortStats() throws (
+    1: fboss.FbossBaseError error,
+  );
+  map<string, hardware_stats.HwSysPortStats> getSysPortStats() throws (
+    1: fboss.FbossBaseError error,
+  );
+  map<string, hardware_stats.HwPortStats> getHwPortStats() throws (
     1: fboss.FbossBaseError error,
   );
 
@@ -1016,7 +1083,9 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
   /*
    * Return product information
    */
-  ProductInfo getProductInfo() throws (1: fboss.FbossBaseError error);
+  product_info.ProductInfo getProductInfo() throws (
+    1: fboss.FbossBaseError error,
+  );
 
   /*
    * Force reload configurations from the config file. Useful when config file
@@ -1041,9 +1110,9 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
   );
 
   /*
-   * Serialize switch state at path pointed by JSON pointer
+   * Serialize switch state at thrift path
    */
-  string getCurrentStateJSON(1: string jsonPointer);
+  string getCurrentStateJSON(1: string path);
 
   /*
    * Apply patch at given path within the state tree. jsonPatch must  be
@@ -1232,6 +1301,19 @@ service FbossCtrl extends phy.FbossCommonPhyCtrl {
   void syncTeFlows(1: list<FlowEntry> teFlowEntries) throws (
     1: fboss.FbossBaseError error,
     2: FbossTeUpdateError teFlowError,
+  );
+
+  list<TeFlowDetails> getTeFlowTableDetails() throws (
+    1: fboss.FbossBaseError error,
+  );
+  map<string, FabricEndpoint> getFabricReachability() throws (
+    1: fboss.FbossBaseError error,
+  );
+  map<i64, switch_config.DsfNode> getDsfNodes() throws (
+    1: fboss.FbossBaseError error,
+  );
+  map<i64, SystemPortThrift> getSystemPorts() throws (
+    1: fboss.FbossBaseError error,
   );
 }
 

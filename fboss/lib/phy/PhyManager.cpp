@@ -179,14 +179,15 @@ phy::PhyPortConfig PhyManager::getHwPhyPortConfig(PortID portID) {
 void PhyManager::programOnePort(
     PortID portId,
     cfg::PortProfileID portProfileId,
-    std::optional<TransceiverInfo> transceiverInfo) {
+    std::optional<TransceiverInfo> transceiverInfo,
+    bool needResetDataPath) {
   const auto& wLockedCache = getWLockedCache(portId);
 
   // This function will call ExternalPhy::programOnePort(phy::PhyPortConfig).
   auto* xphy = getExternalPhyLocked(wLockedCache);
   const auto& desiredPhyPortConfig =
       getDesiredPhyPortConfig(portId, portProfileId, transceiverInfo);
-  xphy->programOnePort(desiredPhyPortConfig);
+  xphy->programOnePort(desiredPhyPortConfig, needResetDataPath);
 
   // Once the port is programmed successfully, update the portToCacheInfo_
   bool isChanged = setPortToPortCacheInfoLocked(
@@ -281,6 +282,14 @@ bool PhyManager::setPortToPortCacheInfoLocked(
   for (const auto& it : portConfig.config.line.lanes) {
     lockedCache->lineLanes.push_back(it.first);
   }
+
+  if (!lockedCache->speed || lockedCache->systemLanes.empty() ||
+      lockedCache->lineLanes.empty()) {
+    if (publishPhyCb_) {
+      publishPhyCb_(std::string(getPortName(portID)), std::nullopt);
+    }
+  }
+
   // There's lane change
   return true;
 }
@@ -612,8 +621,12 @@ void PhyManager::updatePortStats(
               xphy->getPortInfo(systemLanes, lineLanes, lastPhyInfo);
           xphyPortInfo.name() = getPortName(portID);
           xphyPortInfo.speed() = programmedSpeed;
-          updateXphyInfo(portID, xphyPortInfo);
+          if (xphyPortInfo.state().has_value()) {
+            xphyPortInfo.state()->name() = getPortName(portID);
+            xphyPortInfo.state()->speed() = programmedSpeed;
+          }
           stats = ExternalPhyPortStats::fromPhyInfo(xphyPortInfo);
+          updateXphyInfo(portID, std::move(xphyPortInfo));
         } else {
           stats = xphy->getPortStats(systemLanes, lineLanes);
         }
@@ -757,8 +770,11 @@ void PhyManager::publishXphyInfoSnapshots(PortID port) const {
   xphySnapshotManager_->publishSnapshots(port);
 }
 
-void PhyManager::updateXphyInfo(PortID port, const phy::PhyInfo& phyInfo) {
-  xphySnapshotManager_->updatePhyInfo(port, phyInfo);
+void PhyManager::updateXphyInfo(PortID portID, phy::PhyInfo&& phyInfo) {
+  xphySnapshotManager_->updatePhyInfo(portID, phyInfo);
+  if (publishPhyCb_) {
+    publishPhyCb_(std::string(getPortName(portID)), std::move(phyInfo));
+  }
 }
 
 std::optional<phy::PhyInfo> PhyManager::getXphyInfo(PortID port) const {

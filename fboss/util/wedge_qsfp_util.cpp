@@ -6,12 +6,16 @@
 #include "fboss/lib/usb/WedgeI2CBus.h"
 
 #include "fboss/qsfp_service/module/QsfpModule.h"
+#include "fboss/qsfp_service/module/QsfpUtil.h"
 #include "fboss/qsfp_service/module/cmis/CmisModule.h"
 #include "fboss/qsfp_service/module/sff/SffModule.h"
 #include "fboss/qsfp_service/platforms/wedge/WedgeQsfp.h"
 
 #include "fboss/qsfp_service/lib/QsfpClient.h"
 #include "fboss/qsfp_service/module/cmis/CmisFieldInfo.h"
+
+#include "fboss/util/qsfp/QsfpServiceDetector.h"
+#include "fboss/util/qsfp/QsfpUtilContainer.h"
 
 #include <folly/Conv.h>
 #include <folly/Exception.h>
@@ -317,6 +321,8 @@ struct ModulePartInfo_s modulePartInfo[] = {
   {{'F','T','C','D','4','3','1','3','E','2','P','C','L','F','B','2'}, 64},
   // Finisar 400G module info
   {{'F','T','C','D','4','3','1','3','E','2','P','C','L','F','B','3'}, 64},
+  // Finisar 400G module info
+  {{'F','T','C','D','4','3','1','3','E','2','P','C','L','F','B','4'}, 64},
   // Finisar 400G LR4 module info
   {{'F','T','C','D','4','3','2','3','E','2','P','C','L',0x20,0x20,0x20}, 64},
   // Innolight 200G module info
@@ -329,10 +335,14 @@ struct ModulePartInfo_s modulePartInfo[] = {
   {{'T','-','D','Q','4','C','N','T','-','N','F','B',0x20,0x20,0x20,0x20}, 48},
   // Innolight 400G module info
   {{'T','-','D','Q','4','C','N','T','-','N','F','2',0x20,0x20,0x20,0x20}, 48},
+  // Innolight 400G module info
+  {{'T','-','D','Q','4','C','N','T','-','N','F','M',0x20,0x20,0x20,0x20}, 48},
   // Intel 200G module info
   {{'S','P','T','S','M','P','3','C','L','C','K','8',0x20,0x20,0x20,0x20}, 48},
   // Intel 200G module info
-  {{'S','P','T','S','M','P','3','C','L','C','K','9',0x20,0x20,0x20,0x20}, 48}
+  {{'S','P','T','S','M','P','3','C','L','C','K','9',0x20,0x20,0x20,0x20}, 48},
+  // Intel 400G module info
+  {{'S','P','T','S','H','P','3','C','L','C','K','S',0x20,0x20,0x20,0x20}, 48}
 };
 // clang-format on
 constexpr uint8_t kNumModuleInfo =
@@ -376,36 +386,6 @@ std::unique_ptr<facebook::fboss::QsfpServiceAsyncClient> getQsfpClient(
 
 /*
  * This function returns the transceiver management interface
- * based on the module type
- */
-TransceiverManagementInterface getTransceiverManagementInterface(
-    const uint8_t moduleId,
-    const unsigned int oneBasedPort) {
-  if (moduleId ==
-          static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP_PLUS_CMIS) ||
-      moduleId == static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP_DD)) {
-    return TransceiverManagementInterface::CMIS;
-  } else if (
-      moduleId ==
-          static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP_PLUS) ||
-      moduleId == static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP) ||
-      moduleId ==
-          static_cast<uint8_t>(TransceiverModuleIdentifier::MINIPHOTON_OBO) ||
-      moduleId == static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP28)) {
-    return TransceiverManagementInterface::SFF;
-  } else if (
-      moduleId == static_cast<uint8_t>(TransceiverModuleIdentifier::SFP_PLUS)) {
-    return TransceiverManagementInterface::SFF8472;
-  } else {
-    XLOG(ERR) << fmt::format(
-        "QSFP {:d}: Unrecognized module type = {:d}", oneBasedPort, moduleId);
-  }
-
-  return TransceiverManagementInterface::NONE;
-}
-
-/*
- * This function returns the transceiver management interface
  * by reading the register 0 directly from module
  */
 TransceiverManagementInterface getModuleType(
@@ -423,7 +403,7 @@ TransceiverManagementInterface getModuleType(
     }
   }
 
-  return getTransceiverManagementInterface(moduleId, port);
+  return QsfpModule::getTransceiverManagementInterface(moduleId, port);
 }
 
 /*
@@ -438,10 +418,9 @@ std::map<int32_t, TransceiverManagementInterface> getModuleTypeViaService(
   const int offset = 0;
   const int length = 1;
   const int page = 0;
-  std::vector<int32_t> idx =
-      zeroBasedPortIds(const_cast<std::vector<unsigned int>&>(ports));
-  std::map<int32_t, ReadResponse> readResp =
-      doReadRegViaService(idx, offset, length, page, evb);
+  std::vector<int32_t> idx = zeroBasedPortIds(ports);
+  std::map<int32_t, ReadResponse> readResp;
+  doReadRegViaService(idx, offset, length, page, evb, readResp);
 
   if (readResp.empty()) {
     XLOG(ERR) << "Indirect read error in getting module type";
@@ -451,9 +430,11 @@ std::map<int32_t, TransceiverManagementInterface> getModuleTypeViaService(
   for (const auto& response : readResp) {
     const auto moduleId = *(response.second.data()->data());
     const TransceiverManagementInterface modType =
-        getTransceiverManagementInterface(moduleId, response.first + 1);
+        QsfpModule::getTransceiverManagementInterface(
+            moduleId, response.first + 1);
 
-    if (modType == TransceiverManagementInterface::NONE) {
+    if (modType == TransceiverManagementInterface::NONE ||
+        modType == TransceiverManagementInterface::UNKNOWN) {
       return std::map<int32_t, TransceiverManagementInterface>();
     } else {
       moduleTypes[response.first] = modType;
@@ -477,30 +458,44 @@ bool flipModuleUpperPage(
   return true;
 }
 
-bool overrideLowPower(
-    TransceiverI2CApi* bus,
-    unsigned int port,
-    bool lowPower) {
-  std::array<uint8_t, 1> buf;
-  try {
-    // First figure out whether this module follows CMIS or Sff8636.
-    auto managementInterface = getModuleType(bus, port);
-    if (managementInterface == TransceiverManagementInterface::CMIS) {
-      bus->moduleRead(port, {TransceiverI2CApi::ADDR_QSFP, 26, 1}, buf.data());
-      lowPower ? buf[0] |= kCmisPowerModeMask : buf[0] &= ~kCmisPowerModeMask;
-      bus->moduleWrite(port, {TransceiverI2CApi::ADDR_QSFP, 26, 1}, buf.data());
-    } else if (managementInterface == TransceiverManagementInterface::SFF) {
-      buf[0] = {lowPower ? kSffLowPowerMode : kSffHighPowerMode};
-      bus->moduleWrite(port, {TransceiverI2CApi::ADDR_QSFP, 93, 1}, buf.data());
-    } else {
-      fprintf(stderr, "QSFP %d: Unrecognizable management interface\n", port);
+bool overrideLowPower(unsigned int port, bool lowPower) {
+  TransceiverManagementInterface managementInterface =
+      TransceiverManagementInterface::NONE;
+
+  if (QsfpServiceDetector::getInstance()->isQsfpServiceActive()) {
+    folly::EventBase& evb = QsfpUtilContainer::getInstance()->getEventBase();
+    std::map<int32_t, TransceiverManagementInterface> moduleTypes =
+        getModuleTypeViaService({port}, evb);
+
+    if (moduleTypes.empty()) {
+      XLOG(ERR) << "Error in getting module type";
       return false;
     }
-  } catch (const I2cError& ex) {
-    // This generally means the QSFP module is not present.
-    fprintf(stderr, "QSFP %d: not present or unwritable\n", port);
+
+    for (auto [portIdx, moduleType] : moduleTypes) {
+      managementInterface = moduleType;
+    }
+  } else {
+    TransceiverI2CApi* bus =
+        QsfpUtilContainer::getInstance()->getTransceiverBus();
+
+    managementInterface = getModuleType(bus, port);
+  }
+
+  uint8_t buf;
+
+  if (managementInterface == TransceiverManagementInterface::CMIS) {
+    readRegister(port, 26, 1, 0, &buf);
+    lowPower ? buf |= kCmisPowerModeMask : buf &= ~kCmisPowerModeMask;
+    writeRegister({port}, 26, 0, buf);
+  } else if (managementInterface == TransceiverManagementInterface::SFF) {
+    buf = {lowPower ? kSffLowPowerMode : kSffHighPowerMode};
+    writeRegister({port}, 93, 0, buf);
+  } else {
+    fprintf(stderr, "QSFP %d: Unrecognizable management interface\n", port);
     return false;
   }
+
   return true;
 }
 
@@ -542,41 +537,24 @@ bool setCdr(TransceiverI2CApi* bus, unsigned int port, uint8_t value) {
   return true;
 }
 
-bool rateSelect(TransceiverI2CApi* bus, unsigned int port, uint8_t value) {
+bool rateSelect(unsigned int port, uint8_t value) {
   // If v1 is used, both at 10, if v2
   // 0b10 - 25G channels
   // 0b00 - 10G channels
-  uint8_t version[1];
-  try {
-    // ensure we have page0 selected
-    uint8_t page0 = 0;
-    bus->moduleWrite(port, {TransceiverI2CApi::ADDR_QSFP, 127, 1}, &page0);
+  uint8_t version;
+  uint8_t buf;
 
-    bus->moduleRead(port, {TransceiverI2CApi::ADDR_QSFP, 141, 1}, version);
-  } catch (const I2cError& ex) {
-    fprintf(
-        stderr,
-        "Port %d: Unable to determine rate select version in use, defaulting \
-        to V1\n",
-        port);
-    version[0] = 0b01;
-  }
+  readRegister(port, 141, 1, 0, &version);
 
-  uint8_t buf[1];
-  if (version[0] & 1) {
-    buf[0] = 0b10;
+  if (version & 1) {
+    buf = 0b10;
   } else {
-    buf[0] = value;
+    buf = value;
   }
 
-  try {
-    bus->moduleWrite(port, {TransceiverI2CApi::ADDR_QSFP, 87, 1}, buf);
-    bus->moduleWrite(port, {TransceiverI2CApi::ADDR_QSFP, 88, 1}, buf);
-  } catch (const I2cError& ex) {
-    // This generally means the QSFP module is not present.
-    fprintf(stderr, "QSFP %d: not present or unwritable\n", port);
-    return false;
-  }
+  writeRegister({port}, 87, 0, buf);
+  writeRegister({port}, 88, 0, buf);
+
   return true;
 }
 
@@ -613,7 +591,7 @@ bool appSel(TransceiverI2CApi* bus, unsigned int port, uint8_t value) {
   return true;
 }
 
-std::vector<int32_t> zeroBasedPortIds(std::vector<unsigned int>& ports) {
+std::vector<int32_t> zeroBasedPortIds(const std::vector<unsigned int>& ports) {
   std::vector<int32_t> idx;
   for (auto port : ports) {
     // Direct I2C bus starts from 1 instead of 0, however qsfp_service
@@ -644,12 +622,13 @@ void displayReadRegData(const uint8_t* buf, int offset, int length) {
   printf("\n");
 }
 
-std::map<int32_t, ReadResponse> doReadRegViaService(
+void doReadRegViaService(
     const std::vector<int32_t>& ports,
     int offset,
     int length,
     int page,
-    folly::EventBase& evb) {
+    folly::EventBase& evb,
+    std::map<int32_t, ReadResponse>& response) {
   auto client = getQsfpClient(evb);
   ReadRequest request;
   TransceiverIOParameters param;
@@ -660,7 +639,6 @@ std::map<int32_t, ReadResponse> doReadRegViaService(
     param.page() = page;
   }
   request.parameter() = param;
-  std::map<int32_t, ReadResponse> response;
 
   try {
     client->sync_readTransceiverRegister(response, request);
@@ -669,7 +647,7 @@ std::map<int32_t, ReadResponse> doReadRegViaService(
       auto data = iterator.second.data()->data();
       if (iterator.second.data()->length() < length) {
         fprintf(stderr, "QSFP %d: fail to read module\n", iterator.first + 1);
-        return std::map<int32_t, ReadResponse>();
+        return;
       } else {
         displayReadRegData(data, offset, iterator.second.data()->length());
       }
@@ -677,10 +655,7 @@ std::map<int32_t, ReadResponse> doReadRegViaService(
   } catch (const std::exception& ex) {
     fprintf(
         stderr, "error reading register from qsfp_service: %s\n", ex.what());
-    return std::map<int32_t, ReadResponse>();
   }
-
-  return response;
 }
 
 void setPageDirect(TransceiverI2CApi* bus, unsigned int port, uint8_t page) {
@@ -744,7 +719,8 @@ int doReadReg(
     // Release the bus access for QSFP service
     bus->close();
     std::vector<int32_t> idx = zeroBasedPortIds(ports);
-    doReadRegViaService(idx, offset, length, page, evb);
+    std::map<int32_t, ReadResponse> resp;
+    doReadRegViaService(idx, offset, length, page, evb, resp);
   }
   return EX_OK;
 }
@@ -810,6 +786,80 @@ bool doWriteRegViaService(
   return retVal;
 }
 
+void readRegisterDirect(
+    TransceiverI2CApi* bus,
+    unsigned int port,
+    int offset,
+    int length,
+    int page,
+    uint8_t* buf) {
+  try {
+    if (page != -1) {
+      setPageDirect(bus, port, page);
+    }
+
+    bus->moduleRead(
+        port, {static_cast<uint8_t>(FLAGS_i2c_address), offset, length}, buf);
+  } catch (const I2cError& ex) {
+    fprintf(stderr, "QSFP %d: fail to read module\n", port);
+  }
+}
+
+int readRegister(
+    unsigned int port,
+    int offset,
+    int length,
+    int page,
+    uint8_t* buf) {
+  if (offset == -1) {
+    fprintf(
+        stderr,
+        "QSFP %d: Fail to read register. Specify offset using --offset\n",
+        port);
+    return EX_SOFTWARE;
+  }
+
+  if (length > 128) {
+    fprintf(
+        stderr,
+        "QSFP %d: Fail to read register. The --length value should be between 1 to 128\n",
+        port);
+    return EX_SOFTWARE;
+  }
+
+  if (QsfpServiceDetector::getInstance()->isQsfpServiceActive()) {
+    folly::EventBase& evb = QsfpUtilContainer::getInstance()->getEventBase();
+    std::vector<int32_t> portIdx = zeroBasedPortIds({port});
+
+    std::map<int32_t, ReadResponse> readResp;
+    doReadRegViaService(portIdx, offset, length, page, evb, readResp);
+
+    if (readResp.empty()) {
+      fprintf(stderr, "QSFP %d: indirect read error", port);
+      return EX_SOFTWARE;
+    }
+
+    if (readResp.size() != 1) {
+      fprintf(
+          stderr,
+          "Got %lu responses for the read but expected 1",
+          readResp.size());
+      return EX_SOFTWARE;
+    }
+
+    auto dataPtr = readResp.begin()->second.data()->data();
+    // The underlying buffer in ReadResponse will get cleaned up when it goes
+    // out of scope, so copy the data to the buffer the user requested
+    memcpy(buf, dataPtr, length);
+  } else {
+    TransceiverI2CApi* bus =
+        QsfpUtilContainer::getInstance()->getTransceiverBus();
+    readRegisterDirect(bus, port, offset, length, page, buf);
+  }
+
+  return EX_OK;
+}
+
 int doWriteReg(
     TransceiverI2CApi* bus,
     std::vector<unsigned int>& ports,
@@ -835,6 +885,36 @@ int doWriteReg(
     std::vector<int32_t> idx = zeroBasedPortIds(ports);
     doWriteRegViaService(idx, offset, page, data, evb);
   }
+
+  return EX_OK;
+}
+
+int writeRegister(
+    const std::vector<unsigned int>& ports,
+    int offset,
+    int page,
+    uint8_t data) {
+  if (offset == -1) {
+    fprintf(
+        stderr,
+        "QSFP %s: Fail to write register. Specify offset using --offset\n",
+        folly::join(",", ports).c_str());
+    return EX_SOFTWARE;
+  }
+
+  if (QsfpServiceDetector::getInstance()->isQsfpServiceActive()) {
+    folly::EventBase& evb = QsfpUtilContainer::getInstance()->getEventBase();
+    std::vector<int32_t> idx = zeroBasedPortIds(ports);
+    doWriteRegViaService(idx, offset, page, data, evb);
+  } else {
+    TransceiverI2CApi* bus =
+        QsfpUtilContainer::getInstance()->getTransceiverBus();
+
+    for (unsigned int portNum : ports) {
+      doWriteRegDirect(bus, portNum, offset, page, data);
+    }
+  }
+
   return EX_OK;
 }
 
@@ -854,7 +934,8 @@ int doWriteReg(
  * R       130         0x0      5
  *
  * CLI format:
- *   wedge_qsfp_util <module> --batch_ops --batchfile <filename> [--direct_i2c]
+ *   wedge_qsfp_util <module> --batch_ops --batchfile <filename>
+ * [--direct_i2c]
  */
 int doBatchOps(
     TransceiverI2CApi* bus,
@@ -934,7 +1015,7 @@ std::map<int32_t, DOMDataUnion> fetchDataFromQsfpService(
 
   std::vector<int32_t> presentPorts;
   for (auto& qsfpInfo : qsfpInfoMap) {
-    if (*qsfpInfo.second.present()) {
+    if (*can_throw(qsfpInfo.second.tcvrState())->present()) {
       presentPorts.push_back(qsfpInfo.first);
     }
   }
@@ -1215,8 +1296,26 @@ void printHostLaneSignals(const std::vector<HostLaneSignals>& signals) {
     return;
   }
   printLaneLine("  Host Lane Signals: ", numLanes);
-  // Assumption: If a signal is valid for first lane, it is also valid for other
-  // lanes.
+  // Assumption: If a signal is valid for first lane, it is also valid for
+  // other lanes.
+  if (signals[0].txLos()) {
+    printf("\n    %-22s", "Tx LOS");
+    for (const auto& signal : signals) {
+      printf(" %-12d", *(signal.txLos()));
+    }
+  }
+  if (signals[0].txLol()) {
+    printf("\n    %-22s", "Tx LOL");
+    for (const auto& signal : signals) {
+      printf(" %-12d", *(signal.txLol()));
+    }
+  }
+  if (signals[0].txAdaptEqFault()) {
+    printf("\n    %-22s", "Tx Adaptive Eq Fault");
+    for (const auto& signal : signals) {
+      printf(" %-12d", *(signal.txAdaptEqFault()));
+    }
+  }
   if (signals[0].dataPathDeInit()) {
     printf("\n    %-22s", "Datapath de-init");
     for (const auto& signal : signals) {
@@ -1235,24 +1334,36 @@ void printHostLaneSignals(const std::vector<HostLaneSignals>& signals) {
   printf("\n");
 }
 
-void printMediaLaneSignals(const std::vector<MediaLaneSignals>& signals) {
+void printMediaLaneSignals(
+    const std::vector<MediaLaneSignals>& signals,
+    bool printTxFlags) {
   unsigned int numLanes = signals.size();
   if (numLanes == 0) {
     return;
   }
   printLaneLine("  Media Lane Signals: ", numLanes);
-  // Assumption: If a signal is valid for first lane, it is also valid for other
-  // lanes.
-  if (signals[0].txLos()) {
-    printf("\n    %-22s", "Tx LOS");
-    for (const auto& signal : signals) {
-      printf(" %-12d", *(signal.txLos()));
+  // Assumption: If a signal is valid for first lane, it is also valid for
+  // other lanes.
+  // TODO(ccpowers): Can delete this check once we remove tx flags from
+  // the media signals
+  if (printTxFlags) {
+    if (signals[0].txLos()) {
+      printf("\n    %-22s", "Tx LOS");
+      for (const auto& signal : signals) {
+        printf(" %-12d", *(signal.txLos()));
+      }
     }
-  }
-  if (signals[0].txLol()) {
-    printf("\n    %-22s", "Tx LOL");
-    for (const auto& signal : signals) {
-      printf(" %-12d", *(signal.txLol()));
+    if (signals[0].txLol()) {
+      printf("\n    %-22s", "Tx LOL");
+      for (const auto& signal : signals) {
+        printf(" %-12d", *(signal.txLol()));
+      }
+    }
+    if (signals[0].txAdaptEqFault()) {
+      printf("\n    %-22s", "Tx Adaptive Eq Fault");
+      for (const auto& signal : signals) {
+        printf(" %-12d", *(signal.txAdaptEqFault()));
+      }
     }
   }
   if (signals[0].rxLos()) {
@@ -1271,12 +1382,6 @@ void printMediaLaneSignals(const std::vector<MediaLaneSignals>& signals) {
     printf("\n    %-22s", "Tx Fault");
     for (const auto& signal : signals) {
       printf(" %-12d", *(signal.txFault()));
-    }
-  }
-  if (signals[0].txAdaptEqFault()) {
-    printf("\n    %-22s", "Tx Adaptive Eq Fault");
-    for (const auto& signal : signals) {
-      printf(" %-12d", *(signal.txAdaptEqFault()));
     }
   }
   printf("\n");
@@ -1449,25 +1554,28 @@ void printThresholds(const AlarmThreshold& thresholds) {
 void printManagementInterface(
     const TransceiverInfo& transceiverInfo,
     const char* fmt) {
-  if (auto mgmtInterface = transceiverInfo.transceiverManagementInterface()) {
+  const TcvrState& tcvrState = *can_throw(transceiverInfo.tcvrState());
+  if (auto mgmtInterface = tcvrState.transceiverManagementInterface()) {
     printf(fmt, apache::thrift::util::enumNameSafe(*mgmtInterface).c_str());
   }
 }
 
 void printVerboseInfo(const TransceiverInfo& transceiverInfo) {
-  auto globalSensors = transceiverInfo.sensor();
+  const TcvrState& tcvrState = *can_throw(transceiverInfo.tcvrState());
+  const TcvrStats& tcvrStats = *can_throw(transceiverInfo.tcvrStats());
+  auto globalSensors = tcvrStats.sensor();
 
   if (globalSensors) {
     printGlobalInterruptFlags(*globalSensors);
   }
-  printChannelInterruptFlags(*(transceiverInfo.channels()));
-  if (auto thresholds = transceiverInfo.thresholds()) {
+  printChannelInterruptFlags(*(tcvrStats.channels()));
+  if (auto thresholds = tcvrState.thresholds()) {
     printThresholds(*thresholds);
   }
 }
 
 void printVendorInfo(const TransceiverInfo& transceiverInfo) {
-  if (auto vendor = transceiverInfo.vendor()) {
+  if (auto vendor = can_throw(transceiverInfo.tcvrState())->vendor()) {
     auto vendorInfo = *vendor;
     printf("  Vendor Info:\n");
     auto name = *(vendorInfo.name());
@@ -1515,20 +1623,27 @@ void printCableInfo(const Cable& cable) {
 }
 
 void printDomMonitors(const TransceiverInfo& transceiverInfo) {
-  auto globalSensors = transceiverInfo.sensor();
-  printLaneDomMonitors(*(transceiverInfo.channels()));
+  const TcvrStats& tcvrStats = *can_throw(transceiverInfo.tcvrStats());
+  auto globalSensors = tcvrStats.sensor();
+  printLaneDomMonitors(*(tcvrStats.channels()));
   if (globalSensors) {
     printGlobalDomMonitors(*globalSensors);
   }
 }
 
 void printSignalsAndSettings(const TransceiverInfo& transceiverInfo) {
-  auto settings = *(transceiverInfo.settings());
-  if (auto hostSignals = transceiverInfo.hostLaneSignals()) {
+  const TcvrState& tcvrState = *can_throw(transceiverInfo.tcvrState());
+  auto settings = *(tcvrState.settings());
+  // TODO(ccpowers): This is to support tx signals in both hostSignals (new)
+  // and mediaSignals(deprecated). Once more of the fleet has the new flags,
+  // we should remove support for the tx flags in mediaLaneSignals
+  auto hasNewTxFlags = false;
+  if (auto hostSignals = tcvrState.hostLaneSignals()) {
     printHostLaneSignals(*hostSignals);
+    hasNewTxFlags = hostSignals->size() > 0 && hostSignals->begin()->txLos();
   }
-  if (auto mediaSignals = transceiverInfo.mediaLaneSignals()) {
-    printMediaLaneSignals(*mediaSignals);
+  if (auto mediaSignals = tcvrState.mediaLaneSignals()) {
+    printMediaLaneSignals(*mediaSignals, !hasNewTxFlags);
   }
   if (auto hostSettings = settings.hostLaneSettings()) {
     printHostLaneSettings(*hostSettings);
@@ -1542,18 +1657,19 @@ void printSff8472DetailService(
     const TransceiverInfo& transceiverInfo,
     unsigned int port,
     bool /* verbose */) {
-  auto settings = *(transceiverInfo.settings());
+  const TcvrState& tcvrState = *can_throw(transceiverInfo.tcvrState());
+  auto settings = *(tcvrState.settings());
 
   printf("Port %d\n", port);
 
   // ------ Module Status -------
   printf("  Module Status:\n");
-  if (auto identifier = transceiverInfo.identifier()) {
+  if (auto identifier = tcvrState.identifier()) {
     printf(
         "    Transceiver Identifier: %s\n",
         apache::thrift::util::enumNameSafe(*identifier).c_str());
   }
-  if (auto stateMachineState = transceiverInfo.stateMachineState()) {
+  if (auto stateMachineState = tcvrState.stateMachineState()) {
     printf(
         "    StateMachine State: %s\n",
         apache::thrift::util::enumNameSafe(*stateMachineState).c_str());
@@ -1586,27 +1702,29 @@ void printSffDetailService(
     const TransceiverInfo& transceiverInfo,
     unsigned int port,
     bool verbose) {
-  auto settings = *(transceiverInfo.settings());
+  const TcvrState& tcvrState = *can_throw(transceiverInfo.tcvrState());
+
+  auto& settings = *(tcvrState.settings());
 
   printf("Port %d\n", port);
 
   // ------ Module Status -------
   printf("  Module Status:\n");
-  if (auto identifier = transceiverInfo.identifier()) {
+  if (auto identifier = tcvrState.identifier()) {
     printf(
         "    Transceiver Identifier: %s\n",
         apache::thrift::util::enumNameSafe(*identifier).c_str());
   }
-  if (auto status = transceiverInfo.status()) {
+  if (auto status = tcvrState.status()) {
     printf("    InterruptL: 0x%02x\n", *(status->interruptL()));
     printf("    Data_Not_Ready: 0x%02x\n", *(status->dataNotReady()));
   }
-  if (auto ext = transceiverInfo.extendedSpecificationComplianceCode()) {
+  if (auto ext = tcvrState.extendedSpecificationComplianceCode()) {
     printf(
         "    Extended Specification Compliance Code: %s\n",
         apache::thrift::util::enumNameSafe(*(ext)).c_str());
   }
-  if (auto stateMachineState = transceiverInfo.stateMachineState()) {
+  if (auto stateMachineState = tcvrState.stateMachineState()) {
     printf(
         "    StateMachine State: %s\n",
         apache::thrift::util::enumNameSafe(*stateMachineState).c_str());
@@ -1623,13 +1741,13 @@ void printSffDetailService(
 
   printVendorInfo(transceiverInfo);
 
-  if (auto cable = transceiverInfo.cable()) {
+  if (auto cable = tcvrState.cable()) {
     printCableInfo(*cable);
   }
-  if (transceiverInfo.eepromCsumValid().has_value()) {
+  if (tcvrState.eepromCsumValid().has_value()) {
     printf(
         "  EEPROM Checksum: %s\n",
-        *transceiverInfo.eepromCsumValid() ? "Valid" : "Invalid");
+        *tcvrState.eepromCsumValid() ? "Valid" : "Invalid");
   }
   printf("  Module Control:\n");
   printf(
@@ -1879,10 +1997,13 @@ void printCmisDetailService(
     const TransceiverInfo& transceiverInfo,
     unsigned int port,
     bool verbose) {
-  auto moduleStatus = transceiverInfo.status();
-  auto channels = *(transceiverInfo.channels());
+  const TcvrState& tcvrState = *can_throw(transceiverInfo.tcvrState());
+  const TcvrStats& tcvrStats = *can_throw(transceiverInfo.tcvrStats());
+
+  auto moduleStatus = tcvrState.status();
+  auto channels = *(tcvrStats.channels());
   printf("Port %d\n", port);
-  auto settings = *(transceiverInfo.settings());
+  auto settings = *(tcvrState.settings());
 
   printManagementInterface(
       transceiverInfo, "  Transceiver Management Interface: %s\n");
@@ -1893,17 +2014,24 @@ void printCmisDetailService(
         apache::thrift::util::enumNameSafe(*(moduleStatus->cmisModuleState()))
             .c_str());
   }
-  if (auto stateMachineState = transceiverInfo.stateMachineState()) {
+  if (auto stateMachineState = tcvrState.stateMachineState()) {
     printf(
         "    StateMachine State: %s\n",
         apache::thrift::util::enumNameSafe(*stateMachineState).c_str());
   }
   if (auto mediaInterfaceId = settings.mediaInterface()) {
-    printf(
-        "  Media Interface: %s\n",
-        apache::thrift::util::enumNameSafe(
-            (*mediaInterfaceId)[0].media()->get_smfCode())
-            .c_str());
+    std::string mediaInterface;
+    if ((*mediaInterfaceId)[0].media()->getType() ==
+        MediaInterfaceUnion::smfCode) {
+      mediaInterface = apache::thrift::util::enumNameSafe(
+          (*mediaInterfaceId)[0].media()->get_smfCode());
+    } else if (
+        (*mediaInterfaceId)[0].media()->getType() ==
+        MediaInterfaceUnion::passiveCuCode) {
+      mediaInterface = apache::thrift::util::enumNameSafe(
+          (*mediaInterfaceId)[0].media()->get_passiveCuCode());
+    }
+    printf("  Media Interface: %s\n", mediaInterface.c_str());
   }
   printf(
       "  Power Control: %s\n",
@@ -1922,7 +2050,7 @@ void printCmisDetailService(
   if (verbose) {
     printVerboseInfo(transceiverInfo);
   }
-  if (transceiverInfo.eepromCsumValid().has_value()) {
+  if (tcvrState.eepromCsumValid().has_value()) {
     printf(
         "  EEPROM Checksum: %s\n",
         *transceiverInfo.eepromCsumValid() ? "Valid" : "Invalid");
@@ -2150,7 +2278,8 @@ void printPortDetailService(
     const TransceiverInfo& transceiverInfo,
     unsigned int port,
     bool verbose) {
-  if (auto mgmtInterface = transceiverInfo.transceiverManagementInterface()) {
+  if (auto mgmtInterface = can_throw(transceiverInfo.tcvrState())
+                               ->transceiverManagementInterface()) {
     if (*mgmtInterface == TransceiverManagementInterface::SFF) {
       printSffDetailService(transceiverInfo, port, verbose);
     } else if (*mgmtInterface == TransceiverManagementInterface::SFF8472) {
@@ -2196,11 +2325,11 @@ void tryOpenBus(TransceiverI2CApi* bus) {
 /* This function does a hard reset of the QSFP in a given platform. The reset
  * is done by Fpga or I2C function. This function calls another function which
  * creates and returns TransceiverPlatformApi object. For Fpga controlled
- * platform the called function creates Platform specific TransceiverApi object
- * and returns it. For I2c controlled platform the called function creates
- * TransceiverPlatformI2cApi object and keeps the platform specific I2CBus
- * object raw pointer inside it. The returned object's Qsfp control function
- * is called here to use appropriate Fpga/I2c Api in this function.
+ * platform the called function creates Platform specific TransceiverApi
+ * object and returns it. For I2c controlled platform the called function
+ * creates TransceiverPlatformI2cApi object and keeps the platform specific
+ * I2CBus object raw pointer inside it. The returned object's Qsfp control
+ * function is called here to use appropriate Fpga/I2c Api in this function.
  */
 bool doQsfpHardReset(TransceiverI2CApi* bus, unsigned int port) {
   // Call the function to get TransceiverPlatformApi object. For Fpga
@@ -2401,8 +2530,8 @@ std::vector<int> getPidForProcess(std::string proccessName) {
  * cliModulefirmwareUpgrade
  *
  * This function does the firmware upgrade on the optics module in the current
- * thread. This directly invokes the bus->moduleRead/Write API to do the module
- * CDB based firnware upgrade
+ * thread. This directly invokes the bus->moduleRead/Write API to do the
+ * module CDB based firnware upgrade
  */
 bool cliModulefirmwareUpgrade(
     DirectI2cInfo i2cInfo,
@@ -2426,9 +2555,9 @@ bool cliModulefirmwareUpgrade(
   // Confirm module type is CMIS
   auto moduleType = getModuleType(i2cInfo.bus, port);
   if (moduleType != TransceiverManagementInterface::CMIS) {
-    // If device can't be determined as cmis then check page 0 register 128 also
-    // to identify its type as in some case corrupted image wipes out all lower
-    // page registers
+    // If device can't be determined as cmis then check page 0 register 128
+    // also to identify its type as in some case corrupted image wipes out all
+    // lower page registers
     if (dataUpper[0] ==
             static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP_PLUS_CMIS) ||
         dataUpper[0] ==
@@ -2501,14 +2630,14 @@ bool cliModulefirmwareUpgrade(
  *
  * This is multi-threaded version of the module upgrade trigger function.
  * This multi-threaded overloaded function gets the list of optics on which
- * the upgrade needs to be performed. It calls the function bucketize to create
- * separate buckets of optics for upgrade. Then the threads are created for
- * each bucket and each thread takes care of upgrading the optics in that
+ * the upgrade needs to be performed. It calls the function bucketize to
+ * create separate buckets of optics for upgrade. Then the threads are created
+ * for each bucket and each thread takes care of upgrading the optics in that
  * bucket. The idea here is that one thread will take care of upgrading the
  * optics belonging to one controller so that two ports of the same controller
- * can't upgrade at the same time whereas multiple ports belonging to different
- * controller can upgrade at the same time. This function waits for all
- * threads to finish.
+ * can't upgrade at the same time whereas multiple ports belonging to
+ * different controller can upgrade at the same time. This function waits for
+ * all threads to finish.
  */
 bool cliModulefirmwareUpgrade(
     DirectI2cInfo i2cInfo,
@@ -2670,7 +2799,8 @@ void fwUpgradeThreadHandler(
  *   - Module's current running version is not same as specified in input
  *     argument
  *
- * This function returns the list of such eligible modules for firmware upgrade
+ * This function returns the list of such eligible modules for firmware
+ * upgrade
  */
 std::vector<unsigned int> getUpgradeModList(
     TransceiverI2CApi* bus,
@@ -2739,11 +2869,9 @@ std::vector<unsigned int> getUpgradeModList(
  * This function takes the list of optics to upgrade the firmware and then
  * bucketize them to the rows where each row contains the list of optics
  * which can be upgraded in a thread. For example: In yamp platform which has
- * one i2c controller for 8 modules, if the input  is the list of these modules:
- *  1 3 5 8 12 15 21 32 38 46 55 59 60 83 88 122 124 128
- * Then these will be divided in following 9 buckets:
- *  Bucket: 1 3 5 8
- *  Bucket: 12 15
+ * one i2c controller for 8 modules, if the input  is the list of these
+ * modules: 1 3 5 8 12 15 21 32 38 46 55 59 60 83 88 122 124 128 Then these
+ * will be divided in following 9 buckets: Bucket: 1 3 5 8 Bucket: 12 15
  *  Bucket: 21
  *  Bucket: 32 38
  *  Bucket: 46
@@ -2803,7 +2931,8 @@ std::vector<unsigned int> portRangeStrToPortList(std::string portQualifier) {
   std::vector<unsigned int> portRangeList;
 
   // Create a list of substrings separated by command ","
-  // These substrings will contain single port like "5" or port range like "7-9"
+  // These substrings will contain single port like "5" or port range like
+  // "7-9"
   while ((nextPos = portQualifier.find(std::string(","), lastPos)) !=
          std::string::npos) {
     tempString = portQualifier.substr(lastPos, nextPos - lastPos);
@@ -2915,7 +3044,8 @@ void get_module_fw_info(
  *
  * [2] wedge_qsfp_util <module-id> --cdb_command --command_code <command-code>
  *     --cdb_payload <cdb-payload>
- *     Here the cdb-payload is a string containing payload bytes, ie: "100 200"
+ *     Here the cdb-payload is a string containing payload bytes, ie: "100
+ * 200"
  */
 
 void doCdbCommand(TransceiverI2CApi* bus, unsigned int module) {
@@ -3048,8 +3178,8 @@ bool printVdmInfo(DirectI2cInfo i2cInfo, unsigned int port) {
       }
 
       // Get the VDM value corresponding to config type and convert it
-      // appropriately. The U16 value will be = byte0 + byte1 * lsbScale For F16
-      // value:
+      // appropriately. The U16 value will be = byte0 + byte1 * lsbScale For
+      // F16 value:
       //   exponent = (byte0 >> 3) - 24
       //   mantissa = (byte0 & 0x7) << 8 | byte1
       //   value = mantissa * 10^exponent
@@ -3205,7 +3335,7 @@ void setModulePrbs(
   auto client = getQsfpClient(evb);
   for (auto port : portList) {
     client->sync_setInterfacePrbs(
-        port, phy::PrbsComponent::TRANSCEIVER_LINE, prbsState);
+        port, phy::PortComponent::TRANSCEIVER_LINE, prbsState);
   }
 }
 
@@ -3220,7 +3350,7 @@ void getModulePrbsStats(folly::EventBase& evb, std::vector<PortID> portList) {
   for (auto port : portList) {
     phy::PrbsStats prbsStats;
     client->sync_getPortPrbsStats(
-        prbsStats, port, phy::PrbsComponent::TRANSCEIVER_LINE);
+        prbsStats, port, phy::PortComponent::TRANSCEIVER_LINE);
 
     printf(
         "PRBS time collected: %s\n",
@@ -3236,55 +3366,35 @@ void getModulePrbsStats(folly::EventBase& evb, std::vector<PortID> portList) {
 }
 
 /*
- * Verify the select command is working properly with regard to the --direct-i2c
- * option
+ * Verify the select command is working properly with regard to the
+ * --direct-i2c option
  */
 bool verifyDirectI2cCompliance() {
-  // TODO (sampham): the commands in the if statement below are working properly
-  // with regard to the --direct-i2c option. After the remaining commands do
-  // the same, delete the if statement below. The if statement below allows an
-  // incremental addition of properly behaved commands to force users to use
-  // them correctly right away without having to wait for all commands to be
-  // compliant at once
+  // TODO (sampham): the commands in the if statement below are working
+  // properly with regard to the --direct-i2c option. After the remaining
+  // commands do the same, delete the if statement below. The if statement
+  // below allows an incremental addition of properly behaved commands to
+  // force users to use them correctly right away without having to wait for
+  // all commands to be compliant at once
   if (FLAGS_tx_disable || FLAGS_tx_enable || FLAGS_pause_remediation ||
       FLAGS_get_remediation_until_time || FLAGS_read_reg || FLAGS_write_reg ||
-      FLAGS_update_module_firmware || FLAGS_update_bulk_module_fw) {
-    bool qsfpServiceActive = false;
-
-    try {
-      auto qsfpServiceClient = utils::createQsfpServiceClient();
-
-      if (qsfpServiceClient &&
-          facebook::fb303::cpp2::fb_status::ALIVE ==
-              qsfpServiceClient.get()->sync_getStatus()) {
-        qsfpServiceActive = true;
-      }
-    } catch (const std::exception& ex) {
-      XLOG(DBG5) << fmt::format(
-          "Exception connecting to qsfp_service: {}", folly::exceptionStr(ex));
-    }
-
-    if (qsfpServiceActive) {
-      XLOG(INFO) << "qsfp_service is running";
-    } else {
-      XLOG(INFO) << "qsfp_service is not running";
-    }
-
+      FLAGS_update_module_firmware || FLAGS_update_bulk_module_fw ||
+      FLAGS_set_40g || FLAGS_set_100g) {
     if (FLAGS_direct_i2c) {
-      if (qsfpServiceActive) {
+      if (QsfpServiceDetector::getInstance()->isQsfpServiceActive()) {
         XLOG(ERR)
             << "--direct_i2c option is used while QSFP service is running. Please stop QSFP service first or do not use the --direct_i2c option";
         return false;
       }
 
-      // It does not make sense to use the below commands while qsfp_service is
-      // not running
+      // It does not make sense to use the below commands while qsfp_service
+      // is not running
       if (FLAGS_pause_remediation || FLAGS_get_remediation_until_time) {
         XLOG(ERR) << "This command does not support the --direct_i2c option";
         return false;
       }
     } else {
-      if (!qsfpServiceActive) {
+      if (!QsfpServiceDetector::getInstance()->isQsfpServiceActive()) {
         XLOG(ERR)
             << "--direct_i2c option is not used while QSFP service is not running. Please run QSFP service first or use the --direct_i2c option";
         return false;

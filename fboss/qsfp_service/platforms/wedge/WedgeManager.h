@@ -11,6 +11,7 @@
 #include "fboss/lib/platforms/PlatformMode.h"
 #include "fboss/lib/usb/WedgeI2CBus.h"
 #include "fboss/qsfp_service/TransceiverManager.h"
+#include "fboss/qsfp_service/fsdb/QsfpFsdbSyncManager.h"
 #include "fboss/qsfp_service/platforms/wedge/WedgeI2CBusLock.h"
 
 DECLARE_bool(override_program_iphy_ports_for_test);
@@ -28,7 +29,7 @@ class WedgeManager : public TransceiverManager {
       std::unique_ptr<TransceiverPlatformApi> api,
       std::unique_ptr<PlatformMapping> platformMapping,
       PlatformMode mode);
-  ~WedgeManager() override {}
+  ~WedgeManager() override;
 
   void getTransceiversInfo(
       TransceiverMap& info,
@@ -56,6 +57,8 @@ class WedgeManager : public TransceiverManager {
     return 16;
   }
   std::vector<TransceiverID> refreshTransceivers() override;
+  void publishTransceiversToFsdb(
+      const std::vector<TransceiverID>& ids) override;
 
   int scanTransceiverPresence(
       std::unique_ptr<std::vector<int32_t>> ids) override;
@@ -104,14 +107,6 @@ class WedgeManager : public TransceiverManager {
   virtual void triggerQsfpHardReset(int idx);
 
   /*
-   * This function takes the portId, port profile id and creates phy port
-   * config using platform mapping.
-   */
-  std::optional<phy::PhyPortConfig> getPhyPortConfigValues(
-      int32_t portId,
-      cfg::PortProfileID portProfileId);
-
-  /*
    * This function will call PhyManager to create all the ExternalPhy objects
    */
   bool initExternalPhyMap(bool forceWarmboot = false) override;
@@ -153,6 +148,13 @@ class WedgeManager : public TransceiverManager {
       std::optional<OverrideTcvrToPortAndProfile> overrideTcvrToPortAndProfile =
           std::nullopt) override;
 
+  virtual void publishPhyStateToFsdb(
+      std::string&& portName,
+      std::optional<phy::PhyState>&& newState) const override;
+  virtual void publishPhyStatToFsdb(
+      std::string&& portName,
+      phy::PhyStats&& stat) const override;
+
  protected:
   void initTransceiverMap() override;
 
@@ -178,5 +180,7 @@ class WedgeManager : public TransceiverManager {
   void triggerQsfpHardResetLocked(
       int idx,
       LockedTransceiversPtr& lockedTransceivers);
+
+  std::unique_ptr<QsfpFsdbSyncManager> fsdbSyncManager_;
 };
 } // namespace facebook::fboss

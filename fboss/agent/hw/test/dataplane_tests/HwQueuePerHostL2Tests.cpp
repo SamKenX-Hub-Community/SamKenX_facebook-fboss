@@ -33,7 +33,7 @@ class HwQueuePerHostL2Test : public HwLinkStateDependentTest {
         getHwSwitch(),
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
-        cfg::PortLoopbackMode::MAC);
+        getAsic()->desiredLoopbackMode());
     cfg.switchSettings()->l2LearningMode() = cfg::L2LearningMode::SOFTWARE;
 
     if (isSupported(HwAsic::Feature::L3_QOS)) {
@@ -110,7 +110,7 @@ class HwQueuePerHostL2Test : public HwLinkStateDependentTest {
          * Thus, the counter get increment one additional time for the looped
          * back packet.
          */
-        if (getAsic()->getAsicType() == HwAsic::AsicType::ASIC_TYPE_EBRO) {
+        if (getAsic()->getAsicType() == cfg::AsicType::ASIC_TYPE_EBRO) {
           /* 1 pkt each for ttl < 128 and ttl >= 128 */
           EXPECT_EQ(pktsOnQueue, 4);
         } else {
@@ -192,7 +192,7 @@ class HwQueuePerHostL2Test : public HwLinkStateDependentTest {
     auto vlan = newState->getVlans()->getVlanIf(kVlanID()).get();
     auto macTable = vlan->getMacTable().get();
     macTable = macTable->modify(&vlan, &newState);
-    if (macTable->getNodeIf(macAddr)) {
+    if (macTable->getMacIf(macAddr)) {
       macTable->updateEntry(macAddr, portDescr, classID, type);
     } else {
       auto macEntry =

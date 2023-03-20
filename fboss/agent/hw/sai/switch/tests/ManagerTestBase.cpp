@@ -93,6 +93,13 @@ void ManagerTestBase::setupSaiPlatform() {
       }
     }
   }
+  if (setupStage & SetupStage::SYSTEM_PORT) {
+    for (const auto& testInterface : testInterfaces) {
+      auto swPort =
+          makeSystemPort(std::nullopt, kSysPortOffset + testInterface.id);
+      setupState->getSystemPorts()->addSystemPort(swPort);
+    }
+  }
   if (setupStage & SetupStage::VLAN) {
     for (const auto& testInterface : testInterfaces) {
       auto swVlan = makeVlan(testInterface);
@@ -103,6 +110,11 @@ void ManagerTestBase::setupSaiPlatform() {
     for (const auto& testInterface : testInterfaces) {
       auto swInterface = makeInterface(testInterface);
       setupState->getInterfaces()->addInterface(swInterface);
+      if (setupStage & SetupStage::SYSTEM_PORT) {
+        auto swPortInterface =
+            makeInterface(testInterface, cfg::InterfaceType::SYSTEM_PORT);
+        setupState->getInterfaces()->addInterface(swPortInterface);
+      }
     }
   }
   if (setupStage & SetupStage::NEIGHBOR) {
@@ -121,7 +133,7 @@ void ManagerTestBase::setupSaiPlatform() {
         macTable->addEntry(std::make_shared<MacEntry>(
             remoteHost.mac,
             portDesc,
-            std::nullopt,
+            std::optional<cfg::AclLookupClass>(std::nullopt),
             MacEntryType::STATIC_ENTRY));
       }
     }
@@ -158,8 +170,10 @@ std::shared_ptr<Port> ManagerTestBase::makePort(
     const TestPort& testPort,
     std::optional<cfg::PortSpeed> expectedSpeed,
     bool isXphyPort) const {
-  std::string name = folly::sformat("port{}", testPort.id);
-  auto swPort = std::make_shared<Port>(PortID(testPort.id), name);
+  state::PortFields portFields;
+  portFields.portId() = testPort.id;
+  portFields.portName() = folly::sformat("port{}", testPort.id);
+  auto swPort = std::make_shared<Port>(std::move(portFields));
   if (testPort.enabled) {
     swPort->setAdminState(cfg::PortState::ENABLED);
   }
@@ -193,6 +207,10 @@ std::shared_ptr<Port> ManagerTestBase::makePort(
     case cfg::PortSpeed::FIFTYG:
       swPort->setProfileId(cfg::PortProfileID::PROFILE_50G_2_NRZ_CL74_COPPER);
       break;
+    case cfg::PortSpeed::FIFTYTHREEPOINTONETWOFIVEG:
+      swPort->setProfileId(
+          cfg::PortProfileID::PROFILE_53POINT125G_1_PAM4_RS545_COPPER);
+      break;
     case cfg::PortSpeed::HUNDREDG:
       swPort->setProfileId(cfg::PortProfileID::PROFILE_100G_4_NRZ_CL91_OPTICAL);
       break;
@@ -203,6 +221,10 @@ std::shared_ptr<Port> ManagerTestBase::makePort(
     case cfg::PortSpeed::FOURHUNDREDG:
       swPort->setProfileId(
           cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N_OPTICAL);
+      break;
+    case cfg::PortSpeed::EIGHTHUNDREDG:
+      swPort->setProfileId(
+          cfg::PortProfileID::PROFILE_800G_8_PAM4_RS544X2N_OPTICAL);
       break;
   }
   auto platformPort = saiPlatform->getPort(swPort->getID());
@@ -238,10 +260,10 @@ std::shared_ptr<Vlan> ManagerTestBase::makeVlan(
     const TestInterface& testInterface) const {
   std::string name = folly::sformat("vlan{}", testInterface.id);
   auto swVlan = std::make_shared<Vlan>(VlanID(testInterface.id), name);
-  VlanFields::MemberPorts mps;
+  Vlan::MemberPorts mps;
   for (const auto& remoteHost : testInterface.remoteHosts) {
     PortID portId(remoteHost.port.id);
-    VlanFields::PortInfo portInfo(false);
+    bool portInfo(false);
     mps.insert(std::make_pair(portId, portInfo));
   }
   swVlan->setPorts(mps);
@@ -275,17 +297,38 @@ std::shared_ptr<AggregatePort> ManagerTestBase::makeAggregatePort(
       folly::range(subports.begin(), subports.end()));
 }
 
+int64_t ManagerTestBase::getSysPortId(int id) const {
+  return id + kSysPortOffset;
+}
+InterfaceID ManagerTestBase::getIntfID(int id, cfg::InterfaceType type) const {
+  switch (type) {
+    case cfg::InterfaceType::VLAN:
+      return InterfaceID(id);
+    case cfg::InterfaceType::SYSTEM_PORT:
+      return InterfaceID(getSysPortId(id));
+  }
+  XLOG(FATAL) << "Unhandled interface type";
+}
+
 std::shared_ptr<Interface> ManagerTestBase::makeInterface(
-    const TestInterface& testInterface) const {
-  auto interface = std::make_shared<Interface>(
-      InterfaceID(testInterface.id),
+    const TestInterface& testInterface,
+    cfg::InterfaceType type) const {
+  std::shared_ptr<Interface> interface;
+  std::optional<VlanID> vlan;
+
+  if (type == cfg::InterfaceType::VLAN) {
+    vlan = VlanID(testInterface.id);
+  }
+  interface = std::make_shared<Interface>(
+      getIntfID(testInterface, type),
       RouterID(0),
-      VlanID(testInterface.id),
-      folly::sformat("intf{}", testInterface.id),
+      std::optional<VlanID>(vlan),
+      folly::StringPiece(folly::sformat("intf{}", testInterface.id)),
       testInterface.routerMac,
       1500, // mtu
       false, // isVirtual
-      false); // isStateSyncDisabled
+      false, // isStateSyncDisabled
+      type);
   Interface::Addresses addresses;
   addresses.emplace(
       testInterface.subnet.first.asV4(), testInterface.subnet.second);
@@ -293,11 +336,57 @@ std::shared_ptr<Interface> ManagerTestBase::makeInterface(
   return interface;
 }
 
+std::shared_ptr<SystemPort> ManagerTestBase::makeSystemPort(
+    const std::optional<std::string>& qosPolicy,
+    int64_t sysPortId,
+    int64_t switchId) const {
+  auto sysPort = std::make_shared<SystemPort>(SystemPortID(sysPortId));
+  sysPort->setSwitchId(SwitchID(switchId));
+  sysPort->setPortName("sysPort1");
+  sysPort->setCoreIndex(42);
+  sysPort->setCorePortIndex(24);
+  sysPort->setSpeedMbps(10000);
+  sysPort->setNumVoqs(8);
+  sysPort->setEnabled(true);
+  sysPort->setQosPolicy(qosPolicy);
+  return sysPort;
+}
+
+std::shared_ptr<Interface> ManagerTestBase::makeInterface(
+    const SystemPort& sysPort,
+    const std::vector<folly::CIDRNetwork>& subnets) const {
+  auto interface = std::make_shared<Interface>(
+      InterfaceID(sysPort.getID()),
+      RouterID(0),
+      std::optional<VlanID>(std::nullopt),
+      folly::StringPiece(
+          folly::sformat("intf{}", static_cast<int>(sysPort.getID()))),
+      folly::MacAddress{folly::sformat(
+          "42:42:42:42:42:{}", static_cast<int>(sysPort.getID()))},
+      1500, // mtu
+      false, // isVirtual
+      false, // isStateSyncDisabled
+      cfg::InterfaceType::SYSTEM_PORT);
+  Interface::Addresses addresses;
+  for (const auto& subnet : subnets) {
+    if (subnet.first.isV4()) {
+      addresses.emplace(subnet.first.asV4(), subnet.second);
+    } else {
+      addresses.emplace(subnet.first.asV6(), subnet.second);
+    }
+  }
+  interface->setAddresses(addresses);
+  return interface;
+}
+
 std::shared_ptr<ArpEntry> ManagerTestBase::makePendingArpEntry(
     int id,
-    const TestRemoteHost& testRemoteHost) const {
+    const TestRemoteHost& testRemoteHost,
+    cfg::InterfaceType intfType) const {
   return std::make_shared<ArpEntry>(
-      testRemoteHost.ip.asV4(), InterfaceID(id), NeighborState::PENDING);
+      testRemoteHost.ip.asV4(),
+      getIntfID(id, intfType),
+      NeighborState::PENDING);
 }
 
 std::shared_ptr<ArpEntry> ManagerTestBase::makeArpEntry(
@@ -305,12 +394,13 @@ std::shared_ptr<ArpEntry> ManagerTestBase::makeArpEntry(
     const TestRemoteHost& testRemoteHost,
     std::optional<sai_uint32_t> metadata,
     std::optional<sai_uint32_t> encapIndex,
-    bool isLocal) const {
+    bool isLocal,
+    cfg::InterfaceType intfType) const {
   auto arpEntry = std::make_shared<ArpEntry>(
       testRemoteHost.ip.asV4(),
       testRemoteHost.mac,
       PortDescriptor(PortID(testRemoteHost.port.id)),
-      InterfaceID(id));
+      InterfaceID(getIntfID(id, intfType)));
   if (metadata) {
     arpEntry->setClassID(static_cast<cfg::AclLookupClass>(metadata.value()));
   }
@@ -324,18 +414,46 @@ std::shared_ptr<ArpEntry> ManagerTestBase::makeArpEntry(
 std::shared_ptr<ArpEntry> ManagerTestBase::resolveArp(
     int id,
     const TestRemoteHost& testRemoteHost,
+    cfg::InterfaceType intfType,
     std::optional<sai_uint32_t> metadata,
     std::optional<sai_uint32_t> encapIndex,
     bool isLocal) {
   auto arpEntry =
-      makeArpEntry(id, testRemoteHost, metadata, encapIndex, isLocal);
+      makeArpEntry(id, testRemoteHost, metadata, encapIndex, isLocal, intfType);
   saiManagerTable->neighborManager().addNeighbor(arpEntry);
-  saiManagerTable->fdbManager().addFdbEntry(
-      SaiPortDescriptor(arpEntry->getPort().phyPortID()),
-      arpEntry->getIntfID(),
-      arpEntry->getMac(),
-      SAI_FDB_ENTRY_TYPE_STATIC,
-      metadata);
+  if (intfType == cfg::InterfaceType::VLAN) {
+    saiManagerTable->fdbManager().addFdbEntry(
+        SaiPortDescriptor(arpEntry->getPort().phyPortID()),
+        arpEntry->getIntfID(),
+        arpEntry->getMac(),
+        SAI_FDB_ENTRY_TYPE_STATIC,
+        metadata);
+  }
+  return arpEntry;
+}
+
+std::shared_ptr<ArpEntry> ManagerTestBase::makeArpEntry(
+    const SystemPort& sysPort,
+    folly::IPAddressV4 ip,
+    folly::MacAddress mac,
+    std::optional<sai_uint32_t> encapIndex) const {
+  auto arpEntry = std::make_shared<ArpEntry>(
+      ip,
+      mac,
+      PortDescriptor(PortID(sysPort.getID())),
+      InterfaceID(static_cast<int>(sysPort.getID())));
+  arpEntry->setEncapIndex(static_cast<int64_t>(encapIndex.value()));
+  arpEntry->setIsLocal(false);
+  return arpEntry;
+}
+
+std::shared_ptr<ArpEntry> ManagerTestBase::resolveArp(
+    const SystemPort& sysPort,
+    folly::IPAddressV4 ip,
+    folly::MacAddress mac,
+    std::optional<sai_uint32_t> encapIndex) const {
+  auto arpEntry = makeArpEntry(sysPort, ip, mac, encapIndex);
+  saiManagerTable->neighborManager().addNeighbor(arpEntry);
   return arpEntry;
 }
 
@@ -362,7 +480,8 @@ std::shared_ptr<Route<folly::IPAddressV4>> ManagerTestBase::makeRoute(
     swNextHops.emplace(makeNextHop(testInterface));
   }
   RouteNextHopEntry entry(swNextHops, AdminDistance::STATIC_ROUTE);
-  auto r = std::make_shared<Route<folly::IPAddressV4>>(destination);
+  auto r = std::make_shared<Route<folly::IPAddressV4>>(
+      Route<folly::IPAddressV4>::makeThrift(destination));
   r->update(ClientID{42}, entry);
   r->setResolved(entry);
   return r;
@@ -420,7 +539,7 @@ QueueConfig ManagerTestBase::makeQueueConfig(
 }
 
 std::shared_ptr<QosPolicy> ManagerTestBase::makeQosPolicy(
-    std::string name,
+    const std::string& name,
     const TestQosPolicy& qosPolicy) {
   DscpMap dscpMap;
   ExpMap expMap;

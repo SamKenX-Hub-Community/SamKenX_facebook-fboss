@@ -106,7 +106,7 @@ QsfpModule::~QsfpModule() {
   // The transceiver has been removed
   lock_guard<std::mutex> g(qsfpModuleMutex_);
   getTransceiverManager()->updateStateBlocking(
-      getID(), TransceiverStateMachineEvent::REMOVE_TRANSCEIVER);
+      getID(), TransceiverStateMachineEvent::TCVR_EV_REMOVE_TRANSCEIVER);
 }
 
 void QsfpModule::getQsfpValue(
@@ -160,19 +160,43 @@ QsfpModule::detectPresenceLocked() {
     // we need to fill in the essential info before parsing the DOM data
     // which may not be available.
     TransceiverInfo info;
+
     info.present() = present_;
     info.transceiver() = type();
     info.port() = qsfpImpl_->getNum();
+
+    auto& tcvrState = info.tcvrState().ensure();
+    tcvrState.present().copy_from(info.present());
+    tcvrState.transceiver().copy_from(info.transceiver());
+    tcvrState.port().copy_from(info.port());
+
     *info_.wlock() = info;
   }
   return {currentQsfpStatus, statusChanged};
 }
 
 void QsfpModule::updateCachedTransceiverInfoLocked(ModuleStatus moduleStatus) {
+  // Migration plan from fields in TransceiverInfo to being inside state/states:
+  // 1. Populate data to old fields then populate state/states from old fields
+  // 2. Migrate users to new fields.
+  // 3. Populate data to new fields then populate old fields from new fields
+  // guarded by a just knob.
+  // 4. Use the knob to slowly turn off old fields, check that nobody dies.
+  // 5. Remove old fields
+  //
+  // We're currently at step 1.
+
   TransceiverInfo info;
   info.present() = present_;
   info.transceiver() = type();
   info.port() = qsfpImpl_->getNum();
+
+  auto& tcvrState = *info.tcvrState();
+  auto& tcvrStats = *info.tcvrStats();
+  tcvrState.present().copy_from(info.present());
+  tcvrState.transceiver().copy_from(info.transceiver());
+  tcvrState.port().copy_from(info.port());
+
   if (present_) {
     auto nMediaLanes = numMediaLanes();
     info.mediaLaneSignals() = std::vector<MediaLaneSignals>(nMediaLanes);
@@ -225,6 +249,24 @@ void QsfpModule::updateCachedTransceiverInfoLocked(ModuleStatus moduleStatus) {
     info.status() = currentStatus;
     cacheStatusFlags(currentStatus);
 
+    // Populate the new state/stats members as well from old fields
+    tcvrState.mediaLaneSignals().copy_from(info.mediaLaneSignals());
+    tcvrStats.sensor().copy_from(info.sensor());
+    tcvrState.vendor().copy_from(info.vendor());
+    tcvrState.cable().copy_from(info.cable());
+    tcvrState.thresholds().copy_from(info.thresholds());
+    tcvrState.settings().copy_from(info.settings());
+    tcvrStats.channels().copy_from(info.channels());
+    tcvrState.hostLaneSignals().copy_from(info.hostLaneSignals());
+    tcvrStats.stats().copy_from(info.stats());
+    tcvrState.signalFlag().copy_from(info.signalFlag());
+    tcvrState.extendedSpecificationComplianceCode().copy_from(
+        info.extendedSpecificationComplianceCode());
+    tcvrState.transceiverManagementInterface().copy_from(
+        info.transceiverManagementInterface());
+    tcvrState.identifier().copy_from(info.identifier());
+    tcvrState.status().copy_from(info.status());
+
     // If the StatsPublisher thread has triggered the VDM data capture then
     // latch, read data (page 24 and 25), release latch
     if (captureVdmStats_) {
@@ -247,6 +289,9 @@ void QsfpModule::updateCachedTransceiverInfoLocked(ModuleStatus moduleStatus) {
         }
       }
       captureVdmStats_ = false;
+
+      tcvrStats.vdmDiagsStats().copy_from(info.vdmDiagsStats());
+      tcvrStats.vdmDiagsStatsForOds().copy_from(info.vdmDiagsStatsForOds());
     }
 
     info.timeCollected() = lastRefreshTime_;
@@ -254,6 +299,10 @@ void QsfpModule::updateCachedTransceiverInfoLocked(ModuleStatus moduleStatus) {
     info.eepromCsumValid() = verifyEepromChecksums();
 
     info.moduleMediaInterface() = getModuleMediaInterface();
+
+    tcvrStats.remediationCounter().copy_from(info.remediationCounter());
+    tcvrState.eepromCsumValid().copy_from(info.eepromCsumValid());
+    tcvrState.moduleMediaInterface().copy_from(info.moduleMediaInterface());
   }
 
   phy::LinkSnapshot snapshot;
@@ -263,10 +312,10 @@ void QsfpModule::updateCachedTransceiverInfoLocked(ModuleStatus moduleStatus) {
 }
 
 bool QsfpModule::customizationSupported() const {
-  // TODO: there may be a better way of determining this rather than
-  // looking at transmitter tech.
+  // Customization is allowed on present Optical modules only. We should skip
+  // other types
   auto tech = getQsfpTransmitterTechnology();
-  return present_ && tech != TransmitterTechnology::COPPER;
+  return present_ && tech == TransmitterTechnology::OPTICAL;
 }
 
 bool QsfpModule::shouldRefresh(time_t cooldown) const {
@@ -393,11 +442,12 @@ void QsfpModule::refreshLocked() {
   if (detectionStatus.statusChanged && detectionStatus.present) {
     // A new transceiver has been detected
     getTransceiverManager()->updateStateBlocking(
-        getID(), TransceiverStateMachineEvent::DETECT_TRANSCEIVER);
+        getID(),
+        TransceiverStateMachineEvent::TCVR_EV_EVENT_DETECT_TRANSCEIVER);
   } else if (detectionStatus.statusChanged && !detectionStatus.present) {
     // The transceiver has been removed
     getTransceiverManager()->updateStateBlocking(
-        getID(), TransceiverStateMachineEvent::REMOVE_TRANSCEIVER);
+        getID(), TransceiverStateMachineEvent::TCVR_EV_REMOVE_TRANSCEIVER);
   }
 
   ModuleStatus moduleStatus;
@@ -413,7 +463,7 @@ void QsfpModule::refreshLocked() {
     if (present_) {
       // Data has been read for the new optics
       getTransceiverManager()->updateStateBlocking(
-          getID(), TransceiverStateMachineEvent::READ_EEPROM);
+          getID(), TransceiverStateMachineEvent::TCVR_EV_READ_EEPROM);
       // Issue an allPages=false update to pick up the new qsfp data after we
       // trigger READ_EEPROM event. Some Transceiver might pick up all the diag
       // capabilities and we can use this to make sure the current QsfpData has
@@ -597,10 +647,10 @@ bool QsfpModule::shouldRemediateLocked() {
   // `FLAGS_remediate_interval`, instead we just need to wait for
   // `FLAGS_initial_remediate_interval`. (D26014510)
   bool remediationCooled = false;
-  if (lastDownTime_ > lastRemediateTime_) {
-    // New lastDownTime_ means the port just recently went down
-    remediationCooled =
-        (now - lastDownTime_) > FLAGS_initial_remediate_interval;
+  auto lastDownTime = lastDownTime_.load();
+  if (lastDownTime > lastRemediateTime_) {
+    // New lastDownTime means the port just recently went down
+    remediationCooled = (now - lastDownTime) > FLAGS_initial_remediate_interval;
   } else {
     remediationCooled = (now - lastRemediateTime_) > FLAGS_remediate_interval;
   }
@@ -795,6 +845,38 @@ MediaInterfaceCode QsfpModule::getModuleMediaInterface() {
   return MediaInterfaceCode::UNKNOWN;
 }
 
+TransceiverManagementInterface QsfpModule::getTransceiverManagementInterface(
+    const uint8_t moduleId,
+    const unsigned int oneBasedPort) {
+  if (moduleId ==
+          static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP_PLUS_CMIS) ||
+      moduleId == static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP_DD)) {
+    return TransceiverManagementInterface::CMIS;
+  } else if (
+      moduleId ==
+          static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP_PLUS) ||
+      moduleId == static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP) ||
+      moduleId ==
+          static_cast<uint8_t>(TransceiverModuleIdentifier::MINIPHOTON_OBO) ||
+      moduleId == static_cast<uint8_t>(TransceiverModuleIdentifier::QSFP28)) {
+    return TransceiverManagementInterface::SFF;
+  } else if (
+      moduleId == static_cast<uint8_t>(TransceiverModuleIdentifier::SFP_PLUS)) {
+    return TransceiverManagementInterface::SFF8472;
+  } else if (
+      moduleId != static_cast<uint8_t>(TransceiverModuleIdentifier::UNKNOWN)) {
+    XLOG(ERR) << fmt::format(
+        "QSFP {:d}: Unrecognized non zero module Id = {:d}",
+        oneBasedPort,
+        moduleId);
+    return TransceiverManagementInterface::UNKNOWN;
+  }
+
+  XLOG(ERR) << fmt::format(
+      "QSFP {:d}: Bad module Id = {:d}", oneBasedPort, moduleId);
+  return TransceiverManagementInterface::NONE;
+}
+
 void QsfpModule::programTransceiver(
     cfg::PortSpeed speed,
     bool needResetDataPath) {
@@ -812,9 +894,10 @@ void QsfpModule::programTransceiver(
       // correctly and then call configureModule() later to program serdes like
       // Rx equalizer setting based on QSFP config
       customizeTransceiverLocked(speed);
-      // updateQsdpData so that we can make sure the new application code in
-      // cache gets updated before calling configureModule()
-      updateQsfpData(false);
+      // updateQsfpData so that we can make sure the new application code in
+      // cache or the new host settings ges updated before calling
+      // configureModule()
+      updateQsfpData(true);
       // Current configureModule() actually assumes the locked is obtained.
       // See CmisModule::configureModule(). Need to clean it up in the future.
       configureModule();
@@ -823,8 +906,13 @@ void QsfpModule::programTransceiver(
       // We found that some module did not enable Rx output squelch by default,
       // which introduced some difficulty to bring link back up when flapped.
       // Here we ensure that Rx output squelch is always enabled.
-      if (auto hostLaneSettings = settings.hostLaneSettings()) {
-        ensureRxOutputSquelchEnabled(*hostLaneSettings);
+      // Skip doing this for 200G-FR4 modules configured in 2x50G mode. For this
+      // mode, we need all 4 lanes to operate independently
+      if (getModuleMediaInterface() != MediaInterfaceCode::FR4_200G ||
+          speed != cfg::PortSpeed::FIFTYTHREEPOINTONETWOFIVEG) {
+        if (auto hostLaneSettings = settings.hostLaneSettings()) {
+          ensureRxOutputSquelchEnabled(*hostLaneSettings);
+        }
       }
 
       if (needResetDataPath) {
@@ -846,6 +934,52 @@ void QsfpModule::programTransceiver(
   } else {
     via(i2cEvb)
         .thenValue([programTcvrFunc](auto&&) mutable { programTcvrFunc(); })
+        .get();
+  }
+}
+
+/*
+ * readyTransceiver
+ *
+ * Runs a function in the i2c controller's event base thread to check if the
+ * module's power control configuration is same as the desired one. If it is
+ * same then return true or false based on whether module is in ready state or
+ * not. If the power controll config value is not same as desired one then
+ * configure it correctly and return false
+ */
+bool QsfpModule::readyTransceiver() {
+  // Always use i2cEvb to program transceivers if there's an i2cEvb
+  auto powerStateCheckFn = [this]() -> bool {
+    lock_guard<std::mutex> g(qsfpModuleMutex_);
+    if (present_) {
+      if (!cacheIsValid()) {
+        QSFP_LOG(DBG1, this) << folly::sformat(
+            "Transceiver {:s} - Cache is not valid, so cannot check the transceiver state",
+            getNameString());
+        return false;
+      }
+      // Check the transceiver power configuration state and then return
+      // accordingly. This function's implementation is dependent on optics
+      // type (Cmis, Sff etc)
+      return ensureTransceiverReadyLocked();
+    } else {
+      // If module is not present then don't block state machine transition
+      // and return true
+      return true;
+    }
+  };
+
+  auto i2cEvb = qsfpImpl_->getI2cEventBase();
+  if (!i2cEvb) {
+    // Certain platforms cannot execute multiple I2C transactions in parallel
+    // and therefore don't have an I2C evb thread. For them, call the function
+    // directly from current thread
+    return powerStateCheckFn();
+  } else {
+    // Call the function in I2c controller's event base thread
+    return via(i2cEvb)
+        .thenValue(
+            [powerStateCheckFn](auto&&) mutable { return powerStateCheckFn(); })
         .get();
   }
 }
@@ -893,7 +1027,7 @@ bool QsfpModule::tryRemediateLocked() {
 }
 
 void QsfpModule::markLastDownTime() {
-  lastDownTime_ = std::time(nullptr);
+  lastDownTime_.store(std::time(nullptr));
 }
 
 /*

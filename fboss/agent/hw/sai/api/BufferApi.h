@@ -41,22 +41,19 @@ struct SaiBufferPoolTraits {
         EnumType,
         SAI_BUFFER_POOL_ATTR_THRESHOLD_MODE,
         sai_int32_t>;
-#if defined(TAJO_SDK)
-    using XoffSize =
-        SaiAttribute<EnumType, SAI_BUFFER_POOL_ATTR_XOFF_SIZE, sai_uint64_t>;
-#endif
+    using XoffSize = SaiAttribute<
+        EnumType,
+        SAI_BUFFER_POOL_ATTR_XOFF_SIZE,
+        sai_uint64_t,
+        SaiIntDefault<sai_uint64_t>>;
   };
   using AdapterKey = BufferPoolSaiId;
   using AdapterHostKey = Attributes::Type;
   using CreateAttributes = std::tuple<
       Attributes::Type,
       Attributes::Size,
-      Attributes::ThresholdMode
-#if defined(TAJO_SDK)
-      ,
-      Attributes::XoffSize
-#endif
-      >;
+      Attributes::ThresholdMode,
+      std::optional<Attributes::XoffSize>>;
 
   static constexpr std::array<sai_stat_id_t, 1> CounterIdsToReadAndClear = {
       SAI_BUFFER_POOL_STAT_WATERMARK_BYTES,
@@ -67,9 +64,7 @@ struct SaiBufferPoolTraits {
 SAI_ATTRIBUTE_NAME(BufferPool, Type);
 SAI_ATTRIBUTE_NAME(BufferPool, Size);
 SAI_ATTRIBUTE_NAME(BufferPool, ThresholdMode);
-#if defined(TAJO_SDK)
 SAI_ATTRIBUTE_NAME(BufferPool, XoffSize);
-#endif
 
 template <>
 struct SaiObjectHasStats<SaiBufferPoolTraits> : public std::true_type {};
@@ -125,6 +120,59 @@ SAI_ATTRIBUTE_NAME(BufferProfile, SharedDynamicThreshold);
 SAI_ATTRIBUTE_NAME(BufferProfile, XoffTh);
 SAI_ATTRIBUTE_NAME(BufferProfile, XonTh);
 SAI_ATTRIBUTE_NAME(BufferProfile, XonOffsetTh);
+
+struct SaiIngressPriorityGroupTraits {
+  static constexpr sai_api_t ApiType = SAI_API_BUFFER;
+  static constexpr sai_object_type_t ObjectType =
+      SAI_OBJECT_TYPE_INGRESS_PRIORITY_GROUP;
+  using SaiApiT = BufferApi;
+  struct Attributes {
+    using EnumType = sai_ingress_priority_group_attr_t;
+    using Port = SaiAttribute<
+        EnumType,
+        SAI_INGRESS_PRIORITY_GROUP_ATTR_PORT,
+        sai_object_id_t>;
+    using Index = SaiAttribute<
+        EnumType,
+        SAI_INGRESS_PRIORITY_GROUP_ATTR_INDEX,
+        sai_uint8_t>;
+    using BufferProfile = SaiAttribute<
+        EnumType,
+        SAI_INGRESS_PRIORITY_GROUP_ATTR_BUFFER_PROFILE,
+        sai_object_id_t>;
+  };
+
+  using AdapterKey = IngressPriorityGroupSaiId;
+  using CreateAttributes = std::tuple<
+      Attributes::Port,
+      Attributes::Index,
+      std::optional<Attributes::BufferProfile>>;
+  using AdapterHostKey = CreateAttributes;
+
+  /*
+   * XXX: As of now, get_ingress_priority_group_stats_ext() is unsupported
+   * for Broadcom SAI platforms and hence avoid reading the watermark stats
+   * as clearOnRead counters. This needs to be fixed up once the issue
+   * tracked in CS00012282384 is addressed.
+   */
+  static constexpr std::array<sai_stat_id_t, 0> CounterIdsToReadAndClear = {
+      // SAI_INGRESS_PRIORITY_GROUP_STAT_SHARED_WATERMARK_BYTES,
+      // SAI_INGRESS_PRIORITY_GROUP_STAT_XOFF_ROOM_WATERMARK_BYTES,
+  };
+  static constexpr std::array<sai_stat_id_t, 0> CounterIdsToRead = {};
+};
+
+SAI_ATTRIBUTE_NAME(IngressPriorityGroup, Port);
+SAI_ATTRIBUTE_NAME(IngressPriorityGroup, Index);
+SAI_ATTRIBUTE_NAME(IngressPriorityGroup, BufferProfile);
+
+template <>
+struct IsSaiObjectOwnedByAdapter<SaiIngressPriorityGroupTraits>
+    : public std::true_type {};
+
+template <>
+struct SaiObjectHasStats<SaiIngressPriorityGroupTraits>
+    : public std::true_type {};
 
 class BufferApi : public SaiApi<BufferApi> {
  public:
@@ -196,6 +244,48 @@ class BufferApi : public SaiApi<BufferApi> {
       const sai_attribute_t* attr) const {
     return api_->set_buffer_profile_attribute(key, attr);
   }
+
+  sai_status_t _create(
+      IngressPriorityGroupSaiId* id,
+      sai_object_id_t switch_id,
+      size_t count,
+      sai_attribute_t* attr_list) const {
+    return api_->create_ingress_priority_group(
+        rawSaiId(id), switch_id, count, attr_list);
+  }
+  sai_status_t _remove(IngressPriorityGroupSaiId id) const {
+    return api_->remove_ingress_priority_group(id);
+  }
+  sai_status_t _getAttribute(
+      IngressPriorityGroupSaiId key,
+      sai_attribute_t* attr) const {
+    return api_->get_ingress_priority_group_attribute(key, 1, attr);
+  }
+  sai_status_t _setAttribute(
+      IngressPriorityGroupSaiId key,
+      const sai_attribute_t* attr) const {
+    return api_->set_ingress_priority_group_attribute(key, attr);
+  }
+  sai_status_t _getStats(
+      IngressPriorityGroupSaiId key,
+      uint32_t num_of_counters,
+      const sai_stat_id_t* counter_ids,
+      sai_stats_mode_t mode,
+      uint64_t* counters) const {
+    return mode == SAI_STATS_MODE_READ
+        ? api_->get_ingress_priority_group_stats(
+              key, num_of_counters, counter_ids, counters)
+        : api_->get_ingress_priority_group_stats_ext(
+              key, num_of_counters, counter_ids, mode, counters);
+  }
+  sai_status_t _clearStats(
+      IngressPriorityGroupSaiId key,
+      uint32_t num_of_counters,
+      const sai_stat_id_t* counter_ids) const {
+    return api_->clear_ingress_priority_group_stats(
+        key, num_of_counters, counter_ids);
+  }
+
   sai_buffer_api_t* api_;
   friend class SaiApi<BufferApi>;
 };

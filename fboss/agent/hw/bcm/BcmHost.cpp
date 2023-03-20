@@ -362,7 +362,7 @@ void BcmHostIf::programToTrunk(
     hw_->writableMultiPathNextHopTable()->egressResolutionChangedHwLocked(
         getEgressId(), BcmEcmpEgress::Action::EXPAND);
   } else {
-    XLOG(INFO)
+    XLOG(DBG2)
         << "Skip adding trunk to ECMP since minLink condition is not met for trunk "
         << trunk;
     hw_->writableMultiPathNextHopTable()->egressResolutionChangedHwLocked(
@@ -442,6 +442,16 @@ void BcmHostTable::warmBootHostEntriesSynced() {
                 "up for all up ports";
   bcm_port_t idx;
   BCM_PBMP_ITER(pcfg.port, idx) {
+    // For GrandTeton (Mp2), all PIMs are not installed
+    // hence some ports dont exist in cfg, even though they
+    // exist in the asic (and are down)
+    // In either case, intent of this loop is to check
+    // if existing links transitions up/down after warmboot
+    // and doesn't apply to these set of ports, hence skip
+    if (!hw_->portExists(PortID(idx))) {
+      continue;
+    }
+
     // Some ports might have come up or gone down during
     // the time controller was down. So call linkUp/DownHwLocked
     // for these. We could track this better by just calling
@@ -452,7 +462,7 @@ void BcmHostTable::warmBootHostEntriesSynced() {
     } else {
       auto trunk = hw_->getTrunkTable()->linkDownHwNotLocked(idx);
       if (trunk != BcmTrunk::INVALID) {
-        XLOG(INFO) << "Shrinking ECMP entries egressing over trunk " << trunk;
+        XLOG(DBG2) << "Shrinking ECMP entries egressing over trunk " << trunk;
         hw_->writableEgressManager()->trunkDownHwNotLocked(trunk);
       }
       hw_->writableEgressManager()->linkDownHwLocked(idx);

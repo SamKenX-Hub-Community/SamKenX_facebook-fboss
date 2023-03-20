@@ -92,6 +92,11 @@ class MultiNodeLoadBalancerTest : public MultiNodeTest {
     return getNeighbors<folly::IPAddressV4>();
   }
   void verifyReachability() const {
+    // In a cold boot ports can flap initially. Wait for ports to
+    // stabilize state
+    if (platform()->getHwSwitch()->getBootType() != BootType::WARM_BOOT) {
+      sleep(60);
+    }
     for (auto dstIp : getNeighbors()) {
       std::string pingCmd = "ping -c 5 ";
       std::string resultStr;
@@ -101,7 +106,7 @@ class MultiNodeLoadBalancerTest : public MultiNodeTest {
     }
   }
   cfg::SwitchConfig initialConfig() const override {
-    auto config = utility::onePortPerVlanConfig(
+    auto config = utility::onePortPerInterfaceConfig(
         platform()->getHwSwitch(),
         testPorts(),
         cfg::PortLoopbackMode::NONE,
@@ -116,7 +121,7 @@ class MultiNodeLoadBalancerTest : public MultiNodeTest {
 TEST_F(MultiNodeLoadBalancerTest, verifyFullHashLoadBalance) {
   auto verify = [this]() {
     auto state = sw()->getState();
-    auto vlan = (*state->getVlans()->begin())->getID();
+    auto vlan = state->getVlans()->cbegin()->second->getID();
     auto localMac = state->getInterfaces()->getInterfaceInVlan(vlan)->getMac();
     for (auto isV6 : {true, false}) {
       facebook::fboss::utility::pumpTraffic(

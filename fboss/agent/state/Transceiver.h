@@ -9,7 +9,6 @@
  */
 #pragma once
 
-#include "fboss/agent/Utils.h"
 #include "fboss/agent/gen-cpp2/switch_state_types.h"
 #include "fboss/agent/state/NodeBase.h"
 #include "fboss/agent/state/Thrifty.h"
@@ -20,40 +19,15 @@
 
 namespace facebook::fboss {
 
-struct TransceiverSpecFields : public ThriftyFields<
-                                   TransceiverSpecFields,
-                                   state::TransceiverSpecFields> {
-  explicit TransceiverSpecFields(TransceiverID id) {
-    auto& data = writableData();
-    *data.id() = id;
-  }
-
-  bool operator==(const TransceiverSpecFields& other) const {
-    return data() == other.data();
-  }
-
-  template <typename Fn>
-  void forEachChild(Fn /*fn*/) {}
-
-  state::TransceiverSpecFields toThrift() const override;
-  static TransceiverSpecFields fromThrift(
-      state::TransceiverSpecFields const& tcvrThrift);
-  static folly::dynamic migrateToThrifty(folly::dynamic const& dyn);
-  static void migrateFromThrifty(folly::dynamic& dyn);
-  folly::dynamic toFollyDynamicLegacy() const;
-  static TransceiverSpecFields fromFollyDynamicLegacy(
-      const folly::dynamic& tcvrJson);
-};
-
+USE_THRIFT_COW(TransceiverSpec)
 /*
  * TransceiverSpec stores state about one of the Present TransceiverSpec entries
  * on the switch. Mainly use it as a reference to program Port.
  */
-class TransceiverSpec : public ThriftyBaseT<
-                            state::TransceiverSpecFields,
-                            TransceiverSpec,
-                            TransceiverSpecFields> {
+class TransceiverSpec
+    : public ThriftStructNode<TransceiverSpec, state::TransceiverSpecFields> {
  public:
+  using Base = ThriftStructNode<TransceiverSpec, state::TransceiverSpecFields>;
   explicit TransceiverSpec(TransceiverID id);
   static std::shared_ptr<TransceiverSpec> createPresentTransceiver(
       const TransceiverInfo& tcvrInfo);
@@ -62,43 +36,43 @@ class TransceiverSpec : public ThriftyBaseT<
       const;
 
   TransceiverID getID() const {
-    return TransceiverID(*getFields()->data().id());
+    return static_cast<TransceiverID>(get<switch_state_tags::id>()->cref());
   }
 
   std::optional<double> getCableLength() const {
-    return getFields()->data().cableLength().to_optional();
+    if (auto cableLength = get<switch_state_tags::cableLength>()) {
+      return cableLength->cref();
+    }
+    return std::nullopt;
   }
   void setCableLength(double cableLength) {
-    writableFields()->writableData().cableLength() = cableLength;
+    set<switch_state_tags::cableLength>(cableLength);
   }
 
   std::optional<MediaInterfaceCode> getMediaInterface() const {
-    return getFields()->data().mediaInterface().to_optional();
+    if (auto mediaInterface = get<switch_state_tags::mediaInterface>()) {
+      return mediaInterface->cref();
+    }
+    return std::nullopt;
   }
   void setMediaInterface(MediaInterfaceCode mediaInterface) {
-    writableFields()->writableData().mediaInterface() = mediaInterface;
+    set<switch_state_tags::mediaInterface>(mediaInterface);
   }
 
   std::optional<TransceiverManagementInterface> getManagementInterface() const {
-    return getFields()->data().managementInterface().to_optional();
+    if (auto interface = get<switch_state_tags::managementInterface>()) {
+      return interface->cref();
+    }
+    return std::nullopt;
   }
   void setManagementInterface(
       TransceiverManagementInterface managementInterface) {
-    writableFields()->writableData().managementInterface() =
-        managementInterface;
-  }
-
-  bool operator==(const TransceiverSpec& tcvr) const;
-  bool operator!=(const TransceiverSpec& tcvr) const {
-    return !(*this == tcvr);
+    set<switch_state_tags::managementInterface>(managementInterface);
   }
 
  private:
   // Inherit the constructors required for clone()
-  using ThriftyBaseT<
-      state::TransceiverSpecFields,
-      TransceiverSpec,
-      TransceiverSpecFields>::ThriftyBaseT;
+  using Base::Base;
   friend class CloneAllocator;
 };
 } // namespace facebook::fboss

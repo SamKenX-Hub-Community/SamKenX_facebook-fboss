@@ -19,8 +19,8 @@ namespace facebook::fboss {
 class HwPfcTest : public HwTest {
  protected:
   cfg::SwitchConfig initialConfig() const {
-    return utility::twoL3IntfConfig(
-        getHwSwitch(), masterLogicalPortIds()[0], masterLogicalPortIds()[1]);
+    return utility::onePortPerInterfaceConfig(
+        getHwSwitch(), masterLogicalPortIds());
   }
 
   // Basic config with 2 L3 interface config
@@ -140,12 +140,16 @@ class HwPfcTest : public HwTest {
   void runPfcWatchdogTest(const cfg::PfcWatchdog& pfcWatchdogConfig) {
     auto setup = [=]() {
       currentConfig = initialConfig();
-      setupPfcAndPfcWatchdog(masterLogicalPortIds()[0], pfcWatchdogConfig);
+      setupPfcAndPfcWatchdog(
+          masterLogicalInterfacePortIds()[0], pfcWatchdogConfig);
     };
 
     auto verify = [=]() {
       utility::pfcWatchdogProgrammingMatchesConfig(
-          getHwSwitch(), masterLogicalPortIds()[0], true, pfcWatchdogConfig);
+          getHwSwitch(),
+          masterLogicalInterfacePortIds()[0],
+          true,
+          pfcWatchdogConfig);
     };
 
     verifyAcrossWarmBoots(setup, verify);
@@ -160,7 +164,7 @@ class HwPfcTest : public HwTest {
       bool pfcTx = false;
 
       utility::getPfcEnabledStatus(
-          getHwSwitch(), masterLogicalPortIds()[0], pfcRx, pfcTx);
+          getHwSwitch(), masterLogicalInterfacePortIds()[0], pfcRx, pfcTx);
       EXPECT_EQ(pfcRx, rxEnabled);
       EXPECT_EQ(pfcTx, txEnabled);
     };
@@ -172,7 +176,7 @@ class HwPfcTest : public HwTest {
   void runPfcWatchdogNotConfiguredTest() {
     auto setup = [=]() {
       currentConfig = initialConfig();
-      setupPfc(masterLogicalPortIds()[0], true, true);
+      setupPfc(masterLogicalInterfacePortIds()[0], true, true);
     };
 
     auto verify = [=]() {
@@ -182,7 +186,7 @@ class HwPfcTest : public HwTest {
           << "Verify PFC watchdog is disabled by default on enabling PFC";
       utility::pfcWatchdogProgrammingMatchesConfig(
           getHwSwitch(),
-          masterLogicalPortIds()[0],
+          masterLogicalInterfacePortIds()[0],
           false,
           defaultPfcWatchdogConfig);
     };
@@ -212,7 +216,7 @@ class HwPfcTest : public HwTest {
   void runPfcTest(bool rxEnabled, bool txEnabled) {
     auto setup = [=]() {
       currentConfig = initialConfig();
-      setupPfc(masterLogicalPortIds()[0], rxEnabled, txEnabled);
+      setupPfc(masterLogicalInterfacePortIds()[0], rxEnabled, txEnabled);
     };
 
     auto verify = [=]() {
@@ -220,7 +224,7 @@ class HwPfcTest : public HwTest {
       bool pfcTx = false;
 
       utility::getPfcEnabledStatus(
-          getHwSwitch(), masterLogicalPortIds()[0], pfcRx, pfcTx);
+          getHwSwitch(), masterLogicalInterfacePortIds()[0], pfcRx, pfcTx);
 
       EXPECT_EQ(pfcRx, rxEnabled);
       EXPECT_EQ(pfcTx, txEnabled);
@@ -236,11 +240,12 @@ class HwPfcTest : public HwTest {
       const int expectedBcmGranularity) {
     auto setup = [=]() {
       currentConfig = initialConfig();
-      setupPfcAndPfcWatchdog(masterLogicalPortIds()[0], pfcWatchdogConfig);
+      setupPfcAndPfcWatchdog(
+          masterLogicalInterfacePortIds()[0], pfcWatchdogConfig);
     };
 
     auto verify = [=]() {
-      auto portId = masterLogicalPortIds()[0];
+      auto portId = masterLogicalInterfacePortIds()[0];
       utility::pfcWatchdogProgrammingMatchesConfig(
           getHwSwitch(), portId, true, pfcWatchdogConfig);
       // Explicitly validate granularity!
@@ -304,7 +309,7 @@ TEST_F(HwPfcTest, PfcWatchdogProgrammingSequence) {
     bool pfcRx = false;
     bool pfcTx = false;
     cfg::PfcWatchdog pfcWatchdogConfig{};
-    auto portId = masterLogicalPortIds()[0];
+    auto portId = masterLogicalInterfacePortIds()[0];
     cfg::PfcWatchdog defaultPfcWatchdogConfig{};
 
     // Enable PFC and PFC wachdog
@@ -434,8 +439,8 @@ TEST_F(HwPfcTest, PfcWatchdogDeadlockRecoveryAction) {
   auto setup = [&]() { setupBaseConfig(); };
 
   auto verify = [&]() {
-    auto portId1 = masterLogicalPortIds()[0];
-    auto portId2 = masterLogicalPortIds()[1];
+    auto portId1 = masterLogicalInterfacePortIds()[0];
+    auto portId2 = masterLogicalInterfacePortIds()[1];
     cfg::PfcWatchdog pfcWatchdogConfig{};
 
     XLOG(DBG0)
@@ -503,8 +508,8 @@ TEST_F(HwPfcTest, PfcWatchdogDeadlockRecoveryActionMismatch) {
   auto setup = [&]() { setupBaseConfig(); };
 
   auto verify = [&]() {
-    auto portId1 = masterLogicalPortIds()[0];
-    auto portId2 = masterLogicalPortIds()[1];
+    auto portId1 = masterLogicalInterfacePortIds()[0];
+    auto portId2 = masterLogicalInterfacePortIds()[1];
     cfg::PfcWatchdog pfcWatchdogConfig{};
     cfg::PfcWatchdog defaultPfcWatchdogConfig{};
 

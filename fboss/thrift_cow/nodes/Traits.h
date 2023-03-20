@@ -10,9 +10,47 @@
 
 #pragma once
 
+#include <fboss/thrift_cow/nodes/Types.h>
 #include <thrift/lib/cpp2/reflection/reflection.h>
+#include <type_traits>
 
 namespace facebook::fboss::thrift_cow {
+
+template <typename TType>
+struct ThriftStructResolver {
+  // if resolver is not specialized for given thrift type, default to
+  // ThriftStructNode
+  using type = ThriftStructNode<TType, ThriftStructResolver<TType>>;
+};
+
+template <typename Traits>
+struct ThriftMapResolver {
+  // if resolver is not specialized for given thrift type, default to
+  // ThriftStructNode
+  using type = ThriftMapNode<Traits, ThriftMapResolver<Traits>>;
+};
+
+#define ADD_THRIFT_RESOLVER_MAPPING(ThriftType, CppType)                 \
+  /* make sure resolved type is declared */                              \
+  class CppType;                                                         \
+  template <>                                                            \
+  struct facebook::fboss::thrift_cow::ThriftStructResolver<ThriftType> { \
+    using type = CppType;                                                \
+  };
+
+#define ADD_THRIFT_MAP_RESOLVER_MAPPING(Traits, CppType)          \
+  /* make sure resolved type is declared */                       \
+  class CppType;                                                  \
+  template <>                                                     \
+  struct facebook::fboss::thrift_cow::ThriftMapResolver<Traits> { \
+    using type = CppType;                                         \
+  };
+
+template <typename TType>
+using ResolvedType = typename ThriftStructResolver<TType>::type;
+
+template <typename Traits>
+using ResolvedMapType = typename ThriftMapResolver<Traits>::type;
 
 template <typename TC, typename TType>
 struct ConvertToNodeTraits {
@@ -27,7 +65,16 @@ struct ConvertToNodeTraits {
 
 template <typename TType>
 struct ConvertToNodeTraits<apache::thrift::type_class::structure, TType> {
-  using type = std::shared_ptr<ThriftStructNode<TType>>;
+  using default_type = ThriftStructNode<TType, ThriftStructResolver<TType>>;
+  using struct_type = ResolvedType<TType>;
+  static_assert(
+      std::is_base_of_v<default_type, struct_type>,
+      "Resolved type needs to be a subclass of ThriftStructNode");
+  static_assert(
+      sizeof(default_type) == sizeof(struct_type),
+      "Resolved type should not define any members. All data needs to be stored in defined thrift struct");
+
+  using type = std::shared_ptr<struct_type>;
   using isChild = std::true_type;
 };
 
@@ -44,12 +91,26 @@ struct ConvertToNodeTraits<apache::thrift::type_class::list<ValueT>, TType> {
   using isChild = std::true_type;
 };
 
+template <
+    typename TypeClass,
+    typename TType,
+    template <typename...> typename ConvertToNodeTraitsT = ConvertToNodeTraits>
+struct ThriftMapTraits {
+  using TC = TypeClass;
+  using Type = TType;
+  using KeyType = typename TType::key_type;
+  using KeyCompare = std::less<KeyType>;
+  template <typename... T>
+  using ConvertToNodeTraits = ConvertToNodeTraitsT<T...>;
+};
+
 template <typename KeyT, typename ValueT, typename TType>
 struct ConvertToNodeTraits<
     apache::thrift::type_class::map<KeyT, ValueT>,
     TType> {
-  using type = std::shared_ptr<
-      ThriftMapNode<apache::thrift::type_class::map<KeyT, ValueT>, TType>>;
+  using type_class = apache::thrift::type_class::map<KeyT, ValueT>;
+  using map_type = ResolvedMapType<ThriftMapTraits<type_class, TType>>;
+  using type = std::shared_ptr<map_type>;
   using isChild = std::true_type;
 };
 
@@ -71,20 +132,30 @@ struct ConvertToImmutableNodeTraits {
   using isChild = std::false_type;
 };
 
-template <typename Member>
+template <typename Derived, typename Name>
+struct ResolveMemberType : std::false_type {};
+
+template <typename Derived, typename Member>
 struct StructMemberTraits {
   using member = Member;
-  using traits = StructMemberTraits<Member>;
+  using traits = StructMemberTraits<Derived, Member>;
   using name = typename Member::name;
   using ttype = typename Member::type;
   using tc = typename Member::type_class;
-  using type = typename ConvertToNodeTraits<tc, ttype>::type;
+  // need to resolve here
+  using default_type = typename ConvertToNodeTraits<tc, ttype>::type;
+  // if the member type is overriden, use the overriden type.
+  using type = std::conditional_t<
+      ResolveMemberType<Derived, name>::value,
+      std::shared_ptr<typename ResolveMemberType<Derived, name>::type>,
+      default_type>;
   using isChild = typename ConvertToNodeTraits<tc, ttype>::isChild;
 };
 
+template <typename Derived>
 struct ExtractStructFields {
   template <typename T>
-  using apply = StructMemberTraits<T>;
+  using apply = StructMemberTraits<Derived, T>;
 };
 
 template <typename Member>
@@ -102,5 +173,25 @@ struct ExtractUnionFields {
   template <typename T>
   using apply = UnionMemberTraits<T>;
 };
+
+#if __cplusplus <= 202001L
+template <typename T>
+using TypeIdentity = std::enable_if<true, T>;
+#else
+template <typename T>
+using TypeIdentity = std::type_identity<T>;
+#endif
+
+namespace detail {
+template <typename Type>
+detail::ReferenceWrapper<Type> ref(Type& obj) {
+  return ReferenceWrapper<Type>(obj);
+}
+
+template <typename Type>
+ReferenceWrapper<const Type> cref(const Type& obj) {
+  return detail::ReferenceWrapper<const Type>(obj);
+}
+} // namespace detail
 
 } // namespace facebook::fboss::thrift_cow

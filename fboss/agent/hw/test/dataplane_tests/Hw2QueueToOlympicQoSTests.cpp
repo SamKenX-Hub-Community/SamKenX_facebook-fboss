@@ -31,20 +31,22 @@ class Hw2QueueToOlympicQoSTest : public HwLinkStateDependentTest {
         getProgrammedState(), RouterID(0));
   }
   cfg::SwitchConfig initialConfig() const override {
-    auto cfg = utility::onePortPerVlanConfig(
-        getHwSwitch(), masterLogicalPortIds(), cfg::PortLoopbackMode::MAC);
+    auto cfg = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        masterLogicalPortIds(),
+        getAsic()->desiredLoopbackMode());
     return cfg;
   }
 
   std::unique_ptr<facebook::fboss::TxPacket> createUdpPkt(
       uint8_t dscpVal) const {
-    auto vlanId = VlanID(*initialConfig().vlanPorts()[0].vlanID());
-    auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
+    auto vlanId = utility::firstVlanID(getProgrammedState());
+    auto intfMac = utility::getFirstInterfaceMac(getProgrammedState());
     auto srcMac = utility::MacAddressGenerator().get(intfMac.u64NBO() + 1);
 
     return utility::makeUDPTxPacket(
         getHwSwitch(),
-        VlanID(*initialConfig().vlanPorts()[0].vlanID()),
+        vlanId,
         srcMac,
         intfMac,
         folly::IPAddressV6("2620:0:1cfe:face:b00c::3"),
@@ -93,7 +95,10 @@ class Hw2QueueToOlympicQoSTest : public HwLinkStateDependentTest {
       resolveNeigborAndProgramRoutes(*helper_, kEcmpWidth);
       auto newCfg{initialConfig()};
       auto streamType =
-          *(getPlatform()->getAsic()->getQueueStreamTypes(false).begin());
+          *(getPlatform()
+                ->getAsic()
+                ->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT)
+                .begin());
       utility::add2QueueConfig(
           &newCfg,
           streamType,
@@ -111,7 +116,10 @@ class Hw2QueueToOlympicQoSTest : public HwLinkStateDependentTest {
     auto setupPostWarmboot = [=]() {
       auto newCfg{initialConfig()};
       auto streamType =
-          *(getPlatform()->getAsic()->getQueueStreamTypes(false).begin());
+          *(getPlatform()
+                ->getAsic()
+                ->getQueueStreamTypes(cfg::PortType::INTERFACE_PORT)
+                .begin());
       utility::addOlympicQueueConfig(
           &newCfg, streamType, getPlatform()->getAsic());
       utility::addOlympicQosMaps(newCfg);

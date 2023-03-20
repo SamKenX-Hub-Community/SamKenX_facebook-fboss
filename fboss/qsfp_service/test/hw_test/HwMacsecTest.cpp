@@ -48,7 +48,6 @@ mka::MKASak makeSak(
   return sak;
 }
 
-auto kPortProfile = cfg::PortProfileID::PROFILE_400G_8_PAM4_RS544X2N_OPTICAL;
 } // namespace
 
 namespace facebook::fboss {
@@ -158,7 +157,7 @@ class HwMacsecTest : public HwExternalPhyPortTest {
     auto macsecFlowId = macsecSecureChannelHandle->flow->adapterKey();
 
     auto replayProtectionWindow =
-        (direction == SAI_MACSEC_DIRECTION_INGRESS) ? 100 : 0;
+        (direction == SAI_MACSEC_DIRECTION_INGRESS) ? 4096 : 0;
     bool secureChannelEnable = true;
 
     // Verify macsec objects have the correct settings

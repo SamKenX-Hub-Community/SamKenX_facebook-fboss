@@ -227,11 +227,35 @@ void TunManager::setIntfStatus(
   // Set flags
   error = ioctl(sockFd, SIOCSIFFLAGS, static_cast<void*>(&ifr));
   sysCheckError(error, "Failed to set interface flags on ", ifName);
-  XLOG(INFO) << "Brought " << (status ? "up" : "down") << " interface "
+  XLOG(DBG2) << "Brought " << (status ? "up" : "down") << " interface "
              << ifName << " @ index " << ifIndex;
 }
 
 int TunManager::getTableId(InterfaceID ifID) const {
+  int tableId;
+  auto switchType = sw_->getState()->getSwitchSettings()->getSwitchType();
+
+  switch (switchType) {
+    case cfg::SwitchType::NPU:
+      tableId = getTableIdForNpu(ifID);
+      break;
+    case cfg::SwitchType::VOQ:
+      tableId = getTableIdForVoq(ifID);
+      break;
+    case cfg::SwitchType::PHY:
+    case cfg::SwitchType::FABRIC:
+      CHECK(false);
+      throw FbossError("No system port range in SwitchSettings for VOQ switch");
+  }
+
+  // Sanity checks. Generated ID must be in range [1-253]
+  CHECK_GE(tableId, 1);
+  CHECK_LE(tableId, 253);
+
+  return tableId;
+}
+
+int TunManager::getTableIdForNpu(InterfaceID ifID) const {
   // Kernel only supports up to 256 tables. The last few are used by kernel
   // as main, default, and local. IDs 0, 254 and 255 are not available. So we
   // use range 1-253 for our usecase.
@@ -252,11 +276,26 @@ int TunManager::getTableId(InterfaceID ifID) const {
     tableId = 250 - (ifID - 10); // 250, 249, 248, ...
   }
 
-  // Sanity checks. Generated ID must be in range [1-253]
-  CHECK_GE(tableId, 1);
-  CHECK_LE(tableId, 253);
-
   return tableId;
+}
+
+int TunManager::getTableIdForVoq(InterfaceID ifID) const {
+  // Kernel only supports up to 256 tables. The last few are used by kernel
+  // as main, default, and local. IDs 0, 254 and 255 are not available. So we
+  // use range 1-253 for our usecase.
+  //
+  // VOQ systems use port based RIFs.
+  // Port based RIF IDs are assigned starting minimum system port range.
+  // Thus, map ifID to 1-253 with ifID - sysPortMin + 1
+  // In practice, [sysPortMin, sysPortMax] range is << 253, so no risk of
+  // overflow. Moreover, getTableID asserts that the computed ID is <= 253
+  if (!sw_->getState()->getSwitchSettings()->getSystemPortRange()) {
+    throw FbossError("No system port range in SwitchSettings for VOQ switch");
+  }
+  auto sysPortMin =
+      *sw_->getState()->getSwitchSettings()->getSystemPortRange()->minimum();
+
+  return ifID - sysPortMin;
 }
 
 int TunManager::getInterfaceMtu(InterfaceID ifID) const {
@@ -330,7 +369,7 @@ void TunManager::addRemoveRouteTable(InterfaceID ifID, int ifIndex, bool add) {
                     << " default route " << addr << " @index " << ifIndex
                     << ". ErrorCode: " << error;
     }
-    XLOG(INFO) << (add ? "Added" : "Removed") << " default route " << addr
+    XLOG(DBG2) << (add ? "Added" : "Removed") << " default route " << addr
                << " @ index " << ifIndex << " in table " << getTableId(ifID)
                << " for interface " << ifID;
   }
@@ -387,7 +426,7 @@ void TunManager::addRemoveSourceRouteRule(
       getTableId(ifID),
       " for interface ",
       ifID);
-  XLOG(INFO) << (add ? "Added" : "Removed") << " rule for address " << addr
+  XLOG(DBG2) << (add ? "Added" : "Removed") << " rule for address " << addr
              << " to lookup table " << getTableId(ifID) << " for interface "
              << ifID;
 }
@@ -448,7 +487,7 @@ void TunManager::addRemoveTunAddress(
       ifName,
       " @ index ",
       ifIndex);
-  XLOG(INFO) << (add ? "Added" : "Removed") << " address " << addr.str() << "/"
+  XLOG(DBG2) << (add ? "Added" : "Removed") << " address " << addr.str() << "/"
              << static_cast<int>(mask) << " on interface " << ifName
              << " @ index " << ifIndex;
 }
@@ -569,7 +608,7 @@ void TunManager::doProbe(std::lock_guard<std::mutex>& /* lock */) {
     const auto endTs = std::chrono::steady_clock::now();
     auto elapsedMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(endTs - startTs);
-    XLOG(INFO) << "Probing of linux state took " << elapsedMs.count() << "ms.";
+    XLOG(DBG2) << "Probing of linux state took " << elapsedMs.count() << "ms.";
   };
 
   CHECK(!probeDone_); // Callers must check for probeDone before calling
@@ -603,20 +642,19 @@ boost::container::flat_map<InterfaceID, bool> TunManager::getInterfaceStatus(
   boost::container::flat_map<InterfaceID, bool> statusMap;
 
   // Declare all virtual or state_sync disabled interfaces as up
-  for (const auto& intfIDToObj : state->getInterfaces()->getAllNodes()) {
-    if (intfIDToObj.second->isVirtual() ||
-        intfIDToObj.second->isStateSyncDisabled()) {
-      statusMap.emplace(intfIDToObj.first, true);
+  for (auto iter : std::as_const(*state->getInterfaces())) {
+    const auto& intf = iter.second;
+    if (intf->isVirtual() || intf->isStateSyncDisabled()) {
+      statusMap.emplace(intf->getID(), true);
     }
   }
 
   // Derive interface status from all ports
   auto portMap = state->getPorts();
   auto vlanMap = state->getVlans();
-  for (const auto& portIDToObj : portMap->getAllNodes()) {
-    const auto& port = portIDToObj.second;
-    bool isPortUp = port->isPortUp();
-    for (const auto& vlanIDToInfo : port->getVlans()) {
+  for (const auto& port : std::as_const(*portMap)) {
+    bool isPortUp = port.second->isPortUp();
+    for (const auto& vlanIDToInfo : port.second->getVlans()) {
       auto vlan = vlanMap->getVlanIf(vlanIDToInfo.first);
       if (!vlan) {
         XLOG(ERR) << "Vlan " << vlanIDToInfo.first << " not found in state.";
@@ -656,16 +694,17 @@ void TunManager::sync(std::shared_ptr<SwitchState> state) {
   // prepare new addresses
   IntfToAddrsMap newIntfToInfo;
   auto intfMap = state->getInterfaces();
-  for (const auto& intf : intfMap->getAllNodes()) {
-    const auto& addrs = intf.second->getAddresses();
+  for (auto iter : std::as_const(*intfMap)) {
+    const auto& intf = iter.second;
+    auto addrs = intf->getAddressesCopy();
 
     // Ideally all interfaces should be present in intfStatusMap as either
     // interface will be virtual or will have atleast one port. Keeping default
     // status of interface to be DOWN incase if interface is not virtual and is
     // not assocaited with any physical port
-    const auto status = folly::get_default(intfStatusMap, intf.first, false);
+    const auto status = folly::get_default(intfStatusMap, intf->getID(), false);
 
-    newIntfToInfo[intf.first] = {status, addrs};
+    newIntfToInfo[intf->getID()] = {status, addrs};
   }
 
   // Hold mutex while changing interfaces

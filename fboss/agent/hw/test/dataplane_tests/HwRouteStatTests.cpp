@@ -58,8 +58,11 @@ class HwRouteStatTest : public HwLinkStateDependentTest {
         masterLogicalPortIds()[0],
         masterLogicalPortIds()[1],
     };
-    auto config = utility::onePortPerVlanConfig(
-        getHwSwitch(), std::move(ports), cfg::PortLoopbackMode::MAC, true);
+    auto config = utility::onePortPerInterfaceConfig(
+        getHwSwitch(),
+        std::move(ports),
+        getAsic()->desiredLoopbackMode(),
+        true);
     config.switchSettings()->maxRouteCounterIDs() = 3;
     return config;
   }
@@ -100,7 +103,12 @@ class HwRouteStatTest : public HwLinkStateDependentTest {
       folly::IPAddressV6 dst,
       PortID from,
       std::optional<DSCP> dscp = std::nullopt) {
-    auto vlanId = utility::firstVlanID(initialConfig());
+    // TODO: Remove the dependency on VLAN below
+    auto vlan = utility::firstVlanID(initialConfig());
+    if (!vlan) {
+      throw FbossError("VLAN id unavailable for test");
+    }
+    auto vlanId = *vlan;
     // construct eth hdr
     const auto intfMac = utility::getInterfaceMac(getProgrammedState(), vlanId);
     const auto srcMac =
@@ -129,8 +137,7 @@ class HwRouteStatTest : public HwLinkStateDependentTest {
   }
 
   bool skipTest() const {
-    return !getPlatform()->getAsic()->isSupported(
-        HwAsic::Feature::ROUTE_COUNTERS);
+    return !utility::isRouteCounterSupported(getHwSwitch());
   }
 
   std::unique_ptr<utility::EcmpSetupTargetedPorts6> ecmpHelper6_;

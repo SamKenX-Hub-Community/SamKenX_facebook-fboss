@@ -18,6 +18,7 @@
 #include "fboss/agent/state/SwitchState.h"
 
 #include <gtest/gtest.h>
+#include <optional>
 
 DECLARE_bool(enable_acl_table_group);
 
@@ -217,7 +218,7 @@ void checkSwHwAclMatch(
 
   if (swAcl->getIcmpType()) {
     if (swAcl->getProto()) {
-      if (swAcl->getProto().value() == AclEntryFields::kProtoIcmp) {
+      if (swAcl->getProto().value() == AclEntry::kProtoIcmp) {
         auto aclFieldIcmpV4TypeGot =
             SaiApiTable::getInstance()->aclApi().getAttribute(
                 aclEntryId, SaiAclEntryTraits::Attributes::FieldIcmpV4Type());
@@ -237,7 +238,7 @@ void checkSwHwAclMatch(
           EXPECT_EQ(icmpV4CodeDataGot, swAcl->getIcmpCode().value());
           EXPECT_EQ(icmpV4CodeMaskGot, SaiAclTableManager::kIcmpCodeMask);
         }
-      } else if (swAcl->getProto().value() == AclEntryFields::kProtoIcmpv6) {
+      } else if (swAcl->getProto().value() == AclEntry::kProtoIcmpv6) {
         auto aclFieldIcmpV6TypeGot =
             SaiApiTable::getInstance()->aclApi().getAttribute(
                 aclEntryId, SaiAclEntryTraits::Attributes::FieldIcmpV6Type());
@@ -335,8 +336,10 @@ void checkSwHwAclMatch(
 
   auto action = swAcl->getAclAction();
   if (action) {
-    if (action.value().getSendToQueue()) {
-      auto sendToQueue = action.value().getSendToQueue().value();
+    // THRIFT_COPY
+    auto matchAction = MatchAction::fromThrift(action->toThrift());
+    if (matchAction.getSendToQueue()) {
+      auto sendToQueue = matchAction.getSendToQueue().value();
       bool sendToCpu = sendToQueue.second;
       if (!sendToCpu) {
         auto expectedQueueId =
@@ -349,9 +352,9 @@ void checkSwHwAclMatch(
       }
     }
 
-    if (action.value().getSetDscp()) {
+    if (matchAction.getSetDscp()) {
       const int expectedDscpValue =
-          *action.value().getSetDscp().value().dscpValue();
+          *matchAction.getSetDscp().value().dscpValue();
 
       auto aclActionSetDSCPGot =
           SaiApiTable::getInstance()->aclApi().getAttribute(
@@ -374,6 +377,29 @@ bool isAclTableEnabled(
   return aclTableHandle != nullptr;
 }
 
+bool verifyAclEnabled(const HwSwitch* hwSwitch) {
+  const auto& aclTableManager = static_cast<const SaiSwitch*>(hwSwitch)
+                                    ->managerTable()
+                                    ->aclTableManager();
+  auto aclTableNames = aclTableManager.getAllHandleNames();
+  for (const auto& name : aclTableNames) {
+    auto isTableEnabled = isAclTableEnabled(hwSwitch, name);
+    if (!isTableEnabled) {
+      return false;
+    }
+    for (const auto& member :
+         aclTableManager.getAclTableHandle(name)->aclTableMembers) {
+      auto entryId = member.second->aclEntry->adapterKey();
+      auto entryEnabled = SaiApiTable::getInstance()->aclApi().getAttribute(
+          entryId, SaiAclEntryTraits::Attributes::Enabled());
+      if (!entryEnabled) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 template bool isQualifierPresent<cfg::IpFragMatch>(
     const HwSwitch* hwSwitch,
     const std::shared_ptr<SwitchState>& state,
@@ -394,6 +420,7 @@ void checkAclEntryAndStatCount(
     int aclStatCount,
     int counterCount,
     const std::optional<std::string>& aclTableName) {
+  std::set<unsigned long> aclCounterIds;
   const auto& aclTableManager = static_cast<const SaiSwitch*>(hwSwitch)
                                     ->managerTable()
                                     ->aclTableManager();
@@ -417,26 +444,40 @@ void checkAclEntryAndStatCount(
                 SaiAclEntryTraits::Attributes::ActionCounter())
             .getData();
 
-    if (aclCounterIdGot != SAI_NULL_OBJECT_ID) {
-      aclStatCountGot++;
-
-      auto enablePacketCount =
-          SaiApiTable::getInstance()->aclApi().getAttribute(
-              AclCounterSaiId(aclCounterIdGot),
-              SaiAclCounterTraits::Attributes::EnablePacketCount());
-
-      if (enablePacketCount) {
-        counterCountGot++;
-      }
-
-      auto enableByteCount = SaiApiTable::getInstance()->aclApi().getAttribute(
-          AclCounterSaiId(aclCounterIdGot),
-          SaiAclCounterTraits::Attributes::EnableByteCount());
-
-      if (enableByteCount) {
-        counterCountGot++;
-      }
+    if ((aclCounterIdGot == SAI_NULL_OBJECT_ID) ||
+        (aclCounterIds.find(aclCounterIdGot) != aclCounterIds.end())) {
+      continue;
     }
+
+    aclStatCountGot++;
+    aclCounterIds.insert(aclCounterIdGot);
+
+    auto enablePacketCount = SaiApiTable::getInstance()->aclApi().getAttribute(
+        AclCounterSaiId(aclCounterIdGot),
+        SaiAclCounterTraits::Attributes::EnablePacketCount());
+
+    if (enablePacketCount) {
+      counterCountGot++;
+    }
+
+    auto enableByteCount = SaiApiTable::getInstance()->aclApi().getAttribute(
+        AclCounterSaiId(aclCounterIdGot),
+        SaiAclCounterTraits::Attributes::EnableByteCount());
+
+    if (enableByteCount) {
+      counterCountGot++;
+    }
+
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
+    auto aclCounterNameGot = SaiApiTable::getInstance()->aclApi().getAttribute(
+        AclCounterSaiId(aclCounterIdGot),
+        SaiAclCounterTraits::Attributes::Label());
+    XLOG(DBG2) << "checkAclEntryAndStatCount:: aclCounterNameGot: "
+               << aclCounterNameGot.data();
+#endif
+
+    XLOG(DBG2) << " enablePacketCount: " << enablePacketCount
+               << " enableByteCount: " << enableByteCount;
   }
 
   EXPECT_EQ(aclStatCount, aclStatCountGot);
@@ -540,9 +581,38 @@ void checkAclStat(
 }
 
 void checkAclStatDeleted(
-    const HwSwitch* /*hwSwitch*/,
-    const std::string& /*statName*/) {
-  throw FbossError("Not implemented");
+    const HwSwitch* hwSwitch,
+    const std::string& statName) {
+#if SAI_API_VERSION >= SAI_VERSION(1, 10, 2)
+  const auto& aclTableManager = static_cast<const SaiSwitch*>(hwSwitch)
+                                    ->managerTable()
+                                    ->aclTableManager();
+  auto aclTableHandle =
+      aclTableManager.getAclTableHandle(getActualAclTableName(std::nullopt));
+  ASSERT_NE(nullptr, aclTableHandle);
+  auto aclTableId = aclTableHandle->aclTable->adapterKey();
+
+  auto aclTableEntryListGot = SaiApiTable::getInstance()->aclApi().getAttribute(
+      aclTableId, SaiAclTableTraits::Attributes::EntryList());
+  for (const auto& aclEntryId : aclTableEntryListGot) {
+    auto aclCounterIdGot =
+        SaiApiTable::getInstance()
+            ->aclApi()
+            .getAttribute(
+                AclEntrySaiId(aclEntryId),
+                SaiAclEntryTraits::Attributes::ActionCounter())
+            .getData();
+    // Counter name must match what was previously configured
+    auto aclCounterNameGot = SaiApiTable::getInstance()->aclApi().getAttribute(
+        AclCounterSaiId(aclCounterIdGot),
+        SaiAclCounterTraits::Attributes::Label());
+    std::string aclCounterNameGotStr(aclCounterNameGot.data());
+    EXPECT_NE(statName, aclCounterNameGotStr);
+  }
+#else
+  // On earlier SAI versions, we cannot test since there is no ACL counter
+  // label
+#endif
 }
 
 void checkAclStatSize(

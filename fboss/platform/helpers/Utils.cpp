@@ -3,6 +3,8 @@
 #include "fboss/platform/helpers/Utils.h"
 #include <exprtk.hpp>
 #include <fcntl.h>
+#include <folly/Subprocess.h>
+#include <folly/system/Shell.h>
 #include <re2/re2.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -19,8 +21,31 @@ const std::unordered_set<std::string> kFlashType = {
     "MX25L12805D",
     "N25Q128..3E",
 };
+
+using namespace folly::literals::shell_literals;
+
+std::string execCommandImpl(const std::string& cmd, int* exitStatus) {
+  auto shellCmd = "/bin/sh -c {}"_shellify(cmd);
+  folly::Subprocess p(shellCmd, folly::Subprocess::Options().pipeStdout());
+  auto result = p.communicate();
+  if (exitStatus) {
+    *exitStatus = p.wait().exitStatus();
+  } else {
+    p.waitChecked();
+  }
+  return result.first;
+}
+
 } // namespace
 namespace facebook::fboss::platform::helpers {
+
+std::string execCommand(const std::string& cmd) {
+  return execCommandImpl(cmd, nullptr);
+}
+
+std::string execCommandUnchecked(const std::string& cmd, int& exitStatus) {
+  return execCommandImpl(cmd, &exitStatus);
+}
 
 /*
  * mmap function to read memory mapped address
@@ -174,27 +199,6 @@ float computeExpression(
   parser.compile(temp_equation, expr);
 
   return expr.value();
-}
-
-std::string findFileFromRegex(const std::string& pattern) {
-  static const re2::RE2 getDirRegex(R"((.*)/\.\+/.+)");
-
-  std::string prePath;
-  if (re2::RE2::FullMatch(pattern, getDirRegex, &prePath) &&
-      std::filesystem::exists(std::filesystem::path{prePath})) {
-    // Search directoy to find a full match
-    for (auto const& dir_entry :
-         std::filesystem::recursive_directory_iterator{prePath}) {
-      re2::RE2 dirPattern(pattern);
-      if (re2::RE2::FullMatch(dir_entry.path().string(), dirPattern)) {
-        std::cout << "string:object => matched : " << dir_entry.path().string()
-                  << std::endl;
-        return dir_entry.path().string();
-      }
-    }
-  }
-
-  return std::string();
 }
 
 } // namespace facebook::fboss::platform::helpers

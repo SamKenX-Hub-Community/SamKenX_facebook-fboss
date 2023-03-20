@@ -18,6 +18,7 @@
 #include "fboss/agent/hw/sai/switch/SaiPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiRouterInterfaceManager.h"
 #include "fboss/agent/hw/sai/switch/SaiSwitchManager.h"
+#include "fboss/agent/hw/sai/switch/SaiSystemPortManager.h"
 #include "fboss/agent/hw/sai/switch/SaiVlanManager.h"
 #include "fboss/agent/hw/switch_asics/HwAsic.h"
 #include "fboss/agent/platforms/sai/SaiPlatform.h"
@@ -58,6 +59,12 @@ void ManagedFdbEntry::createObject(PublisherObjects objects) {
   // - While processing the state delta for changed MAC entry, we try to
   // delete the dynamic entry before adding static entry
   fdbEntry->setIgnoreMissingInHwOnDelete(true);
+  // If pending_L2_entry is not supported, dynamic l2 entry is already deleted
+  // from HW table upon receiving the l2 age event. Therefore, no need to make
+  // the remove call down to SDK layer.
+  if (!supportsPending_ && type_ != SAI_FDB_ENTRY_TYPE_STATIC) {
+    fdbEntry->setSkipRemove(true);
+  }
   setObject(fdbEntry);
   XLOG(DBG2) << "ManagedFdbEntry::createObject: " << toL2Entry().str();
 }
@@ -83,8 +90,7 @@ L2Entry ManagedFdbEntry::toL2Entry() const {
       mac,
       // For FBOSS Vlan and interface ids are always 1:1
       VlanID(getInterfaceID()),
-      port.isPhysicalPort() ? PortDescriptor(port.phyPortID())
-                            : PortDescriptor(port.aggPortID()),
+      PortDescriptor(port),
       // Since this entry is already programmed, its validated.
       // In vlan traffic to this MAC will be unicast and not
       // flooded.
@@ -97,8 +103,10 @@ SaiFdbTraits::FdbEntry ManagedFdbEntry::makeFdbEntry(
   auto rifHandle =
       managerTable->routerInterfaceManager().getRouterInterfaceHandle(
           getInterfaceID());
-  auto vlan = GET_ATTR(
-      VlanRouterInterface, VlanId, rifHandle->routerInterface->attributes());
+  auto vlanRouterInterface = std::get<std::shared_ptr<SaiVlanRouterInterface>>(
+      rifHandle->routerInterface);
+  auto vlan =
+      GET_ATTR(VlanRouterInterface, VlanId, vlanRouterInterface->attributes());
   return SaiFdbTraits::FdbEntry{switchId_, vlan, getMac()};
 }
 
@@ -168,10 +176,11 @@ void SaiFdbManager::addFdbEntry(
   auto managedFdbEntry = std::make_shared<ManagedFdbEntry>(
       this,
       switchId,
-      std::make_tuple(port, saiRouterIntf->routerInterface->adapterKey()),
+      std::make_tuple(port, saiRouterIntf->adapterKey()),
       std::make_tuple(interfaceId, mac),
       type,
-      metadata);
+      metadata,
+      platform_->getAsic()->isSupported(HwAsic::Feature::PENDING_L2_ENTRY));
 
   SaiObjectEventPublisher::getInstance()->get<SaiBridgePortTraits>().subscribe(
       managedFdbEntry);
@@ -180,11 +189,8 @@ void SaiFdbManager::addFdbEntry(
 }
 
 void ManagedFdbEntry::update(const std::shared_ptr<MacEntry>& updated) {
-  if (updated->getPort().isPhysicalPort()) {
-    CHECK_EQ(getPortId(), updated->getPort().phyPortID());
-  } else {
-    CHECK_EQ(getPortId(), updated->getPort().aggPortID());
-  }
+  CHECK(updated->getPort().type() == getPortId().type());
+  CHECK_EQ(updated->getPort().intID(), getPortId().intID());
   CHECK_EQ(getMac(), updated->getMac());
   auto fdbEntry = getSaiObject();
   CHECK(fdbEntry != nullptr) << "updating non-programmed fdb entry";
@@ -192,6 +198,11 @@ void ManagedFdbEntry::update(const std::shared_ptr<MacEntry>& updated) {
       updated->getType() == MacEntryType::STATIC_ENTRY
           ? SAI_FDB_ENTRY_TYPE_STATIC
           : SAI_FDB_ENTRY_TYPE_DYNAMIC));
+  // When dynamic entry is updated to static entry, need to remove the entry
+  // when neighbor is removed.
+  if (!supportsPending_ && updated->getType() == MacEntryType::STATIC_ENTRY) {
+    fdbEntry->setSkipRemove(false);
+  }
   sai_uint32_t metadata = updated->getClassID()
       ? static_cast<sai_uint32_t>(updated->getClassID().value())
       : 0;
@@ -230,10 +241,9 @@ void SaiFdbManager::addMac(const std::shared_ptr<MacEntry>& macEntry) {
       type = SAI_FDB_ENTRY_TYPE_DYNAMIC;
       break;
   };
+
   addFdbEntry(
-      macEntry->getPort().isPhysicalPort()
-          ? SaiPortDescriptor(macEntry->getPort().phyPortID())
-          : SaiPortDescriptor(macEntry->getPort().aggPortID()),
+      macEntry->getPort(),
       getInterfaceId(macEntry),
       macEntry->getMac(),
       type,
@@ -281,14 +291,25 @@ void SaiFdbManager::changeMac(
 
 PortDescriptorSaiId SaiFdbManager::getPortDescriptorSaiId(
     const PortDescriptor& portDesc) const {
-  if (portDesc.isPhysicalPort()) {
-    auto const portHandle =
-        managerTable_->portManager().getPortHandle(portDesc.phyPortID());
-    return PortDescriptorSaiId(portHandle->port->adapterKey());
+  switch (portDesc.type()) {
+    case PortDescriptor::PortType::PHYSICAL: {
+      auto const portHandle =
+          managerTable_->portManager().getPortHandle(portDesc.phyPortID());
+      return PortDescriptorSaiId(portHandle->port->adapterKey());
+    } break;
+    case PortDescriptor::PortType::AGGREGATE: {
+      auto lagHandle =
+          managerTable_->lagManager().getLagHandle(portDesc.aggPortID());
+      return PortDescriptorSaiId(lagHandle->lag->adapterKey());
+    } break;
+    case PortDescriptor::PortType::SYSTEM_PORT: {
+      auto sysPortHandle =
+          managerTable_->systemPortManager().getSystemPortHandle(
+              portDesc.sysPortID());
+      return PortDescriptorSaiId(sysPortHandle->systemPort->adapterKey());
+    } break;
   }
-  auto lagHandle =
-      managerTable_->lagManager().getLagHandle(portDesc.aggPortID());
-  return PortDescriptorSaiId(lagHandle->lag->adapterKey());
+  XLOG(FATAL) << " Unknown port type";
 }
 
 InterfaceID SaiFdbManager::getInterfaceId(
@@ -385,6 +406,33 @@ std::shared_ptr<SaiFdbEntry> SaiFdbManager::createSaiObject(
     const typename SaiFdbTraits::CreateAttributes& attributes,
     const PublisherKey<SaiFdbTraits>::custom_type& publisherKey) {
   auto& store = saiStore_->get<SaiFdbTraits>();
+  // For platform does not support pending l2 entry (no real hw learning),
+  // agent should check the existence of fdb entry in sai adapter, and create
+  // fdb entry only when it does not exist in the adapter. This is to avoid the
+  // l2 churn of the creation of existing l2 entry would trigger another age &
+  // learn, which then triggers another learn event (and the cycle continues).
+  if (!platform_->getAsic()->isSupported(HwAsic::Feature::PENDING_L2_ENTRY)) {
+    auto& fdbApi = SaiApiTable::getInstance()->fdbApi();
+    try {
+      fdbApi.getAttribute(key, SaiFdbTraits::Attributes::Type());
+    } catch (const SaiApiError& e) {
+      // If no fdb entry is sai adapter, create the entry.
+      if (e.getSaiStatus() == SAI_STATUS_ITEM_NOT_FOUND) {
+        return store.setObject(key, attributes, publisherKey);
+      } else {
+        throw;
+      }
+    }
+    // FDB entry already exists in sai adapter -
+    // 1. Reload the fdb entry from adapter
+    // 2. Set on the object if the intended attributes differ
+    // 3. Notify subscribers as if the object is created.
+    auto obj = store.reloadObject(key);
+    store.setObject(key, attributes, publisherKey);
+    obj->setCustomPublisherKey(publisherKey);
+    obj->notifyAfterCreate(obj);
+    return obj;
+  }
   return store.setObject(key, attributes, publisherKey);
 }
 

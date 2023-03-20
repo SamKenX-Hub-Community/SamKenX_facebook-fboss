@@ -70,6 +70,7 @@ TEST_F(QsfpModuleTest, setRateSelect) {
   ON_CALL(*qsfp_, setRateSelectIfSupported(_, _, _))
       .WillByDefault(
           Invoke(qsfp_, &MockSffModule::actualSetRateSelectIfSupported));
+  ON_CALL(*qsfp_, customizationSupported()).WillByDefault(Return(true));
   EXPECT_CALL(*qsfp_, setPowerOverrideIfSupportedLocked(_)).Times(AtLeast(1));
   EXPECT_CALL(*qsfp_, setCdrIfSupported(_, _, _)).Times(AtLeast(1));
 
@@ -131,6 +132,7 @@ TEST_F(QsfpModuleTest, retrieveRateSelectSetting) {
 TEST_F(QsfpModuleTest, setCdr) {
   ON_CALL(*qsfp_, setCdrIfSupported(_, _, _))
       .WillByDefault(Invoke(qsfp_, &MockSffModule::actualSetCdrIfSupported));
+  ON_CALL(*qsfp_, customizationSupported()).WillByDefault(Return(true));
 
   EXPECT_CALL(*qsfp_, setPowerOverrideIfSupportedLocked(_)).Times(AtLeast(1));
   EXPECT_CALL(*qsfp_, setRateSelectIfSupported(_, _, _)).Times(AtLeast(1));
@@ -172,6 +174,8 @@ TEST_F(QsfpModuleTest, setCdr) {
 
 TEST_F(QsfpModuleTest, portsChangedAllDown25G) {
   ON_CALL(*qsfp_, getTransceiverInfo()).WillByDefault(Return(qsfp_->fakeInfo_));
+  ON_CALL(*qsfp_, customizationSupported()).WillByDefault(Return(true));
+
   // should customize w/ 25G
   EXPECT_CALL(*qsfp_, setCdrIfSupported(cfg::PortSpeed::TWENTYFIVEG, _, _))
       .Times(1);
@@ -188,6 +192,8 @@ TEST_F(QsfpModuleTest, portsChangedAllDown25G) {
 
 TEST_F(QsfpModuleTest, portsChanged50G) {
   ON_CALL(*qsfp_, getTransceiverInfo()).WillByDefault(Return(qsfp_->fakeInfo_));
+  ON_CALL(*qsfp_, customizationSupported()).WillByDefault(Return(true));
+
   // should customize w/ 50G
   EXPECT_CALL(*qsfp_, setCdrIfSupported(cfg::PortSpeed::FIFTYG, _, _)).Times(1);
 
@@ -203,6 +209,8 @@ TEST_F(QsfpModuleTest, portsChanged50G) {
 TEST_F(QsfpModuleTest, portsChangedOnePortPerModule) {
   setupQsfp();
   ON_CALL(*qsfp_, getTransceiverInfo()).WillByDefault(Return(qsfp_->fakeInfo_));
+  ON_CALL(*qsfp_, customizationSupported()).WillByDefault(Return(true));
+
   EXPECT_CALL(*qsfp_, setCdrIfSupported(cfg::PortSpeed::HUNDREDG, _, _))
       .Times(1);
 
@@ -374,4 +382,48 @@ TEST_F(QsfpModuleTest, populateSnapshots) {
   snapshots = qsfp_->getTransceiverSnapshots().getSnapshots();
   EXPECT_EQ(snapshots.size(), snapshots.maxSize());
 }
+
+TEST_F(QsfpModuleTest, getNewTcvrInfo) {
+  qsfp_->refresh(); // trigger TcvrInfo update
+  qsfp_->useActualGetTransceiverInfo();
+  auto info = qsfp_->getTransceiverInfo();
+
+  // First check that we have actual content instead of just equal because
+  // it's empty on both new and old. Part number is set by the mock module and
+  // should always be non-empty.
+  EXPECT_TRUE(
+      info.tcvrState()->vendor() &&
+      !info.tcvrState()->vendor()->partNumber()->empty());
+
+  EXPECT_EQ(info.tcvrState()->present(), info.present());
+  EXPECT_EQ(info.tcvrState()->transceiver(), info.transceiver());
+  EXPECT_EQ(info.tcvrState()->port(), info.port());
+  EXPECT_EQ(info.tcvrState()->mediaLaneSignals(), info.mediaLaneSignals());
+  EXPECT_EQ(info.tcvrState()->vendor(), info.vendor());
+  EXPECT_EQ(info.tcvrState()->cable(), info.cable());
+  EXPECT_EQ(info.tcvrState()->thresholds(), info.thresholds());
+  EXPECT_EQ(info.tcvrState()->settings(), info.settings());
+  EXPECT_EQ(info.tcvrState()->hostLaneSignals(), info.hostLaneSignals());
+  EXPECT_EQ(info.tcvrState()->signalFlag(), info.signalFlag());
+  EXPECT_EQ(
+      info.tcvrState()->extendedSpecificationComplianceCode(),
+      info.extendedSpecificationComplianceCode());
+  EXPECT_EQ(
+      info.tcvrState()->transceiverManagementInterface(),
+      info.transceiverManagementInterface());
+  EXPECT_EQ(info.tcvrState()->identifier(), info.identifier());
+  EXPECT_EQ(info.tcvrState()->status(), info.status());
+  EXPECT_EQ(info.tcvrState()->eepromCsumValid(), info.eepromCsumValid());
+  EXPECT_EQ(
+      info.tcvrState()->moduleMediaInterface(), info.moduleMediaInterface());
+
+  EXPECT_EQ(info.tcvrStats()->sensor(), info.sensor());
+  EXPECT_EQ(info.tcvrStats()->channels(), info.channels());
+  EXPECT_EQ(info.tcvrStats()->stats(), info.stats());
+  EXPECT_EQ(info.tcvrStats()->vdmDiagsStats(), info.vdmDiagsStats());
+  EXPECT_EQ(
+      info.tcvrStats()->vdmDiagsStatsForOds(), info.vdmDiagsStatsForOds());
+  EXPECT_EQ(info.tcvrStats()->remediationCounter(), info.remediationCounter());
+}
+
 } // namespace facebook::fboss

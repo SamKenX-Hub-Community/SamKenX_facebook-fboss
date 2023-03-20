@@ -13,6 +13,66 @@
 
 namespace facebook::fboss {
 
+namespace {
+
+sai_tunnel_type_t getSaiTunnelType(cfg::TunnelType type) {
+  switch (type) {
+    case cfg::TunnelType::IP_IN_IP:
+      return SAI_TUNNEL_TYPE_IPINIP;
+  }
+  throw FbossError("Failed to convert tunnel type to SAI type: ", type);
+}
+
+sai_tunnel_term_table_entry_type_t getSaiTunnelTermType(
+    cfg::TunnelTerminationType type) {
+  switch (type) {
+    case cfg::TunnelTerminationType::P2MP:
+      return SAI_TUNNEL_TERM_TABLE_ENTRY_TYPE_P2MP;
+    case cfg::TunnelTerminationType::MP2MP:
+      return SAI_TUNNEL_TERM_TABLE_ENTRY_TYPE_MP2MP;
+    case cfg::TunnelTerminationType::P2P:
+      return SAI_TUNNEL_TERM_TABLE_ENTRY_TYPE_P2P;
+    case cfg::TunnelTerminationType::MP2P:
+      return SAI_TUNNEL_TERM_TABLE_ENTRY_TYPE_MP2P;
+  }
+  throw FbossError("Failed to convert tunnel term type to SAI type: ", type);
+}
+
+sai_tunnel_ttl_mode_t getSaiTtlMode(cfg::IpTunnelMode mode) {
+  switch (mode) {
+    case cfg::IpTunnelMode::UNIFORM:
+      return SAI_TUNNEL_TTL_MODE_UNIFORM_MODEL;
+    case cfg::IpTunnelMode::PIPE:
+      return SAI_TUNNEL_TTL_MODE_PIPE_MODEL;
+    case cfg::IpTunnelMode::USER:
+      break;
+  }
+  throw FbossError("Failed to convert TTL mode to SAI type: ", mode);
+}
+sai_tunnel_dscp_mode_t getSaiDscpMode(cfg::IpTunnelMode mode) {
+  switch (mode) {
+    case cfg::IpTunnelMode::UNIFORM:
+      return SAI_TUNNEL_DSCP_MODE_UNIFORM_MODEL;
+    case cfg::IpTunnelMode::PIPE:
+      return SAI_TUNNEL_DSCP_MODE_PIPE_MODEL;
+    case cfg::IpTunnelMode::USER:
+      break;
+  }
+  throw FbossError("Failed to convert DSCP mode to SAI type: ", mode);
+}
+sai_tunnel_decap_ecn_mode_t getSaiDecapEcnMode(cfg::IpTunnelMode mode) {
+  switch (mode) {
+    case cfg::IpTunnelMode::UNIFORM:
+      return SAI_TUNNEL_DECAP_ECN_MODE_STANDARD;
+    case cfg::IpTunnelMode::PIPE:
+      return SAI_TUNNEL_DECAP_ECN_MODE_COPY_FROM_OUTER;
+    case cfg::IpTunnelMode::USER:
+      return SAI_TUNNEL_DECAP_ECN_MODE_USER_DEFINED;
+  }
+  throw FbossError("Failed to convert ECN mode to SAI type: ", mode);
+}
+} // namespace
+
 SaiTunnelManager::SaiTunnelManager(
     SaiStore* saiStore,
     SaiManagerTable* managerTable,
@@ -20,6 +80,39 @@ SaiTunnelManager::SaiTunnelManager(
     : saiStore_(saiStore), managerTable_(managerTable) {}
 
 SaiTunnelManager::~SaiTunnelManager() {}
+
+std::shared_ptr<SaiP2MPTunnelTerm> SaiTunnelManager::addP2MPTunnelTerm(
+    const std::shared_ptr<IpTunnel>& swTunnel,
+    TunnelSaiId tunnelSaiId) {
+  auto& tunnelTermStore = saiStore_->get<SaiP2MPTunnelTermTraits>();
+  SaiVirtualRouterHandle* virtualRouterHandle =
+      managerTable_->virtualRouterManager().getVirtualRouterHandle(RouterID(0));
+  SaiP2MPTunnelTermTraits::CreateAttributes k2{
+      getSaiTunnelTermType(swTunnel->getTunnelTermType()),
+      virtualRouterHandle->virtualRouter->adapterKey(),
+      swTunnel->getSrcIP(), // Term Dest Ip
+      getSaiTunnelType(swTunnel->getType()), // Tunnel Type
+      tunnelSaiId};
+
+  return tunnelTermStore.setObject(k2, k2);
+}
+
+std::shared_ptr<SaiP2PTunnelTerm> SaiTunnelManager::addP2PTunnelTerm(
+    const std::shared_ptr<IpTunnel>& swTunnel,
+    TunnelSaiId tunnelSaiId) {
+  auto& tunnelTermStore = saiStore_->get<SaiP2PTunnelTermTraits>();
+  SaiVirtualRouterHandle* virtualRouterHandle =
+      managerTable_->virtualRouterManager().getVirtualRouterHandle(RouterID(0));
+  SaiP2PTunnelTermTraits::CreateAttributes k2{
+      getSaiTunnelTermType(swTunnel->getTunnelTermType()),
+      virtualRouterHandle->virtualRouter->adapterKey(),
+      swTunnel->getSrcIP(), // Term Dest Ip
+      swTunnel->getDstIP(), // Term Src Ip
+      getSaiTunnelType(swTunnel->getType()), // Tunnel Type
+      tunnelSaiId};
+
+  return tunnelTermStore.setObject(k2, k2);
+}
 
 TunnelSaiId SaiTunnelManager::addTunnel(
     const std::shared_ptr<IpTunnel>& swTunnel) {
@@ -40,7 +133,7 @@ TunnelSaiId SaiTunnelManager::addTunnel(
         "No SaiRouterInterface for InterfaceID: ",
         swTunnel->getUnderlayIntfId());
   }
-  RouterInterfaceSaiId saiIntfId{intfHandle->routerInterface->adapterKey()};
+  RouterInterfaceSaiId saiIntfId{intfHandle->adapterKey()};
   auto& tunnelStore = saiStore_->get<SaiTunnelTraits>();
   // TTL and DSCP mode options: UNIFORM and PIPE
   // ECN has three modes instead of 2, with a customized one
@@ -57,26 +150,15 @@ TunnelSaiId SaiTunnelManager::addTunnel(
       getSaiDecapEcnMode(swTunnel->getEcnMode())};
 
   std::shared_ptr<SaiTunnel> tunnelObj = tunnelStore.setObject(k1, k1);
-
-  auto& tunnelTermStore = saiStore_->get<SaiTunnelTermTraits>();
-  SaiVirtualRouterHandle* virtualRouterHandle =
-      managerTable_->virtualRouterManager().getVirtualRouterHandle(RouterID(0));
-  VirtualRouterSaiId saiVirtualRouterId{
-      virtualRouterHandle->virtualRouter->adapterKey()};
-  if (swTunnel->getTunnelTermType() == P2MP) {
-    SaiTunnelTermTraits::CreateAttributes k2{
-        getSaiTunnelTermType(swTunnel->getTunnelTermType()),
-        saiVirtualRouterId,
-        swTunnel->getSrcIP(), // Term Dest Ip
-        getSaiTunnelType(swTunnel->getType()), // Tunnel Type
-        // SAI id of the tunnel, not the IpTunnel id in state
-        tunnelObj->adapterKey()};
-
-    std::shared_ptr<SaiTunnelTerm> tunnelTermObj =
-        tunnelTermStore.setObject(k2, k2);
-    auto tunnelHandle = std::make_unique<SaiTunnelHandle>();
-    tunnelHandle->tunnel = tunnelObj;
-    tunnelHandle->tunnelTerm = tunnelTermObj;
+  auto tunnelHandle = std::make_unique<SaiTunnelHandle>();
+  tunnelHandle->tunnel = tunnelObj;
+  if (swTunnel->getTunnelTermType() == cfg::TunnelTerminationType::P2MP) {
+    tunnelHandle->tunnelTerm =
+        addP2MPTunnelTerm(swTunnel, tunnelObj->adapterKey());
+    handles_[swTunnel->getID()] = std::move(tunnelHandle);
+  } else if (swTunnel->getTunnelTermType() == cfg::TunnelTerminationType::P2P) {
+    tunnelHandle->tunnelTerm =
+        addP2PTunnelTerm(swTunnel, tunnelObj->adapterKey());
     handles_[swTunnel->getID()] = std::move(tunnelHandle);
   } else {
     throw FbossError("Tunnel Term types other than P2MP are not supported yet");
@@ -90,9 +172,6 @@ void SaiTunnelManager::removeTunnel(const std::shared_ptr<IpTunnel>& swTunnel) {
   if (itr == handles_.end()) {
     throw FbossError("Failed to remove non-existent tunnel: ", swId);
   }
-  auto handle = itr->second.get();
-  handle->tunnelTerm->release();
-  handle->tunnel->release();
   handles_.erase(itr);
 }
 
@@ -124,60 +203,4 @@ SaiTunnelManager::getTunnelHandleImpl(std::string swId) const {
   }
   return itr->second.get();
 }
-
-sai_tunnel_type_t SaiTunnelManager::getSaiTunnelType(TunnelType type) {
-  switch (type) {
-    case IPINIP:
-      return SAI_TUNNEL_TYPE_IPINIP;
-    default:
-      throw FbossError("Failed to convert IpTunnel type to SAI type: ", type);
-  }
-}
-
-sai_tunnel_term_table_entry_type_t SaiTunnelManager::getSaiTunnelTermType(
-    TunnelTermType type) {
-  switch (type) {
-    case P2MP:
-      return SAI_TUNNEL_TERM_TABLE_ENTRY_TYPE_P2MP;
-    case MP2MP:
-      return SAI_TUNNEL_TERM_TABLE_ENTRY_TYPE_MP2MP;
-    default:
-      throw FbossError(
-          "Failed to convert IpTunnel term type to SAI type: ", type);
-  }
-}
-sai_tunnel_ttl_mode_t SaiTunnelManager::getSaiTtlMode(cfg::IpTunnelMode m) {
-  switch (m) {
-    case cfg::IpTunnelMode::UNIFORM:
-      return SAI_TUNNEL_TTL_MODE_UNIFORM_MODEL;
-    case cfg::IpTunnelMode::PIPE:
-      return SAI_TUNNEL_TTL_MODE_PIPE_MODEL;
-    default:
-      throw FbossError("Failed to convert TTL mode to SAI type: ", m);
-  }
-}
-sai_tunnel_dscp_mode_t SaiTunnelManager::getSaiDscpMode(cfg::IpTunnelMode m) {
-  switch (m) {
-    case cfg::IpTunnelMode::UNIFORM:
-      return SAI_TUNNEL_DSCP_MODE_UNIFORM_MODEL;
-    case cfg::IpTunnelMode::PIPE:
-      return SAI_TUNNEL_DSCP_MODE_PIPE_MODEL;
-    default:
-      throw FbossError("Failed to convert DSCP mode to SAI type: ", m);
-  }
-}
-sai_tunnel_decap_ecn_mode_t SaiTunnelManager::getSaiDecapEcnMode(
-    cfg::IpTunnelMode m) {
-  switch (m) {
-    case cfg::IpTunnelMode::UNIFORM:
-      return SAI_TUNNEL_DECAP_ECN_MODE_STANDARD;
-    case cfg::IpTunnelMode::PIPE:
-      return SAI_TUNNEL_DECAP_ECN_MODE_COPY_FROM_OUTER;
-    case cfg::IpTunnelMode::USER:
-      return SAI_TUNNEL_DECAP_ECN_MODE_USER_DEFINED;
-    default:
-      throw FbossError("Failed to convert ECN mode to SAI type: ", m);
-  }
-}
-
 } // namespace facebook::fboss

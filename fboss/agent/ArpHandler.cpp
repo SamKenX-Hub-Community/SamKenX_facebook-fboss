@@ -139,7 +139,7 @@ void ArpHandler::handlePacket(
   }
 
   if (op == ARP_OP_REQUEST && !AggregatePort::isIngressValid(state, pkt)) {
-    XLOG(INFO) << "Dropping invalid ARP request ingressing on port "
+    XLOG(DBG2) << "Dropping invalid ARP request ingressing on port "
                << pkt->getSrcPort() << " on vlan " << pkt->getSrcVlan()
                << " for " << targetIP;
     return;
@@ -170,15 +170,18 @@ void ArpHandler::handlePacket(
 
 static void sendArp(
     SwSwitch* sw,
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     ArpOpCode op,
     MacAddress senderMac,
     IPAddressV4 senderIP,
     MacAddress targetMac,
     IPAddressV4 targetIP,
     const std::optional<PortDescriptor>& portDesc = std::nullopt) {
+  auto vlanStr = vlan.has_value()
+      ? folly::to<std::string>(static_cast<int>(vlan.value()))
+      : "None";
   XLOG(DBG4) << "sending ARP " << ((op == ARP_OP_REQUEST) ? "request" : "reply")
-             << " on vlan " << vlan << " to " << targetIP.str() << " ("
+             << " on vlan " << vlanStr << " to " << targetIP.str() << " ("
              << targetMac << "): " << senderIP.str() << " is " << senderMac;
 
   // TODO: We need a more robust mechanism for setting up the ethernet
@@ -212,7 +215,8 @@ static void sendArp(
 }
 
 void ArpHandler::floodGratuituousArp() {
-  for (const auto& intf : *sw_->getState()->getInterfaces()) {
+  for (auto iter : std::as_const(*sw_->getState()->getInterfaces())) {
+    const auto& intf = iter.second;
     // mostly for agent tests where we dont want to flood arp
     // causing loop, when ports are in loopback
     if (isAnyInterfacePortInLoopbackMode(sw_->getState(), intf)) {
@@ -220,16 +224,17 @@ void ArpHandler::floodGratuituousArp() {
                  << intf->getName();
       continue;
     }
-    for (const auto& addrEntry : intf->getAddresses()) {
-      if (!addrEntry.first.isV4()) {
+    for (auto iter : std::as_const(*intf->getAddresses())) {
+      auto addrEntry = folly::IPAddress(iter.first);
+      if (!addrEntry.isV4()) {
         continue;
       }
-      auto v4Addr = addrEntry.first.asV4();
+      auto v4Addr = addrEntry.asV4();
       // Gratuitous arps have both source and destination IPs set to
       // originator's address
       sendArp(
           sw_,
-          intf->getVlanID(),
+          intf->getVlanIDIf(),
           ARP_OP_REQUEST,
           intf->getMac(),
           v4Addr,
@@ -240,7 +245,7 @@ void ArpHandler::floodGratuituousArp() {
 }
 
 void ArpHandler::sendArpReply(
-    VlanID vlan,
+    std::optional<VlanID> vlan,
     PortID port,
     MacAddress senderMac,
     IPAddressV4 senderIP,

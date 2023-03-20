@@ -36,6 +36,7 @@ extern "C" {
 #include "fboss/agent/hw/bcm/BcmQosMap.h"
 #include "fboss/agent/hw/bcm/BcmRouteCounter.h"
 #include "fboss/agent/hw/bcm/BcmRtag7Module.h"
+#include "fboss/agent/hw/bcm/BcmTeFlowTable.h"
 #include "fboss/agent/hw/bcm/BcmTrunk.h"
 #include "fboss/agent/hw/bcm/BcmTypes.h"
 #include "fboss/agent/hw/bcm/BcmWarmBootState.h"
@@ -62,7 +63,9 @@ class BcmWarmBootCache {
  public:
   explicit BcmWarmBootCache(const BcmSwitchIf* hw);
   folly::dynamic getWarmBootStateFollyDynamic() const;
-  void populate(const folly::dynamic& warmBootState);
+  void populate(
+      const folly::dynamic& warmBootState,
+      std::optional<state::WarmbootState> thriftState);
   struct VlanInfo {
     VlanInfo(
         VlanID _vlan,
@@ -167,6 +170,16 @@ class BcmWarmBootCache {
   using AclEntry2AclStat =
       boost::container::flat_map<BcmAclEntryHandle, AclStatStatus>;
 
+  struct TeFlowStatStatus {
+    BcmTeFlowStatHandle stat{-1};
+    BcmAclStatActionIndex actionIndex{BcmAclStat::kDefaultAclActionIndex};
+    bool claimed{false};
+  };
+  // current h/w teflow stats: key = BcmTeFlowEntryHandle, value =
+  // TeFlowStatStatus
+  using TeFlowEntry2TeFlowStat =
+      std::map<BcmTeFlowEntryHandle, TeFlowStatStatus>;
+
   using QosMapKey = std::pair<std::string, BcmQosMap::Type>;
   using QosMapKey2QosMapId =
       boost::container::flat_map<QosMapKey, BcmQosPolicyHandle>;
@@ -178,6 +191,28 @@ class BcmWarmBootCache {
   typedef boost::container::flat_map<RouteCounterID, BcmRouteCounterID>
       RouteCounterIDMap;
   using RouteCounterIDMapItr = typename RouteCounterIDMap::const_iterator;
+
+  // current h/w TeFlows: key = TeFlowMapKey, value = BcmTeFlowEntryHandle
+  using TeFlowMapKey = std::pair<bcm_port_t, folly::IPAddress>;
+  using TeFlow2BcmTeFlowEntryHandle =
+      std::map<TeFlowMapKey, BcmTeFlowEntryHandle>;
+
+  using UdfGroupInfoPair = std::pair<bcm_udf_id_t, bcm_udf_t>;
+  using UdfGroupNameToInfoMap = std::map<std::string, UdfGroupInfoPair>;
+  using UdfGroupNameToInfoMapItr =
+      typename UdfGroupNameToInfoMap::const_iterator;
+  using UdfGroupPacketMatcherMap =
+      std::map<std::string, bcm_udf_pkt_format_id_t>;
+  using UdfGroupNameToPacketMatcherMap =
+      std::map<std::string, UdfGroupPacketMatcherMap>;
+  using UdfGroupNameToPacketMatcherMapItr =
+      typename UdfGroupNameToPacketMatcherMap::const_iterator;
+  using UdfPktMatcherInfoPair =
+      std::pair<bcm_udf_pkt_format_id_t, bcm_udf_pkt_format_info_t>;
+  using UdfPktMatcherNameToInfoMap =
+      std::map<std::string, UdfPktMatcherInfoPair>;
+  using UdfPktMatcherNameToInfoMapItr =
+      typename UdfPktMatcherNameToInfoMap::const_iterator;
 
   /*
    * Callbacks for traversing entries in BCM h/w tables
@@ -235,11 +270,48 @@ class BcmWarmBootCache {
 
   void populateLabelStack2TunnelId(bcm_l3_egress_t* egress);
   void removeUnclaimedLabeledTunnels();
+
+  void removeUnclaimedRoutes();
+  void removeUnclaimedHostEntries();
+  void removeUnclaimedEcmpEgressObjects();
+  void removeUnclaimedEgressObjects();
+
+  void removeUnclaimedInterfaces();
+  void removeUnclaimedStations();
+  void removeUnclaimedVlans();
+
+  void removeUnclaimedAclStats();
+  void removeUnclaimedAcls();
+
+  void removeUnclaimedTeFlowStats();
+  void removeUnclaimedTeFlows();
+
+  void removeUnclaimedCosqMappings();
   void checkUnclaimedQosMaps();
+
+  void removeUnclaimedUdfGroups();
+  void removeUnclaimedUdfPacketMatchers();
+
+  void detachUdfPacketMatcher(
+      const std::string& udfGroupName,
+      bcm_udf_id_t udfId);
 
   void populateSwitchSettings();
 
   void populateRxReasonToQueue();
+
+  // retrieve all bcm teflows of the specified group
+  void populateTeFlows(
+      const int groupId,
+      TeFlowEntry2TeFlowStat& stats,
+      TeFlow2BcmTeFlowEntryHandle& teflows);
+  void populateTeFlowStats(
+      int groupID,
+      BcmTeFlowEntryHandle teflow,
+      TeFlowEntry2TeFlowStat& stats);
+
+  // remove bcm teflow directly from h/w
+  void removeBcmTeFlow(BcmTeFlowEntryHandle handle);
 
  public:
   /*
@@ -463,6 +535,27 @@ class BcmWarmBootCache {
     priority2BcmAclEntryHandle_.erase(itr);
   }
 
+  /*
+   * Iterators and find functions for teflows
+   */
+  using TeFlow2BcmTeFlowItr = TeFlow2BcmTeFlowEntryHandle::const_iterator;
+  TeFlow2BcmTeFlowItr teFlow2BcmTeFlowEntryHandle_begin() {
+    return teFlow2BcmTeFlowEntryHandle_.begin();
+  }
+  TeFlow2BcmTeFlowItr teFlow2BcmTeFlowEntryHandle_end() {
+    return teFlow2BcmTeFlowEntryHandle_.end();
+  }
+  TeFlow2BcmTeFlowItr findTeFlow(uint16_t srcPort, folly::IPAddress destIp) {
+    return teFlow2BcmTeFlowEntryHandle_.find({srcPort, destIp});
+  }
+  void programmed(TeFlow2BcmTeFlowItr itr) {
+    XLOG(DBG1) << "Programmed TeFlowEntry, removing from warm boot cache. "
+               << "Teflow: srcPort=" << itr->first.first
+               << " destIp= " << itr->first.second
+               << " teflow entry=" << itr->second;
+    teFlow2BcmTeFlowEntryHandle_.erase(itr);
+  }
+
   typedef Index2ReasonToQueue::const_iterator Index2ReasonToQueueCItr;
   Index2ReasonToQueueCItr index2ReasonToQueue_begin() const {
     return index2ReasonToQueue_.begin();
@@ -498,6 +591,14 @@ class BcmWarmBootCache {
   }
   AclEntry2AclStatItr findAclStat(const BcmAclEntryHandle& bcmAclEntry);
   void programmed(AclEntry2AclStatItr itr);
+
+  using TeFlowEntry2TeFlowStatItr = TeFlowEntry2TeFlowStat::iterator;
+  TeFlowEntry2TeFlowStatItr TeFlowEntry2TeFlowStat_end() {
+    return teFlowEntry2TeFlowStat_.end();
+  }
+  TeFlowEntry2TeFlowStatItr findTeFlowStat(
+      const BcmTeFlowEntryHandle& bcmTeFlowEntry);
+  void programmed(TeFlowEntry2TeFlowStatItr itr);
 
   /*
    * Iterators and find functions for trunks
@@ -607,6 +708,10 @@ class BcmWarmBootCache {
     return ptpTcEnabled_.has_value() && *ptpTcEnabled_ == enable;
   }
 
+  bool isUdfInitialized() const {
+    return udfEnabled_;
+  }
+
   void ptpTcProgrammed() {
     ptpTcEnabled_ = std::nullopt;
   }
@@ -627,8 +732,77 @@ class BcmWarmBootCache {
     return routeCounterIDs_.end();
   }
 
+  UdfGroupNameToInfoMapItr findUdfGroupInfo(const std::string& name) const {
+    return udfGroupNameToInfoMap_.find(name);
+  }
+
+  UdfGroupNameToPacketMatcherMapItr findUdfGroupPacketMatcher(
+      const std::string& name) const {
+    return udfGroupNameToPacketMatcherMap_.find(name);
+  }
+
+  UdfPktMatcherNameToInfoMapItr findUdfPktMatcherInfo(
+      const std::string& name) const {
+    return udfPktMatcherNameToInfoMap_.find(name);
+  }
+
+  UdfGroupNameToInfoMapItr UdfGroupNameToInfoMapBegin() {
+    return udfGroupNameToInfoMap_.begin();
+  }
+
+  UdfGroupNameToInfoMapItr UdfGroupNameToInfoMapEnd() {
+    return udfGroupNameToInfoMap_.end();
+  }
+
+  UdfGroupNameToPacketMatcherMapItr UdfGroupNameToPacketMatcherMapEnd() {
+    return udfGroupNameToPacketMatcherMap_.end();
+  }
+
+  UdfPktMatcherNameToInfoMapItr UdfPktMatcherNameToInfoMapBegin() {
+    return udfPktMatcherNameToInfoMap_.begin();
+  }
+
+  UdfPktMatcherNameToInfoMapItr UdfPktMatcherNameToInfoMapEnd() {
+    return udfPktMatcherNameToInfoMap_.end();
+  }
+
+  void programmed(UdfGroupNameToInfoMapItr itr) {
+    udfGroupNameToInfoMap_.erase(itr);
+  }
+
+  void programmed(UdfGroupNameToPacketMatcherMapItr itr) {
+    udfGroupNameToPacketMatcherMap_.erase(itr);
+  }
+
+  void programmed(UdfPktMatcherNameToInfoMapItr itr) {
+    udfPktMatcherNameToInfoMap_.erase(itr);
+  }
+
   void programmed(RouteCounterIDMapItr itr) {
     routeCounterIDs_.erase(itr);
+  }
+
+  int getTeFlowDstIpPrefixLength() const {
+    return teFlowDstIpPrefixLength_;
+  }
+
+  int getTeFlowHintId() const {
+    return teFlowHintId_;
+  }
+
+  int getTeFlowGroupId() const {
+    return teFlowGroupId_;
+  }
+
+  int getTeFlowFlexCounterId() const {
+    return teFlowFlexCounterId_;
+  }
+
+  void teFlowTableProgrammed() {
+    teFlowDstIpPrefixLength_ = 0;
+    teFlowHintId_ = 0;
+    teFlowGroupId_ = 0;
+    teFlowFlexCounterId_ = 0;
   }
 
  private:
@@ -638,8 +812,28 @@ class BcmWarmBootCache {
    * map
    */
   const EgressId2Weight& getPathsForEcmp(EgressId ecmp) const;
-  folly::dynamic getWarmBootState() const;
-  void populateFromWarmBootState(const folly::dynamic& warmBootState);
+  void populateFromWarmBootState(
+      const folly::dynamic& warmBootState,
+      std::optional<state::WarmbootState> thriftState);
+
+  void populateEcmpEntryFromWarmBootState(
+      const folly::dynamic& hwWarmBootState);
+  void populateTrunksFromWarmBootState(const folly::dynamic& hwWarmBootState);
+  void populateRouteCountersFromWarmBootState(
+      const folly::dynamic& hwWarmBootState);
+  void populateHostEntryFromWarmBootState(const folly::dynamic& hostTable);
+
+  void populateMplsNextHopFromWarmBootState(
+      const folly::dynamic& hwWarmBootState);
+  void populateIntfFromWarmBootState(const folly::dynamic& hwWarmBootState);
+  void populateQosPolicyFromWarmBootState(
+      const folly::dynamic& hwWarmBootState);
+  void populateTeFlowFromWarmBootState(const folly::dynamic& hwWarmBootState);
+  void populateUdfFromWarmBootState(const folly::dynamic& hwWarmBootState);
+  void populateUdfGroupFromWarmBootState(const folly::dynamic& udfGroup);
+  void populateUdfPacketMatcherFromWarmBootState(
+      const folly::dynamic& udfPacketMatcher);
+
   // No copy or assignment.
   BcmWarmBootCache(const BcmWarmBootCache&) = delete;
   BcmWarmBootCache& operator=(const BcmWarmBootCache&) = delete;
@@ -698,6 +892,9 @@ class BcmWarmBootCache {
   // acls
   Priority2BcmAclEntryHandle priority2BcmAclEntryHandle_;
 
+  // TeFlows
+  TeFlow2BcmTeFlowEntryHandle teFlow2BcmTeFlowEntryHandle_;
+
   Index2ReasonToQueue index2ReasonToQueue_;
 
   // trunks
@@ -711,6 +908,9 @@ class BcmWarmBootCache {
   // acl stats
   AclEntry2AclStat aclEntry2AclStat_;
 
+  // TeFlow  stats
+  TeFlowEntry2TeFlowStat teFlowEntry2TeFlowStat_;
+
   std::unique_ptr<SwitchState> dumpedSwSwitchState_;
   MirrorEgressPath2Handle mirrorEgressPath2Handle_;
   MirroredPort2Handle mirroredPort2Handle_;
@@ -719,13 +919,21 @@ class BcmWarmBootCache {
   std::unique_ptr<BcmWarmBootState> bcmWarmBootState_;
   QosMapKey2QosMapId qosMapKey2QosMapId_;
   QosMapId2QosMap qosMapId2QosMap_;
+  UdfGroupNameToInfoMap udfGroupNameToInfoMap_;
+  UdfGroupNameToPacketMatcherMap udfGroupNameToPacketMatcherMap_;
+  UdfPktMatcherNameToInfoMap udfPktMatcherNameToInfoMap_;
 
   cfg::L2LearningMode l2LearningMode_;
   std::optional<bool> ptpTcEnabled_;
+  bool udfEnabled_{false};
 
   RouteCounterIDMap routeCounterIDs_;
   int routeCounterModeId_{-1};
   int v6FlexCounterAction_{0};
+  int teFlowDstIpPrefixLength_{0};
+  int teFlowHintId_{0};
+  int teFlowGroupId_{0};
+  int teFlowFlexCounterId_{0};
 };
 
 } // namespace facebook::fboss

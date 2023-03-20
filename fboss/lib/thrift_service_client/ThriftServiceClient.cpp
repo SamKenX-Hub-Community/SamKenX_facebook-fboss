@@ -10,8 +10,6 @@
 
 #include "fboss/lib/thrift_service_client/ThriftServiceClient.h"
 
-#include <thrift/lib/cpp2/async/HeaderClientChannel.h>
-
 DEFINE_string(wedge_agent_host, "::1", "Host running wedge_agent");
 DEFINE_int32(wedge_agent_port, 5909, "Port running wedge_agent");
 DEFINE_string(qsfp_service_host, "::1", "Host running qsfp_service");
@@ -19,31 +17,27 @@ DEFINE_int32(qsfp_service_port, 5910, "Port running qsfp_service");
 
 namespace facebook::fboss::utils {
 
-template <typename Client>
-std::unique_ptr<Client> createPlaintextClient(
-    const folly::IPAddress& ip,
-    const int port,
+std::unique_ptr<apache::thrift::Client<facebook::fboss::FbossCtrl>>
+createWedgeAgentClient(
+    const std::optional<folly::SocketAddress>& dstAddr,
     folly::EventBase* eb) {
-  folly::EventBase* socketEb =
-      eb ? eb : folly::EventBaseManager::get()->getEventBase();
-  auto addr = folly::SocketAddress(ip, port);
-  auto socket = folly::AsyncSocket::newSocket(socketEb, addr, kConnTimeout);
-  socket->setSendTimeout(kSendTimeout);
-  auto channel =
-      apache::thrift::HeaderClientChannel::newChannel(std::move(socket));
-  channel->setTimeout(kRecvTimeout);
-  return std::make_unique<Client>(std::move(channel));
+  return tryCreateEncryptedClient<facebook::fboss::FbossCtrl>(
+      dstAddr ? *dstAddr
+              : folly::SocketAddress(
+                    FLAGS_wedge_agent_host, FLAGS_wedge_agent_port),
+      std::nullopt /* srcAddr */,
+      eb);
 }
 
-template std::unique_ptr<facebook::fboss::FbossCtrlAsyncClient>
-createPlaintextClient(
-    const folly::IPAddress& ip,
-    const int port,
-    folly::EventBase* eb);
-
-template std::unique_ptr<facebook::fboss::QsfpServiceAsyncClient>
-createPlaintextClient(
-    const folly::IPAddress& ip,
-    const int port,
-    folly::EventBase* eb);
+std::unique_ptr<apache::thrift::Client<facebook::fboss::QsfpService>>
+createQsfpServiceClient(
+    const std::optional<folly::SocketAddress>& dstAddr,
+    folly::EventBase* eb) {
+  return tryCreateEncryptedClient<facebook::fboss::QsfpService>(
+      dstAddr ? *dstAddr
+              : folly::SocketAddress(
+                    FLAGS_qsfp_service_host, FLAGS_qsfp_service_port),
+      std::nullopt /* srcAddr */,
+      eb);
+}
 } // namespace facebook::fboss::utils

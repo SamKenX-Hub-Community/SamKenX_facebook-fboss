@@ -60,7 +60,7 @@ std::shared_ptr<TeFlowTable> TeFlowNexthopHandler::updateTeFlowEntries(
     std::shared_ptr<SwitchState>& newState) {
   bool changed = false;
   auto teFlowTable = newState->getTeFlowTable();
-  for (auto originalEntry : *teFlowTable) {
+  for (const auto& [flowStr, originalEntry] : std::as_const(*teFlowTable)) {
     if (updateTeFlowEntry(originalEntry, newState)) {
       changed = true;
     }
@@ -75,15 +75,20 @@ bool TeFlowNexthopHandler::updateTeFlowEntry(
     const std::shared_ptr<TeFlowEntry>& originalEntry,
     std::shared_ptr<SwitchState>& newState) {
   std::vector<NextHopThrift> resolvedNextHops;
-  for (const auto& nexthop : originalEntry->getNextHops()) {
+  for (const auto& entry : std::as_const(*originalEntry->getNextHops())) {
+    // THRIFT_COPY: Investigate if next hop thrift structure can be generically
+    // represented as facebook::fboss::NextHop
+    auto nexthop = entry->toThrift();
     if (TeFlowTable::isNexthopResolved(nexthop, newState)) {
       resolvedNextHops.emplace_back(nexthop);
     }
   }
-  if (originalEntry->getResolvedNextHops() != resolvedNextHops) {
+  if (originalEntry->getResolvedNextHops()->toThrift() != resolvedNextHops) {
     auto newEntry = originalEntry->modify(&newState);
     newEntry->setEnabled(!resolvedNextHops.empty());
     newEntry->setResolvedNextHops(std::move(resolvedNextHops));
+    XLOG(DBG3) << "TeFlowNexthopHandler: Setting nexthop changed for flow: "
+               << newEntry->str();
     return true;
   }
   return false;

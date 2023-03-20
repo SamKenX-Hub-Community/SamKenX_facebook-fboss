@@ -73,8 +73,13 @@ class MockHwSwitch : public HwSwitch {
   MOCK_CONST_METHOD0(
       getPortStats,
       folly::F14FastMap<std::string, HwPortStats>());
+  MOCK_CONST_METHOD0(getSysPortStats, std::map<std::string, HwSysPortStats>());
   MOCK_CONST_METHOD1(fetchL2Table, void(std::vector<L2EntryThrift>* l2Table));
-  MOCK_METHOD1(gracefulExitImpl, void(folly::dynamic& switchState));
+  MOCK_METHOD2(
+      gracefulExitImpl,
+      void(
+          folly::dynamic& follySwitchState,
+          state::WarmbootState& thriftSwitchState));
   MOCK_CONST_METHOD0(toFollyDynamic, folly::dynamic());
   MOCK_CONST_METHOD0(exitFatal, void());
   MOCK_METHOD0(unregisterCallbacks, void());
@@ -124,6 +129,7 @@ class MockHwSwitch : public HwSwitch {
       listObjects,
       std::string(const std::vector<HwObjectType>&, bool));
   MOCK_METHOD0(updateAllPhyInfo, std::map<PortID, phy::PhyInfo>());
+  MOCK_CONST_METHOD0(getFabricReachability, std::map<PortID, FabricEndpoint>());
 
  private:
   MOCK_METHOD1(switchRunStateChangedImpl, void(SwitchRunState newState));
